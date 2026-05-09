@@ -1,6 +1,7 @@
 """Smoke tests for the workflow runner. No API keys required (no call_llm in tests)."""
 from __future__ import annotations
 
+from app.runner import runner as runner_mod
 from app.runner.runner import run_workflow_sync, topo_sort
 
 
@@ -243,3 +244,31 @@ def run(inputs, ctx):
     nr = result["node_runs"][0]
     assert "hello" in nr["logs"]
     assert any(tc["name"] == "shell" for tc in nr["tool_calls"])
+
+
+def test_run_workdir_is_removed(tmp_path, monkeypatch):
+    workdir = tmp_path / "wfrun-test"
+    monkeypatch.setattr(runner_mod.tempfile, "mkdtemp", lambda prefix: str(workdir))
+    wf = {
+        "id": "wf",
+        "input_node_id": "a",
+        "output_node_id": "a",
+        "nodes": [
+            make_node(
+                "a",
+                "def run(inputs, ctx):\n"
+                "    p = ctx.workdir / 'artifact.txt'\n"
+                "    p.write_text('hello')\n"
+                "    return {'exists': p.exists()}\n",
+                inputs=[],
+                outputs=[{"name": "exists"}],
+            ),
+        ],
+        "edges": [],
+    }
+
+    result = runner_mod.run_workflow_sync(wf, {})
+
+    assert result["status"] == "success", result
+    assert result["outputs"]["exists"] is True
+    assert not workdir.exists()

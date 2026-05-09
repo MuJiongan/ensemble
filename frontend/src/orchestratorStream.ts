@@ -7,8 +7,11 @@ import type { OrchestratorEvent } from './types';
 type AssistantMutation = (a: AssistantMessage) => AssistantMessage;
 
 /** Map an OrchestratorEvent to an assistant-bubble mutation, or `null` if
- * the event has no bubble effect (graph-mutator side effects, run_started,
- * done — caller handles those separately). Pure for unit-testability. */
+ * the event has no bubble effect (graph-mutator side effects, done — caller
+ * handles those separately). `run_started` returns a mutation that stashes
+ * the run_id on the pending `run_workflow` block, so the chat card is
+ * clickable while still running; the caller still also handles run_started
+ * separately to attach the run panel WS. Pure for unit-testability. */
 export function reduceAssistantOnEvent(ev: OrchestratorEvent): AssistantMutation | null {
   if (ev.kind === 'assistant_thinking_chunk' && ev.text) {
     // Reasoning streams before visible content. Append to the trailing
@@ -58,6 +61,21 @@ export function reduceAssistantOnEvent(ev: OrchestratorEvent): AssistantMutation
         const b = content[i];
         if (b.t === 'tool' && b.tool === ev.tool && b.status === 'pending') {
           content[i] = { ...b, status: ev.status, result: ev.result };
+          break;
+        }
+      }
+      return { ...a, content };
+    };
+  }
+  if (ev.kind === 'run_started') {
+    // Find the pending run_workflow block this run belongs to and stash the
+    // run_id so the chat card can become clickable before tool_call_end.
+    return (a) => {
+      const content = [...a.content];
+      for (let i = content.length - 1; i >= 0; i--) {
+        const b = content[i];
+        if (b.t === 'tool' && b.tool === 'run_workflow' && b.status === 'pending') {
+          content[i] = { ...b, runId: ev.run_id };
           break;
         }
       }

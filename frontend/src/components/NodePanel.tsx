@@ -125,11 +125,11 @@ export function NodePanel({
             </button>
           )}
           <button
-            className="btn-ghost"
+            className="text-btn"
             onClick={onClose}
-            style={{ padding: '3px 9px', fontSize: 11 }}
+            title="close node panel"
           >
-            close ✕
+            close
           </button>
         </div>
         <div

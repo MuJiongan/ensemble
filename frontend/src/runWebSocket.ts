@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, type SetStateAction } from 'react';
 import { api } from './api';
 import { ensureNotificationPermission, notifyRunFinished } from './notify';
 import type { CurrentRun, RunEvent, RunStatus, Workflow } from './types';
@@ -13,7 +13,12 @@ export function applyRunEvent(cur: CurrentRun, ev: RunEvent): CurrentRun {
   let error = cur.error;
   let totalCost = cur.totalCost;
 
-  if (ev.type === 'node_started') {
+  if (ev.type === 'run_started') {
+    nextStatus = 'running';
+    for (const nodeId of ev.order) {
+      if (!nextStates[nodeId]) nextStates[nodeId] = 'pending';
+    }
+  } else if (ev.type === 'node_started') {
     nextStates[ev.node_id] = 'running';
   } else if (ev.type === 'node_finished') {
     nextStates[ev.node_id] = ev.status;
@@ -57,11 +62,21 @@ export function applyRunEvent(cur: CurrentRun, ev: RunEvent): CurrentRun {
  * workflow switch (via `closeWs`). */
 export function useRunWebSocket(workflows: Workflow[]) {
   const [currentRun, setCurrentRun] = useState<CurrentRun | null>(null);
+  const currentRunRef = useRef<CurrentRun | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   // Held as a ref so the WS message handler always sees the latest list
   // without forcing a reconnect when the user renames a workflow mid-run.
   const workflowsRef = useRef<Workflow[]>(workflows);
   workflowsRef.current = workflows;
+
+  const commitCurrentRun = (next: SetStateAction<CurrentRun | null>) => {
+    const value =
+      typeof next === 'function'
+        ? (next as (prev: CurrentRun | null) => CurrentRun | null)(currentRunRef.current)
+        : next;
+    currentRunRef.current = value;
+    setCurrentRun(value);
+  };
 
   const attachToRun = (
     runId: string,
@@ -71,9 +86,9 @@ export function useRunWebSocket(workflows: Workflow[]) {
   ) => {
     ensureNotificationPermission();
     const workflowName =
-      workflowsRef.current.find((w) => w.id === workflowId)?.name ?? 'workflow';
+      workflowsRef.current.find((w) => w.id === workflowId)?.name ?? 'project';
     const startedAt = Date.now();
-    setCurrentRun({
+    commitCurrentRun({
       id: runId,
       workflow_id: workflowId,
       status: initialStatus,
@@ -102,7 +117,11 @@ export function useRunWebSocket(workflows: Workflow[]) {
           durationMs: Date.now() - startedAt,
         });
       }
-      setCurrentRun((cur) => (cur && cur.id === runId ? applyRunEvent(cur, ev) : cur));
+      const cur = currentRunRef.current;
+      if (!cur || cur.id !== runId) return;
+      const next = applyRunEvent(cur, ev);
+      currentRunRef.current = next;
+      setCurrentRun(next);
     };
     ws.onerror = () => { /* keep state; close handler will fire */ };
     ws.onclose = () => { if (wsRef.current === ws) wsRef.current = null; };
@@ -113,5 +132,5 @@ export function useRunWebSocket(workflows: Workflow[]) {
     wsRef.current = null;
   };
 
-  return { currentRun, setCurrentRun, attachToRun, closeWs };
+  return { currentRun, setCurrentRun: commitCurrentRun, attachToRun, closeWs };
 }

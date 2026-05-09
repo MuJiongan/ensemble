@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app import models, schemas
 from app.runner import service as run_service
+from app.services import graph as graph_service
 
 router = APIRouter(prefix="/api", tags=["runs"])
 
@@ -152,6 +153,31 @@ def rerun_from_snapshot(rid: str, body: schemas.RunStartIn, db: Session = Depend
     return _run_to_out(run, [])
 
 
+@router.post("/runs/{rid}/fork", response_model=schemas.WorkflowOut)
+def fork_run_snapshot(
+    rid: str,
+    body: schemas.WorkflowForkIn,
+    db: Session = Depends(get_db),
+):
+    src = db.get(models.Run, rid)
+    if src is None:
+        raise HTTPException(404)
+    if not src.workflow_snapshot:
+        raise HTTPException(400, detail="source run has no snapshot to fork")
+    source_workflow = db.get(models.Workflow, src.workflow_id)
+    base_name = source_workflow.name if source_workflow else "workflow"
+    name = (body.name or f"{base_name} from run {src.id[:8]}").strip()
+    fork = graph_service.workflow_from_snapshot(db, src.workflow_snapshot, name=name)
+    db.commit()
+    db.refresh(fork)
+    return schemas.WorkflowOut(
+        id=fork.id,
+        name=fork.name,
+        input_node_id=fork.input_node_id,
+        output_node_id=fork.output_node_id,
+    )
+
+
 @router.post("/runs/{rid}/cancel")
 def cancel_run(rid: str):
     """SIGTERM the run's subprocess, if any. Idempotent."""
@@ -171,8 +197,7 @@ def delete_run(rid: str, db: Session = Depends(get_db)):
         raise HTTPException(409, detail="cancel the run before deleting")
     db.delete(run)
     db.commit()
-    from app.runner import events as _ev
-    _ev.discard(rid)
+    run_service.discard(rid)
     return {"ok": True}
 
 
@@ -190,7 +215,6 @@ def list_runs(wid: str, db: Session = Depends(get_db)):
         db.query(models.Run)
         .filter_by(workflow_id=wid)
         .order_by(models.Run.started_at.desc())
-        .limit(20)
         .all()
     )
     return [_run_to_out(r, r.node_runs) for r in rows]

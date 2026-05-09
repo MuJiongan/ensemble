@@ -4,17 +4,20 @@ import json
 import threading
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
 from app import models
+from app.api import workflows as workflow_api
 from app.orchestrator import tools as orch_tools
 from app.orchestrator import agent as orch_agent
 from app.orchestrator.prompt import (
     SYSTEM_PROMPT,
     graph_state_message,
 )
+from app.runner import events as runner_events
 
 
 @pytest.fixture()
@@ -306,6 +309,42 @@ def test_clean_canvas_blocked_during_active_run(db, workflow):
 
 
 # ---------------------------------------------------------------------------
+def test_delete_workflow_blocked_during_active_run(db, workflow):
+    run = models.Run(workflow_id=workflow.id, kind="user", status="running", inputs={})
+    db.add(run)
+    db.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        workflow_api.delete_workflow(workflow.id, db=db)
+
+    assert exc.value.status_code == 409
+    assert db.get(models.Workflow, workflow.id) is not None
+
+
+def test_delete_workflow_cascades_rows_and_discards_run_events(db, workflow):
+    sess = models.Session(workflow_id=workflow.id)
+    run = models.Run(workflow_id=workflow.id, kind="user", status="success", inputs={})
+    node = models.Node(workflow_id=workflow.id, name="n")
+    db.add_all([sess, run, node])
+    db.commit()
+    db.add(models.Message(session_id=sess.id, role="user", content="hi"))
+    db.add(models.NodeRun(run_id=run.id, node_id=node.id, status="success"))
+    db.commit()
+    runner_events.append_event(
+        run.id,
+        {"type": "run_finished", "status": "success", "outputs": {}, "total_cost": 0.0},
+    )
+
+    workflow_api.delete_workflow(workflow.id, db=db)
+
+    assert db.get(models.Workflow, workflow.id) is None
+    assert db.get(models.Run, run.id) is None
+    assert db.query(models.NodeRun).filter_by(run_id=run.id).count() == 0
+    assert db.get(models.Session, sess.id) is None
+    assert db.query(models.Message).filter_by(session_id=sess.id).count() == 0
+    assert runner_events.get(run.id) is None
+
+
 # graph state snapshot — code is intentionally omitted (orchestrator pulls it
 # on demand via view_node_details). The user_edited flag stays.
 # ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@
 POST   /api/workflows/{wid}/sessions       create a session for a workflow
 GET    /api/workflows/{wid}/sessions       list sessions on a workflow
 GET    /api/sessions/{sid}/messages        chat history rendered for the panel
+DELETE /api/sessions/{sid}/messages        clear chat history for the panel
 POST   /api/sessions/{sid}/messages        SSE stream of orchestrator events
                                             for one user-message turn
 """
@@ -51,6 +52,15 @@ def get_messages(sid: str, db: DbSession = Depends(get_db)) -> schemas.SessionMe
         raise HTTPException(404, f"session {sid} not found")
     bubbles = agent.render_history(db, sid)
     return schemas.SessionMessagesOut(messages=bubbles)  # type: ignore[arg-type]
+
+
+@router.delete("/sessions/{sid}/messages")
+def clear_messages(sid: str, db: DbSession = Depends(get_db)) -> dict:
+    if not db.get(models.Session, sid):
+        raise HTTPException(404, f"session {sid} not found")
+    db.query(models.Message).filter_by(session_id=sid).delete(synchronize_session=False)
+    db.commit()
+    return {"ok": True}
 
 
 @router.post("/sessions/{sid}/cancel")

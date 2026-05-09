@@ -1,6 +1,10 @@
 import type { Run } from '../types';
 
-export function SnapshotBanner({ run, onExit }: { run: Run; onExit: () => void }) {
+export function SnapshotBanner({
+  run,
+}: {
+  run: Run;
+}) {
   const statusColor =
     run.status === 'success'
       ? 'var(--state-ok)'
@@ -17,7 +21,8 @@ export function SnapshotBanner({ run, onExit }: { run: Run; onExit: () => void }
         borderBottom: '1px solid var(--rule)',
         display: 'flex',
         alignItems: 'center',
-        gap: 8,
+        justifyContent: 'space-between',
+        gap: 12,
         fontSize: 11.5,
         minWidth: 0,
         flexShrink: 0,
@@ -57,25 +62,17 @@ export function SnapshotBanner({ run, onExit }: { run: Run; onExit: () => void }
           {run.id.slice(0, 8)}
         </span>
       </span>
-      <span style={{ flex: 1 }} />
-      <button
-        type="button"
-        onClick={onExit}
+      <span
+        className="smallcaps"
         style={{
-          background: 'transparent',
-          border: 0,
-          padding: '2px 0',
-          cursor: 'pointer',
-          color: 'var(--accent-ink)',
-          fontSize: 11.5,
-          fontFamily: 'var(--serif)',
-          fontStyle: 'italic',
+          color: 'var(--ink-4)',
+          fontSize: 9,
           whiteSpace: 'nowrap',
+          flex: 'none',
         }}
-        title="return to the live, editable canvas"
       >
-        ← live
-      </button>
+        read-only run graph
+      </span>
     </div>
   );
 }

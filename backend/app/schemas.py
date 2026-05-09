@@ -81,6 +81,10 @@ class WorkflowPatch(BaseModel):
     output_node_id: str | None = None
 
 
+class WorkflowForkIn(BaseModel):
+    name: str | None = None
+
+
 class RunStartIn(BaseModel):
     inputs: dict[str, Any] = Field(default_factory=dict)
     kind: str = "user"

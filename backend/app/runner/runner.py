@@ -9,6 +9,7 @@ legacy result shape — used by tests and any other sync caller.
 from __future__ import annotations
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -57,111 +58,114 @@ def run_workflow_streaming(
     appended so subscribers always observe a terminal event.
     """
     workdir = tempfile.mkdtemp(prefix="wfrun-")
-    payload = {
-        "workflow": workflow,
-        "inputs": inputs,
-        "default_model": default_model,
-        "workdir": workdir,
-        "env": {
-            "OPENROUTER_API_KEY": os.getenv("OPENROUTER_API_KEY", ""),
-            "PARALLEL_API_KEY": os.getenv("PARALLEL_API_KEY", ""),
-        },
-    }
-
-    env = os.environ.copy()
-    env["PYTHONUNBUFFERED"] = "1"
-
     try:
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "app.runner.child"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-        )
-    except Exception as e:
-        ev_mod.append_event(
-            run_id,
-            {
-                "type": "run_finished",
-                "status": "error",
-                "error": f"failed to spawn runner: {e}",
-                "outputs": {},
-                "total_cost": 0.0,
+        payload = {
+            "workflow": workflow,
+            "inputs": inputs,
+            "default_model": default_model,
+            "workdir": workdir,
+            "env": {
+                "OPENROUTER_API_KEY": os.getenv("OPENROUTER_API_KEY", ""),
+                "PARALLEL_API_KEY": os.getenv("PARALLEL_API_KEY", ""),
             },
-        )
-        return
+        }
 
-    ev_mod.set_proc(run_id, proc)
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
 
-    try:
-        assert proc.stdin is not None
-        proc.stdin.write(json.dumps(payload).encode())
-        proc.stdin.close()
-    except Exception as e:
-        ev_mod.append_event(
-            run_id,
-            {
-                "type": "run_finished",
-                "status": "error",
-                "error": f"failed to write to runner stdin: {e}",
-                "outputs": {},
-                "total_cost": 0.0,
-            },
-        )
         try:
-            proc.kill()
-        except Exception:
-            pass
-        return
-
-    saw_finished = False
-    assert proc.stdout is not None
-    for raw in proc.stdout:
-        line = raw.decode(errors="replace").strip()
-        if not line:
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        ev_mod.append_event(run_id, event)
-        if event.get("type") == "run_finished":
-            saw_finished = True
-
-    rc = proc.wait()
-
-    if not saw_finished:
-        stderr_text = ""
-        try:
-            if proc.stderr is not None:
-                stderr_text = proc.stderr.read().decode(errors="replace")
-        except Exception:
-            pass
-        st = ev_mod.get(run_id)
-        cancelled = bool(st and st.cancelled)
-        if cancelled or rc < 0:
-            ev_mod.append_event(
-                run_id,
-                {
-                    "type": "run_finished",
-                    "status": "cancelled",
-                    "error": "cancelled by user" if cancelled else f"runner killed (rc={rc})",
-                    "outputs": {},
-                    "total_cost": 0.0,
-                },
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "app.runner.child"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
             )
-        else:
+        except Exception as e:
             ev_mod.append_event(
                 run_id,
                 {
                     "type": "run_finished",
                     "status": "error",
-                    "error": f"runner exited rc={rc}: {stderr_text[-1000:]}",
+                    "error": f"failed to spawn runner: {e}",
                     "outputs": {},
                     "total_cost": 0.0,
                 },
             )
+            return
+
+        ev_mod.set_proc(run_id, proc)
+
+        try:
+            assert proc.stdin is not None
+            proc.stdin.write(json.dumps(payload).encode())
+            proc.stdin.close()
+        except Exception as e:
+            ev_mod.append_event(
+                run_id,
+                {
+                    "type": "run_finished",
+                    "status": "error",
+                    "error": f"failed to write to runner stdin: {e}",
+                    "outputs": {},
+                    "total_cost": 0.0,
+                },
+            )
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            return
+
+        saw_finished = False
+        assert proc.stdout is not None
+        for raw in proc.stdout:
+            line = raw.decode(errors="replace").strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            ev_mod.append_event(run_id, event)
+            if event.get("type") == "run_finished":
+                saw_finished = True
+
+        rc = proc.wait()
+
+        if not saw_finished:
+            stderr_text = ""
+            try:
+                if proc.stderr is not None:
+                    stderr_text = proc.stderr.read().decode(errors="replace")
+            except Exception:
+                pass
+            st = ev_mod.get(run_id)
+            cancelled = bool(st and st.cancelled)
+            if cancelled or rc < 0:
+                ev_mod.append_event(
+                    run_id,
+                    {
+                        "type": "run_finished",
+                        "status": "cancelled",
+                        "error": "cancelled by user" if cancelled else f"runner killed (rc={rc})",
+                        "outputs": {},
+                        "total_cost": 0.0,
+                    },
+                )
+            else:
+                ev_mod.append_event(
+                    run_id,
+                    {
+                        "type": "run_finished",
+                        "status": "error",
+                        "error": f"runner exited rc={rc}: {stderr_text[-1000:]}",
+                        "outputs": {},
+                        "total_cost": 0.0,
+                    },
+                )
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def run_workflow_sync(

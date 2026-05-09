@@ -12,7 +12,7 @@ import { api } from './api';
 import { loadSettings, SETTINGS_CHANGED_EVENT } from './localSettings';
 import {
   DEFAULT_WORKFLOW_NAME,
-  deriveSessionName,
+  deriveWorkflowName,
   historyToChatMessages,
   snapshotToDetail,
 } from './appHelpers';
@@ -30,7 +30,11 @@ export default function App() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [detail, setDetail] = useState<WorkflowDetail | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [chatOpen, setChatOpen] = useState(true);
+  // The right column toggles between two surfaces — the project's workspace
+  // (run details / node config / snapshot view) and the orchestrator chat.
+  // The chat used to float as an overlay; tabbing replaces it cleanly so the
+  // run/execute footer is never blocked.
+  const [rightPanelMode, setRightPanelMode] = useState<'workspace' | 'chat'>('workspace');
 
   // Mirror of `activeId` so async callbacks (SSE handlers, refreshDetail)
   // can read the latest value without being trapped by render-time closures.
@@ -214,18 +218,18 @@ export default function App() {
   const messages = activeId ? chatByWorkflow[activeId] ?? [] : [];
 
   /**
-   * Send a user message. Lazily creates a workflow / session if one doesn't
-   * exist yet, so the user can land on the workspace and just start typing.
-   * The first message also becomes the workflow's name (when it's still the
-   * "untitled session" placeholder).
+   * Send a user message. Lazily creates a workflow + chat context if one
+   * doesn't exist yet, so the user can land on the workspace and just start
+   * typing. The first message also becomes the workflow's name when it's still
+   * the placeholder.
    */
   const handleSend = async (text: string) => {
     let wid = activeId;
     let isFirstMessage = false;
 
     if (!wid) {
-      // No active session — create one named after this message.
-      const w = await api.createWorkflow(deriveSessionName(text));
+      // No active workflow — create one named after this message.
+      const w = await api.createWorkflow(deriveWorkflowName(text));
       wid = w.id;
       isFirstMessage = true;
       setWorkflows((prev) => (prev.find((p) => p.id === w.id) ? prev : [w, ...prev]));
@@ -243,8 +247,12 @@ export default function App() {
 
     // If the workflow is still the placeholder name, rename it now.
     const cur = workflows.find((w) => w.id === wid);
-    if (!isFirstMessage && cur && cur.name === DEFAULT_WORKFLOW_NAME) {
-      const nextName = deriveSessionName(text);
+    if (
+      !isFirstMessage &&
+      cur &&
+      (cur.name === DEFAULT_WORKFLOW_NAME || cur.name === 'untitled session')
+    ) {
+      const nextName = deriveWorkflowName(text);
       api.patchWorkflow(wid, { name: nextName }).then(() => refreshWorkflows()).catch(() => {});
     }
 
@@ -260,10 +268,10 @@ export default function App() {
   };
 
   /**
-   * "new" button — drop into the Hero empty state without touching the
-   * backend. handleSend's `!wid` branch lazily creates the workflow and
-   * session when the user sends their first message, so we avoid leaving
-   * orphaned "untitled session" rows behind every time someone clicks +.
+   * "new workflow" drops into the Hero empty state without touching the
+   * backend. handleSend's `!wid` branch lazily creates the workflow and chat
+   * context when the user sends their first message, so we avoid leaving
+   * orphaned placeholder rows behind every time someone clicks +.
    */
   const handleNew = () => {
     setActiveId(null);
@@ -298,10 +306,60 @@ export default function App() {
     if (id === activeId) await refreshDetail();
   };
 
+  const activateFork = async (workflow: Workflow) => {
+    setWorkflows((prev) => [workflow, ...prev.filter((w) => w.id !== workflow.id)]);
+    activeIdRef.current = workflow.id;
+    setActiveId(workflow.id);
+    setView('workflow');
+    setSelectedNodeId(null);
+    setSelectedSnapshotNodeId(null);
+    setViewingRun(null);
+    setCurrentRun(null);
+    setChatByWorkflow((prev) => ({ ...prev, [workflow.id]: [] }));
+    try {
+      const d = await api.getWorkflow(workflow.id);
+      if (activeIdRef.current === workflow.id) setDetail(d);
+    } catch {
+      if (activeIdRef.current === workflow.id) setDetail(null);
+    }
+  };
+
+  const handleForkWorkflow = async (id: string) => {
+    if (orchestratingIds.has(id)) {
+      alert('wait for the orchestrator to finish before forking this project.');
+      return;
+    }
+    try {
+      const fork = await api.forkWorkflow(id);
+      await activateFork(fork);
+    } catch (e) {
+      alert(`couldn't fork project: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  const handleForkSnapshot = async () => {
+    if (!viewingRun?.workflow_snapshot) return;
+    try {
+      const fork = await api.forkRunSnapshot(viewingRun.id);
+      await activateFork(fork);
+    } catch (e) {
+      alert(`couldn't fork snapshot: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
   const startRun = async (inputs: Record<string, unknown>) => {
     if (!detail) return;
     const run = await api.startRun(detail.id, inputs);
     attachToRun(run.id, detail.id, run.status);
+    // Drop the user on the run's detail page so they can watch this specific
+    // run's progress and see its inputs/outputs as they land. The run carries
+    // its own workflow_snapshot from the start_run response, so we can enter
+    // snapshot view immediately without a follow-up fetch.
+    if (run.workflow_snapshot) {
+      setSelectedNodeId(null);
+      setSelectedSnapshotNodeId(null);
+      setViewingRun(run);
+    }
   };
 
   const cancelRun = async () => {
@@ -311,12 +369,28 @@ export default function App() {
 
   /** Forward an error from a run/node into the orchestrator chat as a user message. */
   const sendErrorToOrchestrator = (message: string) => {
-    setChatOpen(true);
+    setRightPanelMode('chat');
     handleSend(message);
   };
 
   const selectedNode = detail?.nodes.find((n) => n.id === selectedNodeId);
   const isOrchestrating = !!activeId && orchestratingIds.has(activeId);
+
+  const clearChatContext = async () => {
+    if (!activeId || isOrchestrating) return;
+    const sid = sessionByWorkflow[activeId];
+    if (!sid) {
+      setChatByWorkflow((prev) => ({ ...prev, [activeId]: [] }));
+      return;
+    }
+    if (!confirm('clear this chat context? the project graph and run history will stay.')) return;
+    try {
+      await api.clearSessionMessages(sid);
+      setChatByWorkflow((prev) => ({ ...prev, [activeId]: [] }));
+    } catch (e) {
+      alert(`couldn't clear context: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
 
   const topBarStatus: 'idle' | 'building' | 'running' | 'ready' = isOrchestrating
     ? 'building'
@@ -333,11 +407,14 @@ export default function App() {
   // The live canvas has its own overlay below — this one's just for
   // snapshot view.
   const snapshotNodeStates: Record<string, NodeRunStatus> = viewingRun
-    ? currentRun && currentRun.id === viewingRun.id
-      ? currentRun.nodeStates
-      : Object.fromEntries(
+    ? {
+        ...Object.fromEntries(
           viewingRun.node_runs.map((nr) => [nr.node_id, nr.status]),
-        )
+        ),
+        ...(currentRun && currentRun.id === viewingRun.id
+          ? currentRun.nodeStates
+          : {}),
+      }
     : {};
 
   return (
@@ -361,11 +438,12 @@ export default function App() {
           setCurrentRun(null);
         }}
         onNew={handleNew}
+        onFork={handleForkWorkflow}
         onRename={handleRename}
         onDelete={handleDelete}
         onOpenSettings={() => setView('settings')}
         onOpenRun={() => {
-          // RunPanel is the default right-side surface — "Run" in the
+          // RunPanel is the default right-side surface — "Runs" in the
           // top bar is now just a deselect shortcut so it returns to view.
           setSelectedNodeId(null);
         }}
@@ -382,7 +460,7 @@ export default function App() {
               hasApiKey={hasApiKey}
               disabled={isOrchestrating}
               onSend={(text) => {
-                setChatOpen(true);
+                setRightPanelMode('chat');
                 handleSend(text);
               }}
               onOpenSettings={() => setView('settings')}
@@ -403,7 +481,7 @@ export default function App() {
                 }}
               >
                 {viewingRun && (
-                  <SnapshotBanner run={viewingRun} onExit={exitSnapshotView} />
+                  <SnapshotBanner run={viewingRun} />
                 )}
                 {/* Canvas (and the empty-canvas placeholder) need
                  * `position: relative` to host React Flow's absolute layout.
@@ -463,221 +541,307 @@ export default function App() {
                     </div>
                     <div style={{ fontSize: 13, maxWidth: 320, textAlign: 'center', lineHeight: 1.6 }}>
                       open the chat to describe a problem, or click{' '}
-                      <span className="italic-em">new</span> to start a session.
+                      <span className="italic-em">new project</span> to start fresh.
                     </div>
                   </div>
                 )}
                 </div>
-              </div>
-
-              {/* right 3/5 — node configuration / inputs / outputs */}
-              <div style={{ flex: 3, position: 'relative', minWidth: 0 }}>
-                {viewingRun && (() => {
-                  const snapDetail = snapshotToDetail(viewingRun);
-                  const snapNode = snapDetail?.nodes.find(
-                    (n) => n.id === selectedSnapshotNodeId,
-                  );
-                  if (snapDetail && snapNode) {
-                    return (
-                      <NodePanel
-                        node={snapNode}
-                        workflow={snapDetail}
-                        onClose={() => setSelectedSnapshotNodeId(null)}
-                        onChange={() => {}}
-                        readOnly
-                        pinnedRun={viewingRun}
-                        // Pass currentRun so the trace tab streams live
-                        // events when this snapshot view is bound to an
-                        // in-flight run (rerun-from-snapshot, or recent-run
-                        // click on a running run). Without it, the trace
-                        // would fall back to viewingRun.node_runs — empty
-                        // for runs that haven't materialised yet.
-                        currentRun={currentRun}
-                        onSendErrorToOrchestrator={sendErrorToOrchestrator}
-                      />
-                    );
-                  }
-                  return (
-                    <SnapshotRunPanel
-                      run={viewingRun}
-                      onExit={exitSnapshotView}
-                      // Block rerun while any run on this workflow is in
-                      // flight — server has no guard yet, so we hold the
-                      // line in the UI to avoid stacking parallel runs.
-                      runInProgress={
-                        !!currentRun &&
-                        currentRun.workflow_id === viewingRun.workflow_id &&
-                        (currentRun.status === 'running' ||
-                          currentRun.status === 'pending')
-                      }
-                      onRerun={async (inputs) => {
-                        const newRun = await api.rerunFromSnapshot(
-                          viewingRun.id,
-                          inputs,
-                        );
-                        // The rerun executes against the snapshot's graph
-                        // (which may diverge from live), so the live canvas
-                        // can't show its progress reliably. Stay in
-                        // snapshot view — swap viewingRun to the new run
-                        // and attach the WS so node-state dots animate on
-                        // the snapshot canvas in real time. The user exits
-                        // via "← live" on the SnapshotBanner whenever
-                        // they're done watching.
-                        setViewingRun(newRun);
-                        setSelectedSnapshotNodeId(null);
-                        attachToRunRef.current(
-                          newRun.id,
-                          newRun.workflow_id,
-                          newRun.status,
-                          /* executesOnSnapshot */ true,
-                        );
-                      }}
-                    />
-                  );
-                })()}
-                {!viewingRun && detail && selectedNode && (
-                  <NodePanel
-                    node={selectedNode}
-                    workflow={detail}
-                    onClose={() => setSelectedNodeId(null)}
-                    onChange={refreshDetail}
-                    currentRun={currentRun}
-                    onSendErrorToOrchestrator={sendErrorToOrchestrator}
-                  />
-                )}
-                {!viewingRun && detail && !selectedNode && (
-                  <RunPanel
-                    workflow={detail}
-                    currentRun={currentRun}
-                    onStart={startRun}
-                    onCancel={cancelRun}
-                    onViewRunOnCanvas={enterSnapshotView}
-                    orchestrating={isOrchestrating}
-                  />
-                )}
-                {!viewingRun && !detail && (
+                {viewingRun && (
                   <div
                     style={{
-                      position: 'absolute',
-                      inset: 0,
+                      borderTop: '1px solid var(--rule)',
+                      background: 'var(--paper-2)',
+                      padding: '10px 12px',
                       display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: 12,
-                      color: 'var(--ink-4)',
-                      padding: 24,
+                      justifyContent: 'flex-end',
+                      gap: 8,
+                      flexShrink: 0,
                     }}
                   >
-                    <div className="serif" style={{ fontStyle: 'italic', fontSize: 22, color: 'var(--ink-3)' }}>
-                      no session yet.
-                    </div>
-                    <div style={{ fontSize: 13, maxWidth: 420, textAlign: 'center', lineHeight: 1.6 }}>
-                      open the chat at the bottom-right and describe a problem, or click{' '}
-                      <span className="italic-em">new</span> to start a fresh session.
-                    </div>
+                    <button
+                      type="button"
+                      onClick={handleForkSnapshot}
+                      className="snapshot-action-btn snapshot-action-btn--secondary"
+                      title="copy this frozen run graph into a new editable project"
+                    >
+                      create project from snapshot
+                    </button>
+                    <button
+                      type="button"
+                      onClick={exitSnapshotView}
+                      className="snapshot-action-btn"
+                      title="return to the live, editable canvas"
+                    >
+                      back to live canvas
+                    </button>
                   </div>
                 )}
               </div>
-            </div>
 
-            {/* floating chatbot — launcher when closed, panel when open. */}
-            {!chatOpen && (
-              <button
-                onClick={() => setChatOpen(true)}
-                className="chat-tab-enter"
-                style={{
-                  position: 'fixed',
-                  bottom: 80,
-                  right: 0,
-                  width: 50,
-                  height: 50,
-                  padding: 0,
-                  background: 'var(--paper)',
-                  border: '1px solid var(--rule)',
-                  borderRight: 'none',
-                  borderTopLeftRadius: 4,
-                  borderBottomLeftRadius: 4,
-                  borderTopRightRadius: 0,
-                  borderBottomRightRadius: 0,
-                  cursor: 'pointer',
-                  zIndex: 50,
-                  boxShadow: '-6px 0 22px -10px rgba(26, 23, 20, 0.22), -1px 0 4px -2px rgba(26, 23, 20, 0.14)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 4,
-                  color: 'var(--ink)',
-                }}
-                title="open the orchestrator"
-              >
-                <svg
-                  width="24"
-                  height="24"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.25"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
-                  style={{ color: 'var(--ink-2)' }}
-                >
-                  <path d="M6 4h12a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4h-7l-4 3v-3H6a4 4 0 0 1-4-4V8a4 4 0 0 1 4-4z" />
-                </svg>
-                {isOrchestrating && (
-                  <span
-                    style={{
-                      width: 5,
-                      height: 5,
-                      borderRadius: 999,
-                      background: 'var(--accent, #c08552)',
-                      animation: 'pulse 1.4s ease-in-out infinite',
-                    }}
-                    aria-label="orchestrator is working"
-                  />
-                )}
-              </button>
-            )}
-            {chatOpen && (
+              {/* right 3/5 — workspace (run/node) or orchestrator chat,
+                  toggled via the tabs at the top. */}
               <div
-                className="chat-enter"
                 style={{
-                  position: 'fixed',
-                  bottom: 24,
-                  right: 24,
-                  width: 'min(440px, calc(100vw - 48px))',
-                  height: 'min(640px, calc(100vh - 102px))',
-                  background: 'var(--paper)',
-                  border: '1px solid var(--rule)',
-                  borderRadius: 6,
+                  flex: 3,
+                  minWidth: 0,
                   display: 'flex',
                   flexDirection: 'column',
-                  zIndex: 50,
-                  boxShadow: '0 24px 60px -20px rgba(26, 23, 20, 0.35), 0 8px 20px -8px rgba(26, 23, 20, 0.18)',
-                  overflow: 'hidden',
                 }}
               >
-                <div style={{ flex: 1, minHeight: 0 }}>
-                  <ChatPanel
-                    messages={messages}
-                    onSend={handleSend}
-                    onCancel={cancelOrchestrator}
-                    disabled={isOrchestrating}
-                    sessionTitle={activeWorkflow?.name}
-                    modelLabel={orchestratorModel}
-                    onClose={() => setChatOpen(false)}
-                    onViewRun={(runId) => {
-                      void enterSnapshotView(runId);
-                    }}
-                  />
+                <RightPanelTabs
+                  mode={rightPanelMode}
+                  setMode={setRightPanelMode}
+                  showChatActivityDot={isOrchestrating && rightPanelMode !== 'chat'}
+                />
+                <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
+                  {rightPanelMode === 'chat' ? (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        inset: 0,
+                        display: 'flex',
+                        flexDirection: 'column',
+                      }}
+                    >
+                      <ChatPanel
+                        messages={messages}
+                        onSend={handleSend}
+                        onCancel={cancelOrchestrator}
+                        disabled={isOrchestrating}
+                        workflowTitle={activeWorkflow?.name}
+                        modelLabel={orchestratorModel}
+                        onClearContext={clearChatContext}
+                        onViewRun={(runId) => {
+                          // Snapshot view renders inside the workspace tab —
+                          // flip back from chat so the run panel is actually
+                          // visible after the click.
+                          setRightPanelMode('workspace');
+                          void enterSnapshotView(runId);
+                        }}
+                      />
+                    </div>
+                  ) : (
+                    <>
+                      {viewingRun && (() => {
+                        const snapDetail = snapshotToDetail(viewingRun);
+                        const snapNode = snapDetail?.nodes.find(
+                          (n) => n.id === selectedSnapshotNodeId,
+                        );
+                        if (snapDetail && snapNode) {
+                          return (
+                            <NodePanel
+                              node={snapNode}
+                              workflow={snapDetail}
+                              onClose={() => setSelectedSnapshotNodeId(null)}
+                              onChange={() => {}}
+                              readOnly
+                              pinnedRun={viewingRun}
+                              // Pass currentRun so the trace tab streams live
+                              // events when this snapshot view is bound to an
+                              // in-flight run (rerun-from-snapshot, or recent-run
+                              // click on a running run). Without it, the trace
+                              // would fall back to viewingRun.node_runs — empty
+                              // for runs that haven't materialised yet.
+                              currentRun={currentRun}
+                              onSendErrorToOrchestrator={sendErrorToOrchestrator}
+                            />
+                          );
+                        }
+                        return (
+                          <SnapshotRunPanel
+                            run={viewingRun}
+                            onExit={exitSnapshotView}
+                            // Block rerun while any run on this workflow is in
+                            // flight — server has no guard yet, so we hold the
+                            // line in the UI to avoid stacking parallel runs.
+                            runInProgress={
+                              !!currentRun &&
+                              currentRun.workflow_id === viewingRun.workflow_id &&
+                              (currentRun.status === 'running' ||
+                                currentRun.status === 'pending')
+                            }
+                            onRerun={async (inputs) => {
+                              const newRun = await api.rerunFromSnapshot(
+                                viewingRun.id,
+                                inputs,
+                              );
+                              // The rerun executes against the snapshot's graph
+                              // (which may diverge from live), so the live canvas
+                              // can't show its progress reliably. Stay in
+                              // snapshot view — swap viewingRun to the new run
+                              // and attach the WS so node-state dots animate on
+                              // the snapshot canvas in real time. The user exits
+                              // via "← live" on the SnapshotBanner whenever
+                              // they're done watching.
+                              setViewingRun(newRun);
+                              setSelectedSnapshotNodeId(null);
+                              attachToRunRef.current(
+                                newRun.id,
+                                newRun.workflow_id,
+                                newRun.status,
+                                /* executesOnSnapshot */ true,
+                              );
+                            }}
+                          />
+                        );
+                      })()}
+                      {!viewingRun && detail && selectedNode && (
+                        <NodePanel
+                          node={selectedNode}
+                          workflow={detail}
+                          onClose={() => setSelectedNodeId(null)}
+                          onChange={refreshDetail}
+                          currentRun={currentRun}
+                          onSendErrorToOrchestrator={sendErrorToOrchestrator}
+                        />
+                      )}
+                      {!viewingRun && detail && !selectedNode && (
+                        <RunPanel
+                          workflow={detail}
+                          currentRun={currentRun}
+                          onStart={startRun}
+                          onCancel={cancelRun}
+                          onViewRunOnCanvas={enterSnapshotView}
+                          orchestrating={isOrchestrating}
+                        />
+                      )}
+                      {!viewingRun && !detail && (
+                        <div
+                          style={{
+                            position: 'absolute',
+                            inset: 0,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: 12,
+                            color: 'var(--ink-4)',
+                            padding: 24,
+                          }}
+                        >
+                          <div className="serif" style={{ fontStyle: 'italic', fontSize: 22, color: 'var(--ink-3)' }}>
+                            no project yet.
+                          </div>
+                          <div style={{ fontSize: 13, maxWidth: 420, textAlign: 'center', lineHeight: 1.6 }}>
+                            open the{' '}
+                            <button
+                              type="button"
+                              onClick={() => setRightPanelMode('chat')}
+                              className="italic-em"
+                              style={{
+                                background: 'none',
+                                border: 0,
+                                padding: 0,
+                                color: 'var(--accent-ink)',
+                                cursor: 'pointer',
+                                font: 'inherit',
+                                fontStyle: 'italic',
+                              }}
+                            >
+                              chat
+                            </button>{' '}
+                            tab and describe a problem, or click{' '}
+                            <span className="italic-em">new project</span> to start fresh.
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
                 </div>
               </div>
-            )}
+            </div>
           </>
         )}
       </main>
     </div>
+  );
+}
+
+function RightPanelTabs({
+  mode,
+  setMode,
+  showChatActivityDot,
+}: {
+  mode: 'workspace' | 'chat';
+  setMode: (m: 'workspace' | 'chat') => void;
+  /** When true, paint a small accent dot on the chat tab to signal that
+   * the orchestrator is doing work the user can't currently see. */
+  showChatActivityDot: boolean;
+}) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'stretch',
+        gap: 0,
+        padding: '0 12px',
+        borderBottom: '1px solid var(--rule)',
+        background: 'var(--paper-2)',
+        flexShrink: 0,
+      }}
+    >
+      <PanelTabButton
+        active={mode === 'workspace'}
+        onClick={() => setMode('workspace')}
+      >
+        workspace
+      </PanelTabButton>
+      <PanelTabButton
+        active={mode === 'chat'}
+        onClick={() => setMode('chat')}
+      >
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          chat
+          {showChatActivityDot && (
+            <span
+              aria-label="orchestrator is working"
+              style={{
+                width: 5,
+                height: 5,
+                borderRadius: 999,
+                background: 'var(--accent)',
+                animation: 'pulse 1.4s ease-in-out infinite',
+              }}
+            />
+          )}
+        </span>
+      </PanelTabButton>
+    </div>
+  );
+}
+
+function PanelTabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="smallcaps"
+      aria-pressed={active}
+      style={{
+        background: 'transparent',
+        border: 0,
+        padding: '10px 14px',
+        cursor: 'pointer',
+        color: active ? 'var(--ink)' : 'var(--ink-4)',
+        fontSize: 10.5,
+        letterSpacing: '0.14em',
+        textTransform: 'uppercase',
+        borderBottom: active
+          ? '1.5px solid var(--accent)'
+          : '1.5px solid transparent',
+        marginBottom: -1,
+        transition: 'color .15s, border-color .15s',
+      }}
+    >
+      {children}
+    </button>
   );
 }
