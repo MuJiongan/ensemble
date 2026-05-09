@@ -12,6 +12,8 @@ from __future__ import annotations
 import itertools
 import json
 import os
+import sys
+import traceback
 from typing import Callable, Iterator
 import httpx
 
@@ -46,7 +48,7 @@ def _parse_sse_lines(lines: Iterator[str]) -> Iterator[tuple]:
             break
         try:
             chunk = json.loads(data_str)
-        except Exception:
+        except json.JSONDecodeError:
             continue
 
         u = chunk.get("usage")
@@ -259,7 +261,7 @@ def call_llm(
                 fn_name = tc.get("function", {}).get("name", "")
                 try:
                     fn_args = json.loads(tc.get("function", {}).get("arguments") or "{}")
-                except Exception:
+                except json.JSONDecodeError:
                     fn_args = {}
                 _emit(
                     {
@@ -278,6 +280,10 @@ def call_llm(
                     try:
                         result = fn(**fn_args)
                     except Exception as e:
+                        # Surface the full traceback to stderr so the runner
+                        # subprocess parent can capture it for diagnostics —
+                        # the LLM only sees the brief error string.
+                        traceback.print_exc(file=sys.stderr)
                         result = {"error": f"{type(e).__name__}: {e}"}
                 tool_calls_made.append({"name": fn_name, "args": fn_args, "result": result})
                 messages.append(

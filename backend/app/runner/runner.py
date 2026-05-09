@@ -123,7 +123,7 @@ def run_workflow_streaming(
             continue
         try:
             event = json.loads(line)
-        except Exception:
+        except json.JSONDecodeError:
             continue
         ev_mod.append_event(run_id, event)
         if event.get("type") == "run_finished":
