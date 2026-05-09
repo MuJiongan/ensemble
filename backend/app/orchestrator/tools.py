@@ -140,16 +140,8 @@ def add_node(
 
 def remove_node(db: DbSession, wid: str, *, node_id: str) -> dict:
     n = _get_node(db, wid, node_id)
-    # Cascade: remove edges touching this node and clear in/out pointers.
-    db.query(models.Edge).filter(
-        (models.Edge.from_node_id == node_id) | (models.Edge.to_node_id == node_id)
-    ).delete(synchronize_session=False)
-    w = _get_workflow(db, wid)
-    if w.input_node_id == node_id:
-        w.input_node_id = None
-    if w.output_node_id == node_id:
-        w.output_node_id = None
-    db.delete(n)
+    from app.services.graph import cascade_delete_node
+    cascade_delete_node(db, n)
     db.commit()
     return {"removed_node_id": node_id}
 
@@ -343,9 +335,8 @@ def run_workflow(
     """
     # Lazy imports to avoid a load-time cycle between the orchestrator package
     # and the api routers.
-    import threading
-    from app.api.runs import _serialize_workflow, _execute_run
-    from app.runner import events as ev_mod
+    from app.api.runs import _serialize_workflow
+    from app.runner import service as run_service
 
     w = _get_workflow(db, wid)
 
@@ -396,19 +387,10 @@ def run_workflow(
     db.refresh(run)
     run_id = run.id
 
-    # Pre-create the run state so any WS subscriber that connects mid-run
-    # doesn't race the first event.
-    ev_mod.get_or_create(run_id)
-
-    # Spawn the run in a daemon thread — same pattern the REST endpoint uses.
     # The agent loop will yield a `run_started` chat event with this run_id
     # (so the frontend can attach), then call `wait_for_run` to block on
     # completion before returning the final result to the LLM.
-    threading.Thread(
-        target=_execute_run,
-        args=(run_id, wf_data, inputs, default_model),
-        daemon=True,
-    ).start()
+    run_service.start_run(run_id, wf_data, inputs, default_model)
 
     return {"run_id": run_id, "status": "running"}
 

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app import models, schemas
 from app.api.workflows import to_node_out
+from app.services.graph import cascade_delete_node
 
 router = APIRouter(prefix="/api", tags=["nodes"])
 
@@ -61,16 +62,6 @@ def delete_node(nid: str, db: Session = Depends(get_db)):
     n = db.get(models.Node, nid)
     if not n:
         raise HTTPException(404)
-    db.query(models.Edge).filter(
-        (models.Edge.from_node_id == nid) | (models.Edge.to_node_id == nid)
-    ).delete(synchronize_session=False)
-    # Clear input/output pointers if they referenced this node.
-    w = db.get(models.Workflow, n.workflow_id)
-    if w:
-        if w.input_node_id == nid:
-            w.input_node_id = None
-        if w.output_node_id == nid:
-            w.output_node_id = None
-    db.delete(n)
+    cascade_delete_node(db, n)
     db.commit()
     return {"ok": True}

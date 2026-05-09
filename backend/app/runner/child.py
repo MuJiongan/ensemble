@@ -41,6 +41,7 @@ import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, FIRST_COMPLETED, wait
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -64,47 +65,37 @@ def _install_sigterm_handler() -> None:
         pass
 
 
-def main() -> None:
-    _install_sigterm_handler()
-    raw = sys.stdin.read()
-    payload = json.loads(raw)
-
+def _read_payload() -> dict:
+    """Read the workflow payload from stdin and apply its env-vars in place."""
+    payload = json.loads(sys.stdin.read())
     for k, v in (payload.get("env") or {}).items():
         if v:
             os.environ[k] = v
+    return payload
 
+
+@dataclass
+class _Schedule:
+    """Pre-computed DAG state used to drive node scheduling."""
+    nodes_by_id: dict[str, dict]
+    incoming: dict[str, list[dict]]
+    successors: dict[str, set[str]]
+    remaining: dict[str, int]
+    order: list[str]
+
+
+def _build_schedule(workflow: dict) -> _Schedule:
+    """Topo-sort + index the workflow so the scheduler can dispatch nodes
+    as soon as all of their inputs are satisfied."""
     from app.runner.runner import topo_sort
-    from app.runner.ctx import Ctx
-
-    workflow = payload["workflow"]
-    user_inputs = payload.get("inputs") or {}
-    default_model = payload.get("default_model") or ""
-    workdir = Path(payload["workdir"])
-    workdir.mkdir(parents=True, exist_ok=True)
 
     nodes = workflow.get("nodes") or []
     edges = workflow.get("edges") or []
-    input_node_id = workflow.get("input_node_id")
-    output_node_id = workflow.get("output_node_id")
-
     nodes_by_id = {n["id"]: n for n in nodes}
+
     incoming: dict[str, list[dict]] = {}
     for e in edges:
         incoming.setdefault(e["to_node_id"], []).append(e)
-
-    try:
-        order = topo_sort(nodes, edges)
-    except Exception as e:
-        _emit(
-            {
-                "type": "run_finished",
-                "status": "error",
-                "error": str(e),
-                "outputs": {},
-                "total_cost": 0.0,
-            }
-        )
-        return
 
     successors: dict[str, set[str]] = {nid: set() for nid in nodes_by_id}
     remaining: dict[str, int] = {nid: 0 for nid in nodes_by_id}
@@ -116,234 +107,302 @@ def main() -> None:
             successors[f].add(t)
             remaining[t] += 1
 
-    _emit({"type": "run_started", "node_count": len(order), "order": order})
+    order = topo_sort(nodes, edges)
+    return _Schedule(nodes_by_id, incoming, successors, remaining, order)
 
-    node_outputs: dict[str, dict] = {}
-    state_lock = threading.Lock()
-    terminate_event = threading.Event()
-    shared: dict = {"error": None, "cancel_reason": None, "total_cost": 0.0}
 
-    def _run_node(node_id: str) -> None:
-        if terminate_event.is_set():
-            return
+@dataclass
+class _RunState:
+    """Mutable shared state threaded through the per-node worker."""
+    sched: _Schedule
+    user_inputs: dict
+    default_model: str
+    workdir: Path
+    input_node_id: str | None
+    output_node_id: str | None
+    node_outputs: dict[str, dict] = field(default_factory=dict)
+    state_lock: threading.Lock = field(default_factory=threading.Lock)
+    terminate_event: threading.Event = field(default_factory=threading.Event)
+    error: str | None = None
+    cancel_reason: str | None = None
+    total_cost: float = 0.0
 
-        node = nodes_by_id[node_id]
-        input_ports = node.get("inputs") or []
-        output_ports = node.get("outputs") or []
-        config = node.get("config") or {}
-        node_model = config.get("model") or default_model
 
-        if node_id == input_node_id:
-            node_inputs: dict = dict(user_inputs)
-        else:
-            node_inputs = {p["name"]: None for p in input_ports}
-            with state_lock:
-                for e in incoming.get(node_id, []):
-                    up = node_outputs.get(e["from_node_id"])
-                    val = None if up is None else up.get(e["from_output"])
-                    node_inputs[e["to_input"]] = val
+def _gather_node_inputs(state: _RunState, node_id: str, input_ports: list[dict]) -> dict:
+    """Resolve a node's inputs from upstream outputs (or the user-provided
+    inputs for the designated input node)."""
+    if node_id == state.input_node_id:
+        return dict(state.user_inputs)
+    inputs = {p["name"]: None for p in input_ports}
+    with state.state_lock:
+        for e in state.sched.incoming.get(node_id, []):
+            up = state.node_outputs.get(e["from_node_id"])
+            inputs[e["to_input"]] = None if up is None else up.get(e["from_output"])
+    return inputs
 
-        skip = any(
-            p.get("required", True) and node_inputs.get(p["name"]) is None
-            for p in input_ports
-        )
 
-        if skip:
-            null_out = {p["name"]: None for p in output_ports}
-            with state_lock:
-                node_outputs[node_id] = null_out
-            _emit(
-                {
-                    "type": "node_finished",
-                    "node_id": node_id,
-                    "status": "skipped",
-                    "inputs": node_inputs,
-                    "outputs": null_out,
-                    "logs": [],
-                    "llm_calls": [],
-                    "tool_calls": [],
-                    "error": None,
-                    "duration_ms": 0,
-                    "cost": 0.0,
-                }
-            )
-            return
+def _emit_node_skipped(node_id: str, inputs: dict, output_ports: list[dict]) -> dict:
+    """Emit a node_finished(skipped) event and return the null-output dict."""
+    null_out = {p["name"]: None for p in output_ports}
+    _emit({
+        "type": "node_finished",
+        "node_id": node_id,
+        "status": "skipped",
+        "inputs": inputs,
+        "outputs": null_out,
+        "logs": [],
+        "llm_calls": [],
+        "tool_calls": [],
+        "error": None,
+        "duration_ms": 0,
+        "cost": 0.0,
+    })
+    return null_out
 
-        _emit({"type": "node_started", "node_id": node_id, "inputs": node_inputs})
 
-        def _on_event(ev: dict, _nid: str = node_id) -> None:
-            ev_payload = dict(ev)
-            ev_payload.setdefault("node_id", _nid)
-            _emit(ev_payload)
+def _execute_node(node: dict, ctx, inputs: dict) -> dict:
+    """Exec the node's user code and return its (port-normalised) outputs.
+    Raises if the code is malformed or returns the wrong shape."""
+    ns: dict = {}
+    exec(node.get("code") or "", ns, ns)
+    run_fn = ns.get("run")
+    if not callable(run_fn):
+        raise RuntimeError("node code must define `run(inputs, ctx)` function")
+    result = run_fn(inputs, ctx)
+    if not isinstance(result, dict):
+        raise RuntimeError(f"node returned {type(result).__name__}, expected dict")
+    output_ports = node.get("outputs") or []
+    if output_ports:
+        return {p["name"]: result.get(p["name"]) for p in output_ports}
+    return result
 
-        ctx = Ctx(
-            workdir=workdir,
-            default_model=node_model,
-            on_event=_on_event,
-        )
-        start = time.time()
-        try:
-            ns: dict = {}
-            exec(node.get("code") or "", ns, ns)
-            run_fn = ns.get("run")
-            if not callable(run_fn):
-                raise RuntimeError("node code must define `run(inputs, ctx)` function")
-            result = run_fn(node_inputs, ctx)
-            if not isinstance(result, dict):
-                raise RuntimeError(
-                    f"node returned {type(result).__name__}, expected dict"
-                )
 
-            if output_ports:
-                normalized = {p["name"]: result.get(p["name"]) for p in output_ports}
-            else:
-                normalized = result
+def _record_node_success(
+    state: _RunState, node_id: str, inputs: dict, outputs: dict, ctx, start: float
+) -> None:
+    cost = sum(float(c.get("cost", 0.0) or 0.0) for c in ctx.llm_calls)
+    with state.state_lock:
+        state.node_outputs[node_id] = outputs
+        state.total_cost += cost
+    _emit({
+        "type": "node_finished",
+        "node_id": node_id,
+        "status": "success",
+        "inputs": inputs,
+        "outputs": outputs,
+        "logs": ctx.logs,
+        "llm_calls": ctx.llm_calls,
+        "tool_calls": ctx.tool_calls,
+        "error": None,
+        "duration_ms": int((time.time() - start) * 1000),
+        "cost": cost,
+    })
 
-            cost = sum(float(c.get("cost", 0.0) or 0.0) for c in ctx.llm_calls)
-            with state_lock:
-                node_outputs[node_id] = normalized
-                shared["total_cost"] += cost
-            _emit(
-                {
-                    "type": "node_finished",
-                    "node_id": node_id,
-                    "status": "success",
-                    "inputs": node_inputs,
-                    "outputs": normalized,
-                    "logs": ctx.logs,
-                    "llm_calls": ctx.llm_calls,
-                    "tool_calls": ctx.tool_calls,
-                    "error": None,
-                    "duration_ms": int((time.time() - start) * 1000),
-                    "cost": cost,
-                }
-            )
-        except Exception as e:
-            err = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
-            null_out = {p["name"]: None for p in output_ports}
-            cost = sum(float(c.get("cost", 0.0) or 0.0) for c in ctx.llm_calls)
-            with state_lock:
-                node_outputs[node_id] = null_out
-                shared["total_cost"] += cost
-                if shared["error"] is None:
-                    shared["error"] = err
-            terminate_event.set()
-            _emit(
-                {
-                    "type": "node_finished",
-                    "node_id": node_id,
-                    "status": "error",
-                    "inputs": node_inputs,
-                    "outputs": null_out,
-                    "logs": ctx.logs,
-                    "llm_calls": ctx.llm_calls,
-                    "tool_calls": ctx.tool_calls,
-                    "error": err,
-                    "duration_ms": int((time.time() - start) * 1000),
-                    "cost": cost,
-                }
-            )
 
-    max_workers = max(1, len(order))
-    pool = ThreadPoolExecutor(max_workers=max_workers)
+def _record_node_error(
+    state: _RunState, node_id: str, inputs: dict, output_ports: list[dict],
+    ctx, start: float, exc: BaseException,
+) -> None:
+    err = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+    null_out = {p["name"]: None for p in output_ports}
+    cost = sum(float(c.get("cost", 0.0) or 0.0) for c in ctx.llm_calls)
+    with state.state_lock:
+        state.node_outputs[node_id] = null_out
+        state.total_cost += cost
+        if state.error is None:
+            state.error = err
+    state.terminate_event.set()
+    _emit({
+        "type": "node_finished",
+        "node_id": node_id,
+        "status": "error",
+        "inputs": inputs,
+        "outputs": null_out,
+        "logs": ctx.logs,
+        "llm_calls": ctx.llm_calls,
+        "tool_calls": ctx.tool_calls,
+        "error": err,
+        "duration_ms": int((time.time() - start) * 1000),
+        "cost": cost,
+    })
+
+
+def _run_node(state: _RunState, node_id: str) -> None:
+    """Execute one node: gather inputs, optionally skip, exec user code,
+    record outputs, and emit a node_finished event with the run trace."""
+    if state.terminate_event.is_set():
+        return
+
+    from app.runner.ctx import Ctx
+
+    node = state.sched.nodes_by_id[node_id]
+    input_ports = node.get("inputs") or []
+    output_ports = node.get("outputs") or []
+    config = node.get("config") or {}
+    node_model = config.get("model") or state.default_model
+
+    inputs = _gather_node_inputs(state, node_id, input_ports)
+
+    skip = any(
+        p.get("required", True) and inputs.get(p["name"]) is None
+        for p in input_ports
+    )
+    if skip:
+        null_out = _emit_node_skipped(node_id, inputs, output_ports)
+        with state.state_lock:
+            state.node_outputs[node_id] = null_out
+        return
+
+    _emit({"type": "node_started", "node_id": node_id, "inputs": inputs})
+
+    def _on_event(ev: dict, _nid: str = node_id) -> None:
+        ev_payload = dict(ev)
+        ev_payload.setdefault("node_id", _nid)
+        _emit(ev_payload)
+
+    ctx = Ctx(workdir=state.workdir, default_model=node_model, on_event=_on_event)
+    start = time.time()
+    try:
+        outputs = _execute_node(node, ctx, inputs)
+        _record_node_success(state, node_id, inputs, outputs, ctx, start)
+    except Exception as e:
+        _record_node_error(state, node_id, inputs, output_ports, ctx, start, e)
+
+
+def _emit_synthetic_node_error(state: _RunState, node_id: str, exc: BaseException) -> None:
+    """A node thread escaped its own try/except — emit a synthetic
+    node_finished so the frontend dot doesn't stay stuck on running."""
+    err_msg = f"{type(exc).__name__}: {exc}"
+    if state.error is None:
+        state.error = err_msg
+    _emit({
+        "type": "node_finished",
+        "node_id": node_id,
+        "status": "error",
+        "inputs": {},
+        "outputs": {},
+        "logs": [],
+        "llm_calls": [],
+        "tool_calls": [],
+        "error": err_msg,
+        "duration_ms": 0,
+        "cost": 0.0,
+    })
+
+
+def _drive_scheduler(state: _RunState, pool: ThreadPoolExecutor) -> None:
+    """Submit nodes whose dependencies are satisfied; advance as each
+    finishes. Bails on KeyboardInterrupt (caller marks the run cancelled)."""
     in_flight: dict = {}
+    for nid in state.sched.order:
+        if state.sched.remaining[nid] == 0:
+            in_flight[pool.submit(_run_node, state, nid)] = nid
+
+    while in_flight:
+        done, _ = wait(list(in_flight.keys()), return_when=FIRST_COMPLETED)
+        for fut in done:
+            finished_id = in_flight.pop(fut)
+            exc = fut.exception()
+            if exc is not None:
+                # Most failures emit `node_finished` from inside `_run_node`'s
+                # own try/except. Exceptions outside that block (Ctx build,
+                # event emit) escape here.
+                _emit_synthetic_node_error(state, finished_id, exc)
+                state.terminate_event.set()
+                continue
+            if state.terminate_event.is_set():
+                continue
+            for s in state.sched.successors[finished_id]:
+                state.sched.remaining[s] -= 1
+                if state.sched.remaining[s] == 0:
+                    in_flight[pool.submit(_run_node, state, s)] = s
+
+
+def _emit_run_finished(state: _RunState) -> None:
+    """Emit the terminal run_finished event, choosing status from accumulated
+    state. Force-exits on cancel so any node thread blocked in an LLM stream
+    can't keep the subprocess alive."""
+    final_outputs = (
+        state.node_outputs.get(state.output_node_id, {}) if state.output_node_id else {}
+    )
+
+    if state.cancel_reason is not None:
+        _emit({
+            "type": "run_finished",
+            "status": "cancelled",
+            "error": state.cancel_reason,
+            "outputs": final_outputs,
+            "total_cost": state.total_cost,
+        })
+        # Force-exit — _exit skips finalizers but stdout was just flushed
+        # by _emit so the parent has the cancelled event in hand.
+        os._exit(0)
+
+    if state.error is not None:
+        _emit({
+            "type": "run_finished",
+            "status": "error",
+            "error": state.error,
+            "outputs": final_outputs,
+            "total_cost": state.total_cost,
+        })
+        return
+
+    _emit({
+        "type": "run_finished",
+        "status": "success",
+        "error": None,
+        "outputs": final_outputs,
+        "total_cost": state.total_cost,
+    })
+
+
+def main() -> None:
+    _install_sigterm_handler()
+    payload = _read_payload()
+    workflow = payload["workflow"]
+    workdir = Path(payload["workdir"])
+    workdir.mkdir(parents=True, exist_ok=True)
 
     try:
-        for nid in order:
-            if remaining[nid] == 0:
-                in_flight[pool.submit(_run_node, nid)] = nid
+        sched = _build_schedule(workflow)
+    except Exception as e:
+        _emit({
+            "type": "run_finished",
+            "status": "error",
+            "error": str(e),
+            "outputs": {},
+            "total_cost": 0.0,
+        })
+        return
 
-        while in_flight:
-            done, _ = wait(list(in_flight.keys()), return_when=FIRST_COMPLETED)
-            for fut in done:
-                finished_id = in_flight.pop(fut)
-                exc = fut.exception()
-                if exc is not None:
-                    # `_run_node` has its own try/except around user code, so
-                    # most failures emit a `node_finished` themselves. But
-                    # exceptions outside that block (e.g. emitting
-                    # `node_started`, building the Ctx) escape here and
-                    # would leave the frontend dot stuck on running. Emit a
-                    # synthetic node_finished so subscribers can resolve the
-                    # state.
-                    err_msg = f"{type(exc).__name__}: {exc}"
-                    if shared["error"] is None:
-                        shared["error"] = err_msg
-                    _emit(
-                        {
-                            "type": "node_finished",
-                            "node_id": finished_id,
-                            "status": "error",
-                            "inputs": {},
-                            "outputs": {},
-                            "logs": [],
-                            "llm_calls": [],
-                            "tool_calls": [],
-                            "error": err_msg,
-                            "duration_ms": 0,
-                            "cost": 0.0,
-                        }
-                    )
-                    terminate_event.set()
-                    continue
-                if terminate_event.is_set():
-                    continue
-                for s in successors[finished_id]:
-                    remaining[s] -= 1
-                    if remaining[s] == 0:
-                        in_flight[pool.submit(_run_node, s)] = s
+    state = _RunState(
+        sched=sched,
+        user_inputs=payload.get("inputs") or {},
+        default_model=payload.get("default_model") or "",
+        workdir=workdir,
+        input_node_id=workflow.get("input_node_id"),
+        output_node_id=workflow.get("output_node_id"),
+    )
+
+    _emit({"type": "run_started", "node_count": len(sched.order), "order": sched.order})
+
+    pool = ThreadPoolExecutor(max_workers=max(1, len(sched.order)))
+    try:
+        _drive_scheduler(state, pool)
     except KeyboardInterrupt:
-        shared["cancel_reason"] = "cancelled by user"
-        terminate_event.set()
+        state.cancel_reason = "cancelled by user"
+        state.terminate_event.set()
 
-    cancelled = shared["cancel_reason"] is not None
     # On cancel, don't wait for in-flight node threads — they may be blocked
     # in `ctx.call_llm` (httpx with no timeout, deliberately, so streams don't
     # truncate). Python signals are delivered to the main thread only, so a
     # node thread won't see SIGTERM. Waiting here means the user has to click
-    # cancel a second time to deliver another SIGTERM that finally kills the
-    # process. Skip the wait and forcibly exit below.
+    # cancel a second time; skip the wait and forcibly exit below.
+    cancelled = state.cancel_reason is not None
     pool.shutdown(wait=not cancelled, cancel_futures=cancelled)
 
-    final_outputs = node_outputs.get(output_node_id, {}) if output_node_id else {}
-
-    if cancelled:
-        _emit(
-            {
-                "type": "run_finished",
-                "status": "cancelled",
-                "error": shared["cancel_reason"],
-                "outputs": final_outputs,
-                "total_cost": shared["total_cost"],
-            }
-        )
-        # Force-exit — any node thread still blocked in an LLM stream would
-        # otherwise keep this subprocess alive and the parent would never see
-        # EOF on stdout. _exit skips finalizers but stdout was just flushed
-        # by _emit so the parent has the cancelled event in hand.
-        os._exit(0)
-
-    if shared["error"] is not None:
-        _emit(
-            {
-                "type": "run_finished",
-                "status": "error",
-                "error": shared["error"],
-                "outputs": final_outputs,
-                "total_cost": shared["total_cost"],
-            }
-        )
-        return
-
-    _emit(
-        {
-            "type": "run_finished",
-            "status": "success",
-            "error": None,
-            "outputs": final_outputs,
-            "total_cost": shared["total_cost"],
-        }
-    )
+    _emit_run_finished(state)
 
 
 if __name__ == "__main__":

@@ -1,13 +1,12 @@
 from __future__ import annotations
-import threading
-from datetime import datetime
+import sys
+import traceback
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
-from app.db import get_db, SessionLocal
+from app.db import get_db
 from app import models, schemas
-from app.runner import events as ev_mod
-from app.runner.runner import run_workflow_streaming, materialize_run_result
+from app.runner import service as run_service
 
 router = APIRouter(prefix="/api", tags=["runs"])
 
@@ -43,41 +42,6 @@ def _serialize_workflow(w: models.Workflow) -> dict:
             for e in w.edges
         ],
     }
-
-
-def _execute_run(run_id: str, wf_data: dict, inputs: dict, default_model: str) -> None:
-    """Run streaming, then persist the materialized result + node runs to the DB."""
-    run_workflow_streaming(run_id, wf_data, inputs, default_model)
-    result = materialize_run_result(run_id)
-    db = SessionLocal()
-    try:
-        run = db.get(models.Run, run_id)
-        if not run:
-            return
-        run.status = result.get("status", "error")
-        run.outputs = result.get("outputs") or {}
-        run.error = result.get("error")
-        run.total_cost = result.get("total_cost", 0.0) or 0.0
-        run.ended_at = datetime.utcnow()
-        for nr in result.get("node_runs") or []:
-            db.add(
-                models.NodeRun(
-                    run_id=run_id,
-                    node_id=nr["node_id"],
-                    status=nr.get("status") or "error",
-                    inputs=nr.get("inputs") or {},
-                    outputs=nr.get("outputs") or {},
-                    logs=nr.get("logs") or [],
-                    llm_calls=nr.get("llm_calls") or [],
-                    tool_calls=nr.get("tool_calls") or [],
-                    error=nr.get("error"),
-                    duration_ms=int(nr.get("duration_ms") or 0),
-                    cost=float(nr.get("cost") or 0.0),
-                )
-            )
-        db.commit()
-    finally:
-        db.close()
 
 
 def _run_to_out(run: models.Run, node_runs) -> schemas.RunOut:
@@ -141,14 +105,7 @@ def start_run(wid: str, body: schemas.RunStartIn, db: Session = Depends(get_db))
     if not default_model:
         default_model = "anthropic/claude-sonnet-4.6"
 
-    # Pre-create the run state so a WS client subscribing immediately doesn't race.
-    ev_mod.get_or_create(run.id)
-
-    threading.Thread(
-        target=_execute_run,
-        args=(run.id, wf_data, body.inputs, default_model),
-        daemon=True,
-    ).start()
+    run_service.start_run(run.id, wf_data, body.inputs, default_model)
 
     return _run_to_out(run, [])
 
@@ -191,19 +148,14 @@ def rerun_from_snapshot(rid: str, body: schemas.RunStartIn, db: Session = Depend
     db.commit()
     db.refresh(run)
 
-    ev_mod.get_or_create(run.id)
-    threading.Thread(
-        target=_execute_run,
-        args=(run.id, wf_data, body.inputs, default_model),
-        daemon=True,
-    ).start()
+    run_service.start_run(run.id, wf_data, body.inputs, default_model)
     return _run_to_out(run, [])
 
 
 @router.post("/runs/{rid}/cancel")
 def cancel_run(rid: str):
     """SIGTERM the run's subprocess, if any. Idempotent."""
-    ok = ev_mod.cancel(rid)
+    ok = run_service.cancel(rid)
     return {"cancelled": ok}
 
 
@@ -232,11 +184,21 @@ async def ws_run_events(websocket: WebSocket, rid: str):
     """Stream per-run events (backlog + live tail) until the run finishes."""
     await websocket.accept()
     try:
-        async for event in ev_mod.subscribe(rid):
+        async for event in run_service.subscribe(rid):
             await websocket.send_json(event)
     except WebSocketDisconnect:
         return
-    except Exception:
+    except Exception as e:
+        # Surface the traceback to stderr for diagnostics, then send a
+        # structured error envelope before closing so the client can render
+        # something more useful than a silent disconnect.
+        traceback.print_exc(file=sys.stderr)
+        try:
+            await websocket.send_json(
+                {"type": "error", "error": f"{type(e).__name__}: {e}"}
+            )
+        except Exception:
+            pass
         return
     finally:
         try:
