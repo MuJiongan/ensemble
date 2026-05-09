@@ -58,7 +58,7 @@ Single-user, localhost-only for v1.
 - Per-turn it injects a fresh `[current graph state]` system message — every node's id/name/description/ports/model/tools/`user_edited` flag, every edge, and the input/output node ids. Code is intentionally omitted; the orchestrator pulls it via `view_node_details` when needed.
 - Has access to live workflow state across turns and can trigger workflow runs itself via `run_workflow`. The call returns immediately with `{run_id, status: "running"}`; the agent loop emits `run_started` (frontend attaches the run panel to the live WS), then blocks on `wait_for_run` for the materialised final result before letting the LLM see the tool result. On success the LLM sees only `{run_id, status, total_cost}` — outputs are deliberately not relayed (the user reads them in the run panel); on failure the prompt directs `view_run(run_id)` to fetch error details. Only one run can be in flight per workflow.
 - Per-session cancellation: a new user message supersedes the in-flight turn; an explicit `POST /api/sessions/{sid}/cancel` signals it as a clean cancel. Mid-stream cancels are detected at LLM-round, tool-call, and `wait_for_run` poll boundaries; if a tool batch was already started, cancellation results are synthesised for the remaining tool calls so message history stays well-formed. Cancelling while waiting on a run leaves the run executing in the background — the next turn can pick it up via `view_run`.
-- Hard cap of 12 LLM rounds per turn.
+- No turn round cap — a runaway agent loop is a cancel-button concern, matching the node-runtime `ctx.call_llm` model.
 
 ### 5.2 Node runtime
 Contract:

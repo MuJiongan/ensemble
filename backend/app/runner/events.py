@@ -63,6 +63,12 @@ def set_proc(run_id: str, proc: subprocess.Popen) -> None:
         st.proc = proc
 
 
+def discard(run_id: str) -> None:
+    """Forget any in-memory state for a finished run. No-op if absent."""
+    with _REGISTRY_LOCK:
+        _RUNS.pop(run_id, None)
+
+
 def cancel(run_id: str) -> bool:
     """Best-effort: SIGTERM the run's subprocess. Returns True if a signal was sent."""
     st = _RUNS.get(run_id)

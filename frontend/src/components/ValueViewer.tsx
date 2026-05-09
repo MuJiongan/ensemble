@@ -15,7 +15,14 @@ import { Markdown } from './Markdown';
 const MD_HINTS =
   /(^|\n)\s*(#{1,6}\s|[-*+]\s|>\s|\d+\.\s|```)|\*\*[^*]+\*\*|__[^_]+__|\[[^\]]+\]\([^)]+\)|^\|.+\|$/m;
 
+// LaTeX math: $$...$$ display, \(...\) / \[...\] explicit delimiters, or
+// $...$ inline whose body contains a backslash/^/_ (avoids currency false
+// positives like "I owe $5").
+const MATH_HINTS = /\$\$[\s\S]+?\$\$|\\\(|\\\[|\$[^$\n]*[\\^_][^$\n]*\$/;
+
 function looksLikeMarkdown(s: string): boolean {
+  if (s.length < 3) return false;
+  if (MATH_HINTS.test(s)) return true;
   if (s.length < 12) return false;
   return MD_HINTS.test(s);
 }

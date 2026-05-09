@@ -1,5 +1,8 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
 
 /**
  * Renders markdown using the editorial palette: serif body for prose, mono
@@ -17,7 +20,8 @@ export function Markdown({ children, large = false }: { children: string; large?
       }}
     >
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[rehypeKatex]}
         components={{
           p: ({ children }) => <p style={{ margin: '0 0 8px' }}>{children}</p>,
           h1: ({ children }) => (

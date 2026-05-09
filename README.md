@@ -97,28 +97,46 @@ backend/
     runner/
       runner.py            # parent: spawn child, fan events into pub/sub
       child.py             # child: topo + skip rule + per-node exec
+      service.py           # run lifecycle: spawn worker, persist results
       ctx.py               # injected ctx (call_llm, tools, log, workdir)
       tools.py             # tool registry + LLM-tool-calling JSON schemas
       llm.py               # call_llm via OpenRouter (agent loop)
       events.py            # in-memory per-run pub/sub feeding the WebSocket
     orchestrator/
-      agent.py             # SSE turn loop, OpenRouter streaming, cancellation
+      agent/               # SSE turn loop, split into focused modules:
+        __init__.py        #   loop + render_history
+        llm_stream.py      #   OpenRouter SSE call + chunk parsing
+        persistence.py     #   message rows + chat-shape conversion
+        session.py         #   per-session turn cancel registry
       tools.py             # graph-mutation tool surface + per-turn snapshot
       prompt.py            # system prompt + per-turn graph state injection
+    services/
+      graph.py             # shared graph helpers (cascade-delete, etc.)
   tests/
     test_runner.py
     test_orchestrator.py
 frontend/
   src/
     App.tsx
+    appHelpers.ts          # graph-mutating tool set + chat helpers
     api.ts types.ts localSettings.ts
+    notify.ts              # browser notifications on run finish
+    openrouterModels.ts    # cached OpenRouter /models for autocomplete
+    orchestratorStream.ts  # SSE → assistant-bubble reducer
+    runWebSocket.ts        # run WS → CurrentRun reducer + notify
     components/
       TopBar.tsx           # session picker + new / settings / run
       ChatPanel.tsx        # orchestrator chat (SSE)
       Canvas.tsx           # React Flow graph (read-only topology)
+      Hero.tsx             # empty-state landing
       NodePanel.tsx        # code editor + i/o + config + last run
+      NodeIOBlock.tsx      # port shape renderer
+      NodeTraceCard.tsx    # per-node live trace card
       RunPanel.tsx         # input form + live trace + recent runs
+      SnapshotBanner.tsx   # banner shown when viewing a historical run
+      SnapshotRunPanel.tsx # snapshot-pinned run view
+      ModelInput.tsx       # model picker w/ OpenRouter autocomplete
       Settings.tsx         # localStorage-backed key + model defaults
-      JsonView.tsx Markdown.tsx
+      ValueViewer.tsx JsonView.tsx Markdown.tsx
 docs/PRD.md
 ```

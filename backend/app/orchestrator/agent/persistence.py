@@ -8,6 +8,18 @@ from sqlalchemy.orm import Session as DbSession
 from app import models
 
 
+def _is_self_contained_reasoning_block(rd: Any) -> bool:
+    """A reasoning block is portable across turns only if it carries its own
+    content. Pure server-side pointers (e.g. OpenAI Responses ``rs_…`` ids
+    with no inline text) reference items the provider only retains when
+    ``store: true`` — we don't set that, so echoing the id back yields a 400
+    on the next turn from any provider that tries to dereference it.
+    """
+    if not isinstance(rd, dict):
+        return False
+    return bool(rd.get("text") or rd.get("data") or rd.get("signature"))
+
+
 def _persist_user(db: DbSession, sid: str, text: str) -> models.Message:
     m = models.Message(session_id=sid, role="user", content=text)
     db.add(m)
@@ -22,6 +34,7 @@ def _persist_assistant(
     content: str,
     tool_calls: list[dict] | None,
     reasoning_details: list[dict] | None = None,
+    cost: float = 0.0,
 ) -> models.Message:
     m = models.Message(
         session_id=sid,
@@ -29,6 +42,7 @@ def _persist_assistant(
         content=content or "",
         tool_calls=tool_calls or [],
         reasoning_details=reasoning_details or [],
+        cost=cost or 0.0,
     )
     db.add(m)
     db.commit()
@@ -80,10 +94,18 @@ def _history_messages(db: DbSession, sid: str) -> list[dict]:
             if r.tool_calls:
                 msg["tool_calls"] = r.tool_calls
             # Anthropic / OpenRouter require the original reasoning blocks to
-            # be echoed back unmodified before any tool result message — they
-            # enforce ordering of the assistant's content blocks across turns.
+            # be echoed back before any tool result message — they enforce
+            # ordering of the assistant's content blocks across turns. Filter
+            # to blocks that carry their own content; opaque server-side
+            # pointers can't be replayed (see _is_self_contained_reasoning_block).
             if r.reasoning_details:
-                msg["reasoning_details"] = r.reasoning_details
+                rds = [
+                    rd
+                    for rd in r.reasoning_details
+                    if _is_self_contained_reasoning_block(rd)
+                ]
+                if rds:
+                    msg["reasoning_details"] = rds
             out.append(msg)
         elif r.role == "user":
             out.append({"role": "user", "content": r.content or ""})

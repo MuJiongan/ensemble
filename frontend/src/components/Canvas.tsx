@@ -102,7 +102,9 @@ function NodeBlock({ data, selected }: NodeProps) {
   const d = data as NodeData;
   const ins = d.inputs || [];
   const outs = d.outputs || [];
-  const role = d.isInput ? 'input' : d.isOutput ? 'output' : null;
+  const role = d.isInput && d.isOutput
+    ? null
+    : d.isInput ? 'input' : d.isOutput ? 'output' : null;
 
   return (
     <div
@@ -448,17 +450,6 @@ function CanvasInner({ detail, selectedNodeId, onSelectNode, nodeStates }: Canva
         }}
       >
         <span className="smallcaps">canvas</span>
-        <span
-          className="serif"
-          style={{
-            fontStyle: 'italic',
-            fontSize: 13,
-            color: 'var(--ink-3)',
-            marginLeft: 6,
-          }}
-        >
-          — the graph as it stands.
-        </span>
         <span style={{ flex: 1 }} />
         <CanvasLegend />
       </div>

@@ -1140,6 +1140,62 @@ def test_history_messages_echoes_reasoning_details_back(db, workflow):
     assert asst.get("reasoning_details") == rds
 
 
+def test_history_messages_drops_pointer_only_reasoning_blocks(db, workflow):
+    """Reasoning blocks that are pure server-side pointers (e.g. OpenAI
+    Responses ``rs_…`` ids with no inline text/data/signature) must be
+    stripped from the echoed history — the provider rejects them on the
+    next turn because items aren't persisted when ``store`` is false."""
+    sess = models.Session(workflow_id=workflow.id)
+    db.add(sess)
+    db.commit()
+    db.refresh(sess)
+
+    rds = [
+        # Self-contained Anthropic-style block — keep.
+        {"type": "reasoning.text", "text": "thought", "id": "r1", "format": "anthropic-claude-v1"},
+        # Pure server-side pointer — drop.
+        {"type": "reasoning", "id": "rs_0c6428aaf15427270169feb1f299d48197b4ab4f8b3510a417"},
+    ]
+    db.add(models.Message(session_id=sess.id, role="user", content="go"))
+    db.add(
+        models.Message(
+            session_id=sess.id,
+            role="assistant",
+            content="ok",
+            reasoning_details=rds,
+        )
+    )
+    db.commit()
+
+    history = orch_agent._history_messages(db, sess.id)
+    asst = next(m for m in history if m.get("role") == "assistant")
+    assert asst.get("reasoning_details") == [rds[0]]
+
+
+def test_history_messages_omits_reasoning_when_all_blocks_are_pointers(db, workflow):
+    """If every reasoning block is a non-portable pointer, the echoed
+    assistant message should carry no ``reasoning_details`` field at all."""
+    sess = models.Session(workflow_id=workflow.id)
+    db.add(sess)
+    db.commit()
+    db.refresh(sess)
+
+    db.add(models.Message(session_id=sess.id, role="user", content="go"))
+    db.add(
+        models.Message(
+            session_id=sess.id,
+            role="assistant",
+            content="ok",
+            reasoning_details=[{"type": "reasoning", "id": "rs_abc"}],
+        )
+    )
+    db.commit()
+
+    history = orch_agent._history_messages(db, sess.id)
+    asst = next(m for m in history if m.get("role") == "assistant")
+    assert "reasoning_details" not in asst
+
+
 def test_render_history_surfaces_thinking_block(db, workflow):
     """A persisted reasoning_details array should render as a thinking
     ChatBlock at the top of the assistant bubble."""

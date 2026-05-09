@@ -150,6 +150,9 @@ class ChatMessageOut(BaseModel):
     role: str  # "user" | "assistant"
     text: str | None = None
     content: list[dict[str, Any]] | None = None  # for assistant: list of ChatBlockP / ChatBlockTool
+    # OpenRouter-reported USD cost for the assistant round that produced
+    # this bubble. Omitted when 0 / unavailable.
+    cost: float | None = None
 
 
 class SessionMessagesOut(BaseModel):

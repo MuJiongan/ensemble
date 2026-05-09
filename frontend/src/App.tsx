@@ -259,15 +259,18 @@ export default function App() {
     abortStream(activeId);
   };
 
-  /** "new" button — spawn a fresh empty session and focus it. */
-  const handleNew = async () => {
-    const w = await api.createWorkflow(DEFAULT_WORKFLOW_NAME);
-    setWorkflows((prev) => [w, ...prev.filter((p) => p.id !== w.id)]);
-    setActiveId(w.id);
+  /**
+   * "new" button — drop into the Hero empty state without touching the
+   * backend. handleSend's `!wid` branch lazily creates the workflow and
+   * session when the user sends their first message, so we avoid leaving
+   * orphaned "untitled session" rows behind every time someone clicks +.
+   */
+  const handleNew = () => {
+    setActiveId(null);
+    setDetail(null);
     setView('workflow');
     setSelectedNodeId(null);
     setCurrentRun(null);
-    setChatByWorkflow((prev) => ({ ...prev, [w.id]: [] }));
   };
 
   const handleDelete = async (id: string) => {
