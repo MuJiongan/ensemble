@@ -450,17 +450,6 @@ function CanvasInner({ detail, selectedNodeId, onSelectNode, nodeStates }: Canva
         }}
       >
         <span className="smallcaps">canvas</span>
-        <span
-          className="serif"
-          style={{
-            fontStyle: 'italic',
-            fontSize: 13,
-            color: 'var(--ink-3)',
-            marginLeft: 6,
-          }}
-        >
-          — the graph as it stands.
-        </span>
         <span style={{ flex: 1 }} />
         <CanvasLegend />
       </div>

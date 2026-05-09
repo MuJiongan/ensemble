@@ -248,6 +248,8 @@ export interface ChatHistoryAssistant {
   role: 'assistant';
   text?: null;
   content: ChatBlock[];
+  /** OpenRouter-reported USD cost for the round; omitted when unknown / 0. */
+  cost?: number | null;
 }
 
 export type ChatHistoryMessage = ChatHistoryUser | ChatHistoryAssistant;
@@ -265,6 +267,10 @@ export type OrchestratorEvent =
   | { kind: 'assistant_text_chunk'; text: string }
   // assistant_thinking_chunk fires for each reasoning-token delta during a round.
   | { kind: 'assistant_thinking_chunk'; text: string }
+  // assistant_cost fires once per LLM round (after persistence) with the
+  // OpenRouter-reported USD cost for that round. The chat bubble accumulates
+  // it across rounds in the same turn.
+  | { kind: 'assistant_cost'; cost: number }
   | {
       kind: 'tool_call_start';
       tool: string;

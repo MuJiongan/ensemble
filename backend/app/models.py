@@ -126,5 +126,9 @@ class Message(Base):
     # in the assistant message on the next turn for tool-calling to stay
     # valid (OpenRouter / Anthropic enforce ordering).
     reasoning_details = Column(JSON, default=list)
+    # OpenRouter-reported USD cost for the LLM round that produced this
+    # assistant message. 0 for user/tool/system rows. Surfaced on the
+    # assistant bubble in the orchestrator chat panel.
+    cost = Column(Float, default=0.0)
     ts = Column(DateTime, default=datetime.utcnow)
     session = relationship("Session", back_populates="messages")

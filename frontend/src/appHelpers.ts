@@ -66,6 +66,7 @@ export function historyToChatMessages(history: ChatHistoryMessage[]): ChatMessag
           result: b.result,
         };
       }),
+      ...(m.cost && m.cost > 0 ? { cost: m.cost } : {}),
     };
   });
 }

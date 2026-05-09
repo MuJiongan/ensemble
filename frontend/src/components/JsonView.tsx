@@ -15,7 +15,14 @@ const MD_HINTS =
   // headings, lists, blockquotes, fenced code, bold/italic, links, tables.
   /(^|\n)\s*(#{1,6}\s|[-*+]\s|>\s|\d+\.\s|```)|\*\*[^*]+\*\*|__[^_]+__|\[[^\]]+\]\([^)]+\)|^\|.+\|$/m;
 
+// LaTeX math: $$...$$ display, \(...\) / \[...\] explicit delimiters, or
+// $...$ inline whose body contains a backslash/^/_ (avoids currency false
+// positives like "I owe $5").
+const MATH_HINTS = /\$\$[\s\S]+?\$\$|\\\(|\\\[|\$[^$\n]*[\\^_][^$\n]*\$/;
+
 function looksLikeMarkdown(s: string): boolean {
+  if (s.length < 3) return false;
+  if (MATH_HINTS.test(s)) return true;
   if (s.length < 12) return false;
   return MD_HINTS.test(s);
 }
@@ -36,7 +43,7 @@ function StringValue({ value, large = false }: { value: string; large?: boolean 
       </div>
     );
   }
-  if (value.includes('\n') || value.length > 80) {
+  if (value.includes('\n')) {
     return (
       <pre
         className="mono"

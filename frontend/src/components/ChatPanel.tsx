@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 import type { Components } from 'react-markdown';
+import 'katex/dist/katex.min.css';
 import { api } from '../api';
 import type { Run } from '../types';
 
@@ -224,6 +227,8 @@ export interface AssistantMessage {
   role: 'assistant';
   content: ChatBlock[];
   streaming?: boolean;
+  /** Accumulated OpenRouter $ cost across all LLM rounds in this turn. */
+  cost?: number;
 }
 
 export type ChatMessage = UserMessage | AssistantMessage;
@@ -697,8 +702,17 @@ function MessageBubble({
       className="fade-in"
       style={{ padding: '14px 22px', borderBottom: '1px solid var(--rule-2)' }}
     >
-      <div className="smallcaps" style={{ marginBottom: 8, color: 'var(--accent-ink)' }}>
-        orchestra{' '}
+      <div
+        className="smallcaps"
+        style={{
+          marginBottom: 8,
+          color: 'var(--accent-ink)',
+          display: 'flex',
+          alignItems: 'baseline',
+          gap: 6,
+        }}
+      >
+        <span>orchestra</span>
         <span
           style={{
             fontFamily: 'var(--serif)',
@@ -712,6 +726,22 @@ function MessageBubble({
         >
           · {msg.streaming ? 'thinking' : 'said'}
         </span>
+        <span style={{ flex: 1 }} />
+        {typeof msg.cost === 'number' && msg.cost > 0 && (
+          <span
+            className="mono"
+            title="OpenRouter-reported cost for this turn"
+            style={{
+              textTransform: 'none',
+              letterSpacing: 0,
+              fontWeight: 400,
+              color: 'var(--ink-4)',
+              fontSize: 10.5,
+            }}
+          >
+            ${msg.cost.toFixed(4)}
+          </span>
+        )}
       </div>
       <div
         style={{
@@ -734,7 +764,8 @@ function MessageBubble({
             return (
               <ReactMarkdown
                 key={i}
-                remarkPlugins={[remarkGfm]}
+                remarkPlugins={[remarkGfm, remarkMath]}
+                rehypePlugins={[rehypeKatex]}
                 components={MD_COMPONENTS}
               >
                 {c.text}
@@ -755,6 +786,11 @@ function MessageBubble({
 export function ChatPanel({ messages, onSend, onCancel, disabled, sessionTitle, modelLabel, onClose, onViewRun }: Props) {
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  const totalCost = messages.reduce(
+    (sum, m) => sum + (m.role === 'assistant' ? m.cost ?? 0 : 0),
+    0,
+  );
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -787,6 +823,15 @@ export function ChatPanel({ messages, onSend, onCancel, disabled, sessionTitle, 
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
           <span className="smallcaps">orchestrator</span>
           <span style={{ flex: 1 }} />
+          {totalCost > 0 && (
+            <span
+              className="mono"
+              title="total OpenRouter cost across this session"
+              style={{ fontSize: 10.5, color: 'var(--ink-4)' }}
+            >
+              ${totalCost.toFixed(4)}
+            </span>
+          )}
           <span
             className="mono"
             style={{

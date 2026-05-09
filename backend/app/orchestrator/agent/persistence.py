@@ -34,6 +34,7 @@ def _persist_assistant(
     content: str,
     tool_calls: list[dict] | None,
     reasoning_details: list[dict] | None = None,
+    cost: float = 0.0,
 ) -> models.Message:
     m = models.Message(
         session_id=sid,
@@ -41,6 +42,7 @@ def _persist_assistant(
         content=content or "",
         tool_calls=tool_calls or [],
         reasoning_details=reasoning_details or [],
+        cost=cost or 0.0,
     )
     db.add(m)
     db.commit()

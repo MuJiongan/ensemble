@@ -64,6 +64,9 @@ export function reduceAssistantOnEvent(ev: OrchestratorEvent): AssistantMutation
       return { ...a, content };
     };
   }
+  if (ev.kind === 'assistant_cost') {
+    return (a) => ({ ...a, cost: (a.cost ?? 0) + ev.cost });
+  }
   if (ev.kind === 'error') {
     return (a) => ({
       ...a,

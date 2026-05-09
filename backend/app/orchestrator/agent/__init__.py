@@ -163,6 +163,7 @@ def run_turn(db: DbSession, session_id: str, user_text: str) -> Iterator[dict]:
             # The final assembled message (with tool_calls if any) lands at
             # the "done" marker; we only persist *once* per round.
             assembled_msg: dict | None = None
+            round_usage: dict = {}
             for kind, payload in _call_openrouter_stream(
                 model, messages, tool_specs, cancel_event
             ):
@@ -172,6 +173,7 @@ def run_turn(db: DbSession, session_id: str, user_text: str) -> Iterator[dict]:
                     yield {"kind": "assistant_thinking_chunk", "text": payload}
                 elif kind == "done":
                     assembled_msg = payload.get("message") or {}
+                    round_usage = payload.get("usage") or {}
                     break
 
             # Cancelled mid-stream: don't persist a partial assistant message
@@ -190,6 +192,10 @@ def run_turn(db: DbSession, session_id: str, user_text: str) -> Iterator[dict]:
             text = assembled_msg.get("content") or ""
             tcs = assembled_msg.get("tool_calls") or []
             rds = assembled_msg.get("reasoning_details") or []
+            try:
+                round_cost = float(round_usage.get("cost") or 0.0)
+            except (TypeError, ValueError):
+                round_cost = 0.0
 
             # Persist the assistant turn now so subsequent tool messages can
             # reference its tool_calls (OpenRouter wants the assistant message
@@ -202,7 +208,15 @@ def run_turn(db: DbSession, session_id: str, user_text: str) -> Iterator[dict]:
                 text,
                 tcs if tcs else None,
                 reasoning_details=rds if rds else None,
+                cost=round_cost,
             )
+
+            # Surface the round's $ cost so the chat panel can show a
+            # running total on the streaming assistant bubble. Only emit
+            # when OpenRouter actually returned a cost (free models, local
+            # providers, or transient missing-usage replies stay quiet).
+            if round_cost > 0:
+                yield {"kind": "assistant_cost", "cost": round_cost}
 
             if not tcs:
                 yield {"kind": "done"}
@@ -370,6 +384,9 @@ def render_history(db: DbSession, session_id: str) -> list[dict]:
                         "result": tr.get("result") if tr else None,
                     }
                 )
-            bubbles.append({"role": "assistant", "content": content})
+            bubble: dict = {"role": "assistant", "content": content}
+            if (r.cost or 0) > 0:
+                bubble["cost"] = float(r.cost)
+            bubbles.append(bubble)
         # skip tool / system rows in user-facing render
     return bubbles
