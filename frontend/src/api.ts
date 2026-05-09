@@ -65,6 +65,7 @@ export const api = {
     request<Run>('POST', `/api/runs/${rid}/rerun`, { inputs, kind: 'user' }),
   cancelRun: (rid: string) =>
     request<{ cancelled: boolean }>('POST', `/api/runs/${rid}/cancel`),
+  deleteRun: (rid: string) => request<{ ok: true }>('DELETE', `/api/runs/${rid}`),
   getRun: (rid: string) => request<Run>('GET', `/api/runs/${rid}`),
   listRuns: (wid: string) => request<Run[]>('GET', `/api/workflows/${wid}/runs`),
   runEventsUrl: (rid: string) => {

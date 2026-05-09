@@ -102,7 +102,9 @@ function NodeBlock({ data, selected }: NodeProps) {
   const d = data as NodeData;
   const ins = d.inputs || [];
   const outs = d.outputs || [];
-  const role = d.isInput ? 'input' : d.isOutput ? 'output' : null;
+  const role = d.isInput && d.isOutput
+    ? null
+    : d.isInput ? 'input' : d.isOutput ? 'output' : null;
 
   return (
     <div

@@ -100,7 +100,9 @@ export function NodePanel({
 
   const isInput = workflow.input_node_id === node.id;
   const isOutput = workflow.output_node_id === node.id;
-  const role = isInput ? 'input' : isOutput ? 'output' : null;
+  const role = isInput && isOutput
+    ? null
+    : isInput ? 'input' : isOutput ? 'output' : null;
 
   const save = async () => {
     await api.patchNode(node.id, {

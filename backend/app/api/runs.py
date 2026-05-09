@@ -159,6 +159,23 @@ def cancel_run(rid: str):
     return {"cancelled": ok}
 
 
+@router.delete("/runs/{rid}")
+def delete_run(rid: str, db: Session = Depends(get_db)):
+    """Delete a run and its node_runs (cascade). In-flight runs must be
+    cancelled first — refusing here keeps the subprocess from outliving its
+    DB row and writing back to a deleted parent on completion."""
+    run = db.get(models.Run, rid)
+    if not run:
+        raise HTTPException(404)
+    if run.status in ("running", "pending"):
+        raise HTTPException(409, detail="cancel the run before deleting")
+    db.delete(run)
+    db.commit()
+    from app.runner import events as _ev
+    _ev.discard(rid)
+    return {"ok": True}
+
+
 @router.get("/runs/{rid}", response_model=schemas.RunOut)
 def get_run(rid: str, db: Session = Depends(get_db)):
     run = db.get(models.Run, rid)

@@ -230,14 +230,30 @@ export function RunPanel({
               const summary = summariseRun(h);
               const isId = summary.kind === 'id';
               const rowRunning = h.status === 'running' || h.status === 'pending';
+              const canView = !!onViewRunOnCanvas;
+              const canDelete = !rowRunning;
+              const onView = () => onViewRunOnCanvas?.(h.id);
+              const onDelete = async (e: React.MouseEvent) => {
+                e.stopPropagation();
+                if (!confirm('delete this run? its trace and outputs will be lost.')) return;
+                try {
+                  await api.deleteRun(h.id);
+                  setHistory((prev) => prev.filter((r) => r.id !== h.id));
+                } catch (err) {
+                  alert(`couldn't delete run: ${err instanceof Error ? err.message : String(err)}`);
+                }
+              };
               return (
-                <button
+                <div
                   key={h.id}
-                  type="button"
-                  onClick={() => onViewRunOnCanvas?.(h.id)}
-                  disabled={!onViewRunOnCanvas}
+                  role={canView ? 'button' : undefined}
+                  tabIndex={canView ? 0 : -1}
+                  onClick={canView ? onView : undefined}
+                  onKeyDown={canView ? (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onView(); }
+                  } : undefined}
                   title={
-                    onViewRunOnCanvas
+                    canView
                       ? "view this run's graph on the canvas"
                       : isId
                         ? h.id
@@ -251,12 +267,11 @@ export function RunPanel({
                     alignItems: 'center',
                     gap: 8,
                     background: rowRunning ? '#fbf7ec' : 'transparent',
-                    border: 0,
                     borderBottom: '1px solid var(--rule-2)',
                     borderLeft: rowRunning
                       ? '2px solid var(--state-run)'
                       : '2px solid transparent',
-                    cursor: onViewRunOnCanvas ? 'pointer' : 'default',
+                    cursor: canView ? 'pointer' : 'default',
                     textAlign: 'left',
                   }}
                 >
@@ -284,7 +299,28 @@ export function RunPanel({
                   >
                     {h.status}
                   </span>
-                </button>
+                  <button
+                    type="button"
+                    onClick={onDelete}
+                    disabled={!canDelete}
+                    title={canDelete ? 'delete this run' : 'cancel the run before deleting'}
+                    aria-label="delete run"
+                    style={{
+                      background: 'transparent',
+                      border: 0,
+                      padding: '0 4px',
+                      cursor: canDelete ? 'pointer' : 'not-allowed',
+                      color: 'var(--ink-4)',
+                      fontSize: 14,
+                      lineHeight: 1,
+                      opacity: canDelete ? 0.6 : 0.25,
+                    }}
+                    onMouseEnter={(e) => { if (canDelete) e.currentTarget.style.opacity = '1'; }}
+                    onMouseLeave={(e) => { if (canDelete) e.currentTarget.style.opacity = '0.6'; }}
+                  >
+                    ×
+                  </button>
+                </div>
               );
             })}
           </div>

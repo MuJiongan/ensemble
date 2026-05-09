@@ -39,6 +39,7 @@ const MD_COMPONENTS: Components = {
         background: 'rgba(26, 23, 20, 0.06)',
         padding: '0.1em 0.4em',
         borderRadius: 2,
+        overflowWrap: 'anywhere',
       }}
     >
       {children}
@@ -683,6 +684,7 @@ function MessageBubble({
             fontSize: 14.5,
             lineHeight: 1.55,
             color: 'var(--ink)',
+            overflowWrap: 'anywhere',
           }}
         >
           {msg.text}
@@ -717,6 +719,7 @@ function MessageBubble({
           fontSize: 15,
           lineHeight: 1.55,
           color: 'var(--ink-2)',
+          overflowWrap: 'anywhere',
         }}
       >
         {msg.content.map((c, i) => {
@@ -831,7 +834,13 @@ export function ChatPanel({ messages, onSend, onCancel, disabled, sessionTitle, 
       <div
         ref={scrollRef}
         className="scroll"
-        style={{ flex: 1, overflow: 'auto', background: 'var(--paper)' }}
+        style={{
+          flex: 1,
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          background: 'var(--paper)',
+          minWidth: 0,
+        }}
       >
         {messages.length === 0 && (
           <div
