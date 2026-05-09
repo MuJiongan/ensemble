@@ -44,6 +44,8 @@ export interface PatchNodePayload {
 export const api = {
   listWorkflows: () => request<Workflow[]>('GET', '/api/workflows'),
   createWorkflow: (name: string) => request<Workflow>('POST', '/api/workflows', { name }),
+  forkWorkflow: (id: string, name?: string) =>
+    request<Workflow>('POST', `/api/workflows/${id}/fork`, { name }),
   getWorkflow: (id: string) => request<WorkflowDetail>('GET', `/api/workflows/${id}`),
   patchWorkflow: (id: string, body: Partial<Pick<Workflow, 'name' | 'input_node_id' | 'output_node_id'>>) =>
     request<Workflow>('PATCH', `/api/workflows/${id}`, body),
@@ -63,6 +65,8 @@ export const api = {
     request<Run>('POST', `/api/workflows/${wid}/runs`, { inputs, kind: 'user' }),
   rerunFromSnapshot: (rid: string, inputs: Record<string, unknown>) =>
     request<Run>('POST', `/api/runs/${rid}/rerun`, { inputs, kind: 'user' }),
+  forkRunSnapshot: (rid: string, name?: string) =>
+    request<Workflow>('POST', `/api/runs/${rid}/fork`, { name }),
   cancelRun: (rid: string) =>
     request<{ cancelled: boolean }>('POST', `/api/runs/${rid}/cancel`),
   deleteRun: (rid: string) => request<{ ok: true }>('DELETE', `/api/runs/${rid}`),
@@ -83,6 +87,8 @@ export const api = {
     request<OrchestratorSession[]>('GET', `/api/workflows/${wid}/sessions`),
   getSessionMessages: (sid: string) =>
     request<ChatHistory>('GET', `/api/sessions/${sid}/messages`),
+  clearSessionMessages: (sid: string) =>
+    request<{ ok: true }>('DELETE', `/api/sessions/${sid}/messages`),
   cancelOrchestratorTurn: (sid: string) =>
     request<{ cancelled: boolean }>('POST', `/api/sessions/${sid}/cancel`),
 

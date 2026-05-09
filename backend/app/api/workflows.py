@@ -4,6 +4,8 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app import models, schemas
+from app.services import graph as graph_service
+from app.runner import service as run_service
 
 router = APIRouter(prefix="/api/workflows", tags=["workflows"])
 
@@ -53,6 +55,27 @@ def create_workflow(body: schemas.WorkflowIn, db: Session = Depends(get_db)):
     return schemas.WorkflowOut(id=w.id, name=w.name, input_node_id=None, output_node_id=None)
 
 
+@router.post("/{wid}/fork", response_model=schemas.WorkflowOut)
+def fork_workflow(
+    wid: str,
+    body: schemas.WorkflowForkIn,
+    db: Session = Depends(get_db),
+):
+    source = db.get(models.Workflow, wid)
+    if not source:
+        raise HTTPException(404)
+    name = (body.name or f"{source.name} fork").strip() or f"{source.name} fork"
+    fork = graph_service.clone_live_workflow(db, source, name=name)
+    db.commit()
+    db.refresh(fork)
+    return schemas.WorkflowOut(
+        id=fork.id,
+        name=fork.name,
+        input_node_id=fork.input_node_id,
+        output_node_id=fork.output_node_id,
+    )
+
+
 @router.get("/{wid}", response_model=schemas.WorkflowDetail)
 def get_workflow(wid: str, db: Session = Depends(get_db)):
     w = db.get(models.Workflow, wid)
@@ -90,6 +113,19 @@ def delete_workflow(wid: str, db: Session = Depends(get_db)):
     w = db.get(models.Workflow, wid)
     if not w:
         raise HTTPException(404)
+    runs = list(w.runs)
+    active = [
+        r for r in runs
+        if r.status in ("pending", "running") or run_service.is_active(r.id)
+    ]
+    if active:
+        raise HTTPException(
+            409,
+            detail="cancel or wait for active runs before deleting this project",
+        )
+    run_ids = [r.id for r in runs]
     db.delete(w)
     db.commit()
+    for rid in run_ids:
+        run_service.discard(rid)
     return {"ok": True}

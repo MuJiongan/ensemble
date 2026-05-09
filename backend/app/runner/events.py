@@ -69,6 +69,18 @@ def discard(run_id: str) -> None:
         _RUNS.pop(run_id, None)
 
 
+def is_active(run_id: str) -> bool:
+    """Return True when a run has in-memory state that is not terminal yet."""
+    st = _RUNS.get(run_id)
+    if not st:
+        return False
+    with st.lock:
+        if st.finished:
+            return False
+        proc = st.proc
+    return proc is None or proc.poll() is None
+
+
 def cancel(run_id: str) -> bool:
     """Best-effort: SIGTERM the run's subprocess. Returns True if a signal was sent."""
     st = _RUNS.get(run_id)

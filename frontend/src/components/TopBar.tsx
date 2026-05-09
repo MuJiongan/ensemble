@@ -6,6 +6,7 @@ interface Props {
   activeWorkflow: Workflow | null;
   onSelect: (id: string) => void;
   onNew: () => void;
+  onFork: (id: string) => void;
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
   onOpenSettings: () => void;
@@ -19,6 +20,7 @@ export function TopBar({
   activeWorkflow,
   onSelect,
   onNew,
+  onFork,
   onRename,
   onDelete,
   onOpenSettings,
@@ -93,7 +95,7 @@ export function TopBar({
         </span>
       </div>
 
-      <span className="smallcaps" style={{ color: 'var(--ink-4)' }}>session</span>
+      <span className="smallcaps" style={{ color: 'var(--ink-4)' }}>project</span>
 
       <div
         ref={pickerRef}
@@ -120,7 +122,7 @@ export function TopBar({
             textAlign: 'left',
             minWidth: 0,
           }}
-          title="switch session"
+          title="open project library"
         >
           <span
             style={{
@@ -165,19 +167,30 @@ export function TopBar({
               zIndex: 100,
             }}
           >
+            <div
+              className="smallcaps"
+              style={{
+                padding: '7px 10px 6px',
+                color: 'var(--ink-4)',
+                borderBottom: '1px solid var(--rule-2)',
+                marginBottom: 3,
+              }}
+            >
+              project library
+            </div>
             {workflows.length === 0 && (
               <div
                 className="serif"
                 style={{ padding: 12, fontStyle: 'italic', color: 'var(--ink-4)', fontSize: 13 }}
               >
-                no sessions yet.
+                no projects yet.
               </div>
             )}
             {workflows.map((w) => {
               const isActive = w.id === activeWorkflow?.id;
               const isEditing = editingId === w.id;
               return (
-                <SessionRow
+                <WorkflowRow
                   key={w.id}
                   workflow={w}
                   isActive={isActive}
@@ -217,20 +230,28 @@ export function TopBar({
         </span>
       )}
 
-      <button className="ed-btn" onClick={onOpenSettings}>
+      <button className="topbar-btn" onClick={onOpenSettings}>
         settings
       </button>
-      <button className="ed-btn" onClick={onNew}>
-        new <span className="ed-btn__mark">+</span>
+      <button
+        className="topbar-btn"
+        onClick={() => activeWorkflow && onFork(activeWorkflow.id)}
+        disabled={!activeWorkflow}
+        title="copy the current live canvas into a new project"
+      >
+        fork
       </button>
-      <button className="ed-btn ed-btn--primary" onClick={onOpenRun} disabled={runDisabled}>
-        run <span className="ed-btn__mark">→</span>
+      <button className="topbar-btn" onClick={onNew}>
+        new project
+      </button>
+      <button className="topbar-btn topbar-btn--primary" onClick={onOpenRun} disabled={runDisabled}>
+        runs
       </button>
     </div>
   );
 }
 
-function SessionRow({
+function WorkflowRow({
   workflow,
   isActive,
   isEditing,
@@ -254,6 +275,14 @@ function SessionRow({
   onDelete: () => void;
 }) {
   const [hovered, setHovered] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!isEditing) return;
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, [isEditing]);
+
   return (
     <div
       role="option"
@@ -276,10 +305,11 @@ function SessionRow({
     >
       {isEditing ? (
         <input
-          autoFocus
+          ref={inputRef}
           value={draftName}
           onChange={(e) => onDraftChange(e.target.value)}
           onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
           onBlur={onCommit}
           onKeyDown={(e) => {
             if (e.key === 'Enter') onCommit();
@@ -317,9 +347,7 @@ function SessionRow({
         </span>
       )}
 
-      {/* Row actions — only revealed on hover or while editing. They use
-          mousedown to fire before the row's onClick (which would otherwise
-          select the workflow). */}
+      {/* Row actions — only revealed on hover or while editing. */}
       <div
         style={{
           display: 'flex',
@@ -333,23 +361,26 @@ function SessionRow({
           <button
             type="button"
             title="rename"
-            onClick={(e) => e.stopPropagation()}
             onMouseDown={(e) => {
+              e.preventDefault();
               e.stopPropagation();
               onStartRename();
             }}
+            onClick={(e) => e.stopPropagation()}
             style={{
               background: 'transparent',
               border: 0,
               color: 'var(--ink-4)',
               cursor: 'pointer',
-              fontSize: 12,
-              padding: '0 4px',
-              fontFamily: 'var(--serif)',
-              fontStyle: 'italic',
+              fontSize: 10,
+              padding: '0 5px',
+              fontFamily: 'var(--sans)',
+              fontWeight: 500,
+              letterSpacing: '0.14em',
+              textTransform: 'uppercase',
             }}
           >
-            ✎
+            rename
           </button>
         )}
         <button

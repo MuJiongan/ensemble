@@ -42,6 +42,16 @@ def cancel(run_id: str) -> bool:
     return ev_mod.cancel(run_id)
 
 
+def is_active(run_id: str) -> bool:
+    """True when a run is currently executing or about to execute."""
+    return ev_mod.is_active(run_id)
+
+
+def discard(run_id: str) -> None:
+    """Forget in-memory event/proc state for a run."""
+    ev_mod.discard(run_id)
+
+
 def subscribe(run_id: str):
     """Async generator yielding backlog + live events for a run."""
     return ev_mod.subscribe(run_id)

@@ -197,8 +197,8 @@ export function ViewerOverlay({ title, subtitle, value, onClose }: ViewerOverlay
             {copied ? 'copied' : 'copy'}{' '}
             <span className="ed-btn__mark">{copied ? '✓' : '⎘'}</span>
           </button>
-          <button className="ed-btn ed-btn--mini" onClick={onClose}>
-            close <span className="ed-btn__mark">×</span>
+          <button className="text-btn" onClick={onClose} title="close">
+            close
           </button>
         </div>
         <div

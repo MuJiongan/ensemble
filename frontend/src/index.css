@@ -173,18 +173,23 @@ html, body, #root {
   font-style: italic;
 }
 
-/* button */
+/* button — every button class shares one typographic system: sans, 500,
+   uppercase smallcaps with 0.14em tracking. Sizes vary (mini/default/lg)
+   but the font character stays uniform across the UI. */
 .btn-ghost {
   display: inline-flex; align-items: center; gap: 8px;
   padding: 7px 14px;
   border: 1px solid var(--rule);
   border-radius: 3px;
   background: transparent;
-  color: var(--ink-2);
-  font-size: 12.5px;
+  color: var(--ink-3);
+  font-family: var(--sans);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   transition: background .15s, border-color .15s, color .15s;
   cursor: pointer;
-  font-family: inherit;
 }
 .btn-ghost:hover:not(:disabled) { background: var(--paper-2); border-color: var(--ink-3); color: var(--ink); }
 .btn-ghost:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -195,11 +200,13 @@ html, body, #root {
   color: var(--paper);
   border: 0;
   border-radius: 3px;
-  font-size: 13px;
-  letter-spacing: 0.01em;
+  font-family: var(--sans);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   transition: background .15s, transform .15s;
   cursor: pointer;
-  font-family: inherit;
 }
 .btn-ink:hover:not(:disabled) { background: var(--ink-2); }
 .btn-ink:active { transform: translateY(0.5px); }
@@ -255,7 +262,7 @@ html, body, #root {
 .ed-btn--primary:hover:not(:disabled) .ed-btn__mark { color: var(--paper); }
 .ed-btn--mini {
   font-size: 9.5px;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.14em;
   padding: 5px 10px;
   gap: 6px;
 }
@@ -269,6 +276,93 @@ html, body, #root {
   color: var(--state-err);
 }
 .ed-btn--danger .ed-btn__mark { color: var(--state-err); }
+
+.topbar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0 12px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--ink-3);
+  font-family: var(--sans);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.topbar-btn:hover:not(:disabled) {
+  background: rgba(26, 23, 20, 0.045);
+  border-color: var(--rule);
+  color: var(--ink);
+}
+.topbar-btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+.topbar-btn--primary {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+}
+.topbar-btn--primary:hover:not(:disabled) {
+  background: var(--ink-2);
+  border-color: var(--ink-2);
+  color: var(--paper);
+}
+
+.text-btn {
+  background: transparent;
+  border: 0;
+  padding: 2px 0;
+  color: var(--ink-4);
+  font-family: var(--sans);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color .15s, opacity .15s;
+}
+.text-btn:hover:not(:disabled) { color: var(--ink); }
+.text-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.text-btn--danger { color: var(--state-err); }
+.text-btn--danger:hover:not(:disabled) { color: var(--state-err); opacity: 0.75; }
+
+.snapshot-action-btn {
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 5px 10px;
+  color: var(--accent-ink);
+  font-family: var(--sans);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.snapshot-action-btn:hover:not(:disabled) {
+  background: rgba(26, 23, 20, 0.045);
+  border-color: var(--ink-4);
+  color: var(--ink);
+}
+.snapshot-action-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.snapshot-action-btn--secondary {
+  color: var(--ink-3);
+}
 
 .field {
   width: 100%;

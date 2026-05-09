@@ -1,8 +1,20 @@
 import { useEffect, useState } from 'react';
 import type {
-  WorkflowDetail, Run, IOPort, CurrentRun,
+  WorkflowDetail, Run, RunStatus, IOPort, CurrentRun,
 } from '../types';
 import { api } from '../api';
+import { DEFAULT_WORKFLOW_NAME, summariseRun } from '../appHelpers';
+
+function runStatusColor(status: RunStatus): string {
+  switch (status) {
+    case 'success': return 'var(--state-ok)';
+    case 'error': return 'var(--state-err)';
+    case 'running':
+    case 'pending':
+      return 'var(--state-run)';
+    case 'cancelled': return 'var(--ink-4)';
+  }
+}
 
 interface Props {
   workflow: WorkflowDetail;
@@ -19,48 +31,6 @@ interface Props {
    * graph may be mid-build (added nodes, no edges yet) or about to mutate
    * again — manual runs are blocked until the turn settles. */
   orchestrating?: boolean;
-}
-
-/**
- * One-line, human-readable summary of a run for the `recent runs` list —
- * a preview of the input values, shown instead of the opaque run id.
- */
-function summariseRun(run: Run): { text: string; kind: 'value' | 'id' } {
-  const populated = Object.entries(run.inputs ?? {}).filter(
-    ([, v]) => v !== null && v !== undefined && v !== '',
-  );
-
-  if (populated.length === 0) {
-    return { text: run.id.slice(0, 8), kind: 'id' };
-  }
-
-  const previewValue = (v: unknown): string => {
-    if (typeof v === 'string') return v;
-    try {
-      return JSON.stringify(v);
-    } catch {
-      return String(v);
-    }
-  };
-
-  const truncate = (s: string, n: number) =>
-    s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s;
-
-  const TOTAL_BUDGET = 60;
-
-  if (populated.length === 1) {
-    const [, v] = populated[0];
-    return {
-      text: truncate(previewValue(v).replace(/\s+/g, ' ').trim(), TOTAL_BUDGET),
-      kind: 'value',
-    };
-  }
-
-  const perValueBudget = Math.max(8, Math.floor(TOTAL_BUDGET / populated.length));
-  const joined = populated
-    .map(([, v]) => truncate(previewValue(v).replace(/\s+/g, ' ').trim(), perValueBudget))
-    .join(' · ');
-  return { text: truncate(joined, TOTAL_BUDGET), kind: 'value' };
 }
 
 const PANEL_STYLE: React.CSSProperties = {
@@ -143,24 +113,34 @@ export function RunPanel({
 
   return (
     <div className="fade-in" style={PANEL_STYLE}>
-      <div style={{ padding: '14px 18px 10px', borderBottom: '1px solid var(--rule)' }}>
+      <div style={{ padding: '14px 18px 12px', borderBottom: '1px solid var(--rule)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span className="smallcaps">run</span>
           <span style={{ flex: 1 }} />
           {onClose && (
             <button
-              className="ed-btn ed-btn--mini"
+              className="text-btn"
               onClick={onClose}
+              title="close run panel"
             >
-              close <span className="ed-btn__mark">×</span>
+              close
             </button>
           )}
         </div>
         <div
           className="serif"
-          style={{ fontStyle: 'italic', fontSize: 22, marginTop: 6, color: 'var(--ink)' }}
+          style={{
+            fontStyle: 'italic',
+            fontSize: 22,
+            marginTop: 6,
+            color: workflow.name ? 'var(--ink)' : 'var(--ink-3)',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+          title={workflow.name || DEFAULT_WORKFLOW_NAME}
         >
-          your inputs.
+          {workflow.name || DEFAULT_WORKFLOW_NAME}
         </div>
         {inputNode && (
           <div className="serif" style={{ fontStyle: 'italic', fontSize: 12.5, color: 'var(--ink-3)', marginTop: 2 }}>
@@ -169,64 +149,58 @@ export function RunPanel({
         )}
       </div>
 
-      <div className="scroll" style={{ flex: 1, overflow: 'auto', padding: 22 }}>
-        {!inputNode && (
-          <div className="serif" style={{ fontStyle: 'italic', color: 'var(--ink-3)', fontSize: 13 }}>
-            no input node selected. open a node and mark it as input from the config tab.
-          </div>
-        )}
-        {inputNode && inputPorts.length === 0 && (
-          <div className="serif" style={{ fontStyle: 'italic', color: 'var(--ink-4)', fontSize: 13 }}>
-            this node takes no declared inputs.
-          </div>
-        )}
-        {inputPorts.map((p) => (
-          <div key={p.name} style={{ marginBottom: 22 }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 4 }}>
-              <span className="mono" style={{ fontSize: 12 }}>{p.name}</span>
+      <div
+        className="scroll"
+        style={{
+          flex: 1,
+          overflow: 'auto',
+          padding: 22,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 22,
+        }}
+      >
+        <div>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'baseline',
+              justifyContent: 'space-between',
+              gap: 8,
+              marginBottom: 6,
+            }}
+          >
+            <span className="smallcaps" style={{ color: 'var(--ink-3)' }}>
+              project runs
+            </span>
+            {history.length > 0 && (
               <span
                 className="serif"
-                style={{ fontStyle: 'italic', color: 'var(--ink-4)', fontSize: 11.5 }}
+                style={{
+                  fontStyle: 'italic',
+                  color: 'var(--ink-4)',
+                  fontSize: 11.5,
+                }}
               >
-                {p.type_hint}
+                {history.length} {history.length === 1 ? 'run' : 'runs'}
               </span>
-              <span style={{ flex: 1 }} />
-              {!p.required && (
-                <span className="smallcaps" style={{ fontSize: 9 }}>
-                  optional
-                </span>
-              )}
-            </div>
-            <textarea
-              rows={1}
-              className="field"
-              style={{
-                resize: 'vertical',
-                fontFamily: 'var(--mono)',
-                fontStyle: 'normal',
-                fontSize: 12.5,
-              }}
-              value={values[p.name] ?? ''}
-              onChange={(e) => setValues({ ...values, [p.name]: e.target.value })}
-              placeholder={p.type_hint === 'path' ? '/users/you/recordings' : 'plain text or json'}
-            />
+            )}
           </div>
-        ))}
-
-        {history.length > 0 && (
-          <div style={{ marginTop: 22 }}>
-            <div
-              className="smallcaps"
-              style={{
-                marginBottom: 8,
-                display: 'flex',
-                alignItems: 'baseline',
-                gap: 8,
-              }}
-            >
-              <span>recent runs</span>
-            </div>
-            {history.slice(0, 8).map((h) => {
+          <div style={{ borderTop: '1px solid var(--rule)' }}>
+            {history.length === 0 ? (
+              <div
+                className="serif"
+                style={{
+                  fontStyle: 'italic',
+                  color: 'var(--ink-4)',
+                  fontSize: 12.5,
+                  padding: '10px 0',
+                }}
+              >
+                no runs yet — fill inputs below and execute.
+              </div>
+            ) : (
+              history.map((h) => {
               const summary = summariseRun(h);
               const isId = summary.kind === 'id';
               const rowRunning = h.status === 'running' || h.status === 'pending';
@@ -293,7 +267,7 @@ export function RunPanel({
                     className="smallcaps"
                     style={{
                       fontSize: 9,
-                      color: rowRunning ? 'var(--state-run)' : undefined,
+                      color: runStatusColor(h.status),
                       fontWeight: rowRunning ? 600 : undefined,
                     }}
                   >
@@ -322,68 +296,167 @@ export function RunPanel({
                   </button>
                 </div>
               );
-            })}
+            })
+            )}
           </div>
-        )}
+        </div>
+
       </div>
 
       <div
         style={{
-          padding: '14px 18px',
-          borderTop: '1px solid var(--rule)',
           background: 'var(--paper-2)',
+          borderTop: '1px solid var(--rule)',
           display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
+          flexDirection: 'column',
+          flexShrink: 0,
         }}
       >
-        <span
-          className="serif"
+        <div style={{ padding: '14px 18px 12px' }}>
+          <div
+            className="smallcaps"
+            style={{ color: 'var(--ink-3)', marginBottom: 12 }}
+          >
+            input
+          </div>
+          {!inputNode && (
+            <div
+              className="serif"
+              style={{
+                fontStyle: 'italic',
+                color: 'var(--ink-3)',
+                fontSize: 13,
+              }}
+            >
+              no input node selected. open a node and mark it as input from the config tab.
+            </div>
+          )}
+          {inputNode && inputPorts.length === 0 && (
+            <div
+              className="serif"
+              style={{
+                fontStyle: 'italic',
+                color: 'var(--ink-4)',
+                fontSize: 13,
+              }}
+            >
+              this node takes no declared inputs.
+            </div>
+          )}
+          <div
+            className="scroll"
+            style={{ maxHeight: 240, overflowY: 'auto' }}
+          >
+            {inputPorts.map((p, idx) => (
+              <div
+                key={p.name}
+                style={{ marginTop: idx === 0 ? 0 : 18 }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'baseline',
+                    gap: 8,
+                    marginBottom: 2,
+                  }}
+                >
+                  <span
+                    className="mono"
+                    style={{ fontSize: 11.5, color: 'var(--ink-2)' }}
+                  >
+                    {p.name}
+                  </span>
+                  {p.type_hint && p.type_hint !== 'any' && (
+                    <span
+                      className="serif"
+                      style={{ fontStyle: 'italic', color: 'var(--ink-4)', fontSize: 11 }}
+                    >
+                      {p.type_hint}
+                    </span>
+                  )}
+                  <span style={{ flex: 1 }} />
+                  <span
+                    className="serif"
+                    style={{
+                      fontStyle: 'italic',
+                      fontSize: 11,
+                      color: p.required ? 'var(--accent-ink)' : 'var(--ink-4)',
+                    }}
+                  >
+                    {p.required ? 'required' : 'optional'}
+                  </span>
+                </div>
+                <textarea
+                  rows={1}
+                  className="field"
+                  value={values[p.name] ?? ''}
+                  onChange={(e) => setValues({ ...values, [p.name]: e.target.value })}
+                  placeholder={p.type_hint === 'path' ? '/users/you/recordings' : 'plain text or json'}
+                  style={{
+                    fontFamily: 'var(--mono)',
+                    fontStyle: 'normal',
+                    fontSize: 12.5,
+                    padding: '5px 0',
+                    minHeight: 26,
+                    resize: 'vertical',
+                    lineHeight: 1.5,
+                  }}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+        <div
           style={{
-            fontStyle: 'italic',
-            color:
-              running ? 'var(--state-run)' :
-              status === 'error' ? 'var(--state-err)' : 'var(--ink-4)',
-            fontSize: 12,
-            display: 'inline-flex',
+            padding: '12px 18px 14px',
+            borderTop: '1px solid var(--rule)',
+            display: 'flex',
+            justifyContent: 'space-between',
             alignItems: 'center',
-            gap: 8,
           }}
         >
-          {running && !orchestrating && (
-            <span className="node-state-dot running" aria-hidden="true" />
-          )}
-          {orchestrating
-            ? 'orchestrator working — wait for it to settle'
-            : running
-              ? 'running…'
-              : status === 'success'
-                ? 'ready — tweak inputs and rerun'
-                : status === 'error'
-                  ? 'failed — adjust and try again'
-                  : status === 'cancelled'
-                    ? 'cancelled — adjust and rerun'
-                    : 'standing by'}
-        </span>
-        {running ? (
-          <button className="ed-btn ed-btn--danger" onClick={onCancel}>
-            cancel <span className="ed-btn__mark">×</span>
-          </button>
-        ) : (
-          <button
-            className="ed-btn ed-btn--primary"
-            onClick={start}
-            disabled={!inputNode || !!orchestrating}
-            title={orchestrating ? 'wait until the orchestrator finishes its turn' : undefined}
+          <span
+            className="smallcaps"
+            style={{
+              color:
+                running || orchestrating ? 'var(--state-run)' :
+                status === 'error' ? 'var(--state-err)' :
+                status === 'success' ? 'var(--state-ok)' :
+                'var(--ink-3)',
+            }}
           >
-            {status === 'error' || status === 'cancelled'
-              ? 'try again'
-              : status === 'success'
-                ? 'rerun'
-                : 'execute'}{' '}
-            <span className="ed-btn__mark">→</span>
-          </button>
-        )}
+            new run
+          </span>
+          {running ? (
+            <button className="ed-btn ed-btn--danger" onClick={onCancel}>
+              cancel <span className="ed-btn__mark">×</span>
+            </button>
+          ) : (
+            <button
+              className="ed-btn ed-btn--primary"
+              onClick={start}
+              disabled={!inputNode || !!orchestrating}
+              title={
+                orchestrating
+                  ? 'wait until the orchestrator finishes its turn'
+                  : status === 'error'
+                    ? 'last run failed — adjust and try again'
+                    : status === 'cancelled'
+                      ? 'last run was cancelled — adjust and rerun'
+                      : status === 'success'
+                        ? 'tweak inputs and rerun'
+                        : undefined
+              }
+            >
+              {status === 'error' || status === 'cancelled'
+                ? 'try again'
+                : status === 'success'
+                  ? 'rerun'
+                  : 'execute'}{' '}
+              <span className="ed-btn__mark">→</span>
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

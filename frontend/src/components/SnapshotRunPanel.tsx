@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { PortRow } from './ValueViewer';
-import type { Run } from '../types';
+import type { Run, RunStatus } from '../types';
+import { summariseRun } from '../appHelpers';
+
+// Inputs/outputs are the focal sections — what this run did. Node outcomes
+// is supporting status detail, rendered as a quiet hairline list.
 
 export function SnapshotRunPanel({
   run,
@@ -19,6 +23,8 @@ export function SnapshotRunPanel({
   const errored = run.node_runs.filter((nr) => nr.status === 'error');
   const inputs = Object.entries(run.inputs ?? {});
   const outputs = Object.entries(run.outputs ?? {});
+  const nodeRunsById = new Map(run.node_runs.map((nr) => [nr.node_id, nr]));
+  const snapshotNodes = run.workflow_snapshot?.nodes ?? [];
 
   // Re-run form state. The snapshot's input node defines the port shape;
   // we pre-fill each field with the prior run's value (JSON-stringified)
@@ -89,42 +95,110 @@ export function SnapshotRunPanel({
         gap: 14,
       }}
     >
-      <div>
-        <div className="smallcaps" style={{ color: 'var(--ink-3)', marginBottom: 4 }}>
-          run details
-        </div>
-        <div
-          className="serif"
-          style={{ fontSize: 18, fontStyle: 'italic', color: 'var(--ink)' }}
-        >
-          run {run.id.slice(0, 8)}
-        </div>
-      </div>
-
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'auto 1fr',
-          columnGap: 14,
-          rowGap: 4,
-          fontSize: 12,
-        }}
-      >
-        <span className="smallcaps" style={{ color: 'var(--ink-4)' }}>status</span>
-        <span className="mono" style={{ fontSize: 11 }}>
-          {run.status}
-        </span>
-        <span className="smallcaps" style={{ color: 'var(--ink-4)' }}>cost</span>
-        <span className="mono" style={{ fontSize: 11 }}>
-          ${(run.total_cost ?? 0).toFixed(4)}
-        </span>
-        <span className="smallcaps" style={{ color: 'var(--ink-4)' }}>nodes</span>
-        <span className="mono" style={{ fontSize: 11 }}>
-          {run.workflow_snapshot?.nodes.length ?? 0} ·{' '}
-          {run.node_runs.filter((n) => n.status === 'success').length} ok ·{' '}
-          {errored.length} err
-        </span>
-      </div>
+      {(() => {
+        const summary = summariseRun(run);
+        const okCount = run.node_runs.filter((n) => n.status === 'success').length;
+        const totalNodes = run.workflow_snapshot?.nodes.length ?? 0;
+        return (
+          <div>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'baseline',
+                justifyContent: 'space-between',
+                gap: 12,
+                marginBottom: 4,
+              }}
+            >
+              <span className="smallcaps" style={{ color: 'var(--ink-3)' }}>
+                run details
+              </span>
+              <span
+                className="mono"
+                title={run.id}
+                style={{
+                  color: 'var(--ink-4)',
+                  fontSize: 10,
+                  letterSpacing: '0.02em',
+                }}
+              >
+                {run.id.slice(0, 8)}
+              </span>
+            </div>
+            {summary.kind === 'value' ? (
+              <div
+                className="serif"
+                style={{
+                  fontSize: 24,
+                  fontStyle: 'italic',
+                  color: 'var(--ink)',
+                  lineHeight: 1.15,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+                title={summary.text}
+              >
+                {summary.text}
+              </div>
+            ) : (
+              <div
+                className="serif"
+                style={{
+                  fontSize: 20,
+                  fontStyle: 'italic',
+                  color: 'var(--ink-3)',
+                  lineHeight: 1.15,
+                }}
+              >
+                no inputs
+              </div>
+            )}
+            {/* Byline-style stat row — no card chrome, just italic-serif
+                values separated by serif dots. Reads as a credit line under
+                the headline rather than a dashboard widget. */}
+            <div
+              className="serif"
+              style={{
+                marginTop: 8,
+                display: 'flex',
+                alignItems: 'baseline',
+                flexWrap: 'wrap',
+                gap: 0,
+                fontSize: 13,
+                fontStyle: 'italic',
+                color: 'var(--ink-3)',
+              }}
+            >
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <StatusDot status={run.status} />
+                <span style={{ color: runStatusColor(run.status) }}>{run.status}</span>
+              </span>
+              <span className="asterisk" style={{ margin: '0 10px' }}>·</span>
+              <span className="mono" style={{ color: 'var(--ink-2)' }}>
+                ${(run.total_cost ?? 0).toFixed(4)}
+              </span>
+              <span className="asterisk" style={{ margin: '0 10px' }}>·</span>
+              <span style={{ color: 'var(--ink-2)' }}>
+                <span className="mono">{totalNodes}</span> nodes
+                <span style={{ color: 'var(--ink-4)' }}>
+                  {' ('}
+                  {okCount} ok
+                  {errored.length > 0 && `, ${errored.length} err`}
+                  {')'}
+                </span>
+              </span>
+            </div>
+            <div
+              style={{
+                marginTop: 14,
+                height: 1,
+                background: 'var(--rule)',
+              }}
+            />
+          </div>
+        );
+      })()}
 
       {errored.length > 0 && (
         <div>
@@ -161,6 +235,25 @@ export function SnapshotRunPanel({
         </div>
       )}
 
+      <PreviewSection
+        title="inputs"
+        emptyText="this run used no inputs."
+        entries={inputs}
+        runId={run.id}
+        subtitle="input"
+      />
+      <PreviewSection
+        title="outputs"
+        emptyText={
+          run.status === 'success'
+            ? 'this run produced no outputs.'
+            : 'no outputs recorded.'
+        }
+        entries={outputs}
+        runId={run.id}
+        subtitle="output"
+      />
+
       {/* rerun affordance — visible whenever the snapshot is runnable
           (has a designated input node). When the input node has no input
           ports, the form skips field rendering and just confirms execute. */}
@@ -170,23 +263,10 @@ export function SnapshotRunPanel({
             type="button"
             onClick={() => setFormOpen(true)}
             disabled={!!runInProgress}
-            className="smallcaps"
-            style={{
-              background: 'transparent',
-              border: '1px solid var(--rule)',
-              padding: '6px 12px',
-              cursor: runInProgress ? 'not-allowed' : 'pointer',
-              color: runInProgress ? 'var(--ink-4)' : 'var(--accent-ink)',
-              fontSize: 10,
-              fontFamily: 'var(--serif)',
-              fontStyle: 'italic',
-              textTransform: 'none',
-              letterSpacing: 0,
-              opacity: runInProgress ? 0.6 : 1,
-            }}
+            className="snapshot-action-btn"
             title={
               runInProgress
-                ? 'a run is already in progress on this workflow — wait for it to finish'
+                ? 'a run is already in progress on this project — wait for it to finish'
                 : inputPorts.length > 0
                   ? 'run this exact graph again with edited inputs'
                   : 'run this exact graph again'
@@ -238,7 +318,7 @@ export function SnapshotRunPanel({
               className="serif"
               style={{ fontStyle: 'italic', color: 'var(--ink-4)', fontSize: 12 }}
             >
-              this workflow takes no inputs.
+              this project takes no inputs.
             </div>
           )}
           {inputPorts.map((p) => (
@@ -303,7 +383,7 @@ export function SnapshotRunPanel({
                 fontSize: 11.5,
               }}
             >
-              another run is in flight on this workflow — wait for it to finish.
+              another run is in flight on this project — wait for it to finish.
             </div>
           )}
           <div style={{ display: 'flex', gap: 8 }}>
@@ -315,7 +395,7 @@ export function SnapshotRunPanel({
               style={{ fontSize: 11 }}
               title={
                 runInProgress
-                  ? 'a run is already in progress on this workflow'
+                  ? 'a run is already in progress on this project'
                   : undefined
               }
             >
@@ -339,62 +419,244 @@ export function SnapshotRunPanel({
         </div>
       )}
 
-      {inputs.length > 0 && (
-        <div>
-          <div className="smallcaps" style={{ color: 'var(--ink-3)', marginBottom: 6 }}>
-            inputs
-          </div>
-          {inputs.map(([k, v]) => (
-            <PortRow
-              key={k}
-              name={k}
-              value={v}
-              viewerTitle={`run ${run.id.slice(0, 8)} · ${k}`}
-              viewerSubtitle="input"
-            />
-          ))}
+      <div>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'baseline',
+            justifyContent: 'space-between',
+            gap: 8,
+            marginBottom: 6,
+          }}
+        >
+          <span className="smallcaps" style={{ color: 'var(--ink-3)' }}>
+            node outcomes
+          </span>
+          {snapshotNodes.length > 0 && (
+            <span
+              className="serif"
+              style={{
+                fontStyle: 'italic',
+                color: 'var(--ink-4)',
+                fontSize: 11.5,
+              }}
+            >
+              {snapshotNodes.length} {snapshotNodes.length === 1 ? 'step' : 'steps'}
+            </span>
+          )}
         </div>
-      )}
-
-      {outputs.length > 0 && (
-        <div>
-          <div className="smallcaps" style={{ color: 'var(--ink-3)', marginBottom: 6 }}>
-            outputs
+        {snapshotNodes.length === 0 ? (
+          <div
+            className="serif"
+            style={{
+              fontStyle: 'italic',
+              color: 'var(--ink-4)',
+              fontSize: 12,
+              borderTop: '1px solid var(--rule)',
+              padding: '8px 0',
+            }}
+          >
+            no snapshot nodes recorded.
           </div>
-          {outputs.map(([k, v]) => (
-            <PortRow
-              key={k}
-              name={k}
-              value={v}
-              viewerTitle={`run ${run.id.slice(0, 8)} · ${k}`}
-              viewerSubtitle="output"
-            />
-          ))}
-        </div>
-      )}
+        ) : (
+          <div style={{ borderTop: '1px solid var(--rule)' }}>
+            {snapshotNodes.map((node, idx) => {
+              const nr = nodeRunsById.get(node.id);
+              const status = nr?.status ?? 'pending';
+              const color = nodeStatusColor(status);
+              const isLast = idx === snapshotNodes.length - 1;
+              return (
+                <div
+                  key={node.id}
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'auto 1fr auto auto',
+                    alignItems: 'center',
+                    columnGap: 10,
+                    padding: '6px 0',
+                    borderBottom: isLast ? 0 : '1px solid var(--rule-2)',
+                  }}
+                >
+                  <span
+                    aria-hidden
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: '50%',
+                      background: color,
+                      boxShadow:
+                        status === 'running'
+                          ? '0 0 0 3px oklch(0.72 0.13 75 / 0.18)'
+                          : 'none',
+                      opacity: status === 'pending' ? 0.5 : 1,
+                    }}
+                  />
+                  <span
+                    className="mono"
+                    style={{
+                      fontSize: 11,
+                      color: 'var(--ink-2)',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {node.name}
+                  </span>
+                  <span
+                    className="mono"
+                    style={{
+                      color: 'var(--ink-4)',
+                      fontSize: 10.5,
+                      visibility:
+                        typeof nr?.cost === 'number' && nr.cost > 0
+                          ? 'visible'
+                          : 'hidden',
+                    }}
+                  >
+                    {typeof nr?.cost === 'number' && nr.cost > 0
+                      ? `$${nr.cost.toFixed(4)}`
+                      : '·'}
+                  </span>
+                  <span
+                    className="serif"
+                    style={{
+                      fontStyle: 'italic',
+                      fontSize: 11,
+                      color,
+                      justifySelf: 'end',
+                      letterSpacing: 0,
+                    }}
+                  >
+                    {status}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       <span style={{ flex: 1 }} />
 
       <button
         type="button"
         onClick={onExit}
-        className="smallcaps"
-        style={{
-          alignSelf: 'flex-start',
-          background: 'transparent',
-          border: '1px solid var(--rule)',
-          padding: '6px 12px',
-          cursor: 'pointer',
-          color: 'var(--accent-ink)',
-          fontSize: 10,
-          fontFamily: 'var(--serif)',
-          fontStyle: 'italic',
-          textTransform: 'none',
-          letterSpacing: 0,
-        }}
+        className="snapshot-action-btn"
+        style={{ alignSelf: 'flex-start' }}
       >
         ← back to live
       </button>
     </div>
   );
+}
+
+function PreviewSection({
+  title,
+  emptyText,
+  entries,
+  runId,
+  subtitle,
+}: {
+  title: string;
+  emptyText: string;
+  entries: [string, unknown][];
+  runId: string;
+  subtitle: 'input' | 'output';
+}) {
+  return (
+    <div>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'baseline',
+          justifyContent: 'space-between',
+          gap: 8,
+          marginBottom: 6,
+        }}
+      >
+        <span className="smallcaps" style={{ color: 'var(--ink-3)' }}>
+          {title}
+        </span>
+        {entries.length > 0 && (
+          <span
+            className="serif"
+            style={{
+              fontStyle: 'italic',
+              color: 'var(--ink-4)',
+              fontSize: 11.5,
+            }}
+          >
+            {entries.length} {entries.length === 1 ? 'field' : 'fields'}
+          </span>
+        )}
+      </div>
+      <div style={{ borderTop: '1px solid var(--rule)' }}>
+        {entries.length === 0 ? (
+          <div
+            className="serif"
+            style={{
+              fontStyle: 'italic',
+              color: 'var(--ink-4)',
+              fontSize: 12,
+              padding: '8px 0',
+            }}
+          >
+            {emptyText}
+          </div>
+        ) : (
+          <div style={{ paddingTop: 2 }}>
+            {entries.map(([k, v]) => (
+              <PortRow
+                key={k}
+                name={k}
+                value={v}
+                viewerTitle={`run ${runId.slice(0, 8)} · ${k}`}
+                viewerSubtitle={subtitle}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function runStatusColor(status: RunStatus): string {
+  switch (status) {
+    case 'success': return 'var(--state-ok)';
+    case 'error': return 'var(--state-err)';
+    case 'running':
+    case 'pending':
+      return 'var(--state-run)';
+    case 'cancelled': return 'var(--ink-4)';
+  }
+}
+
+function StatusDot({ status }: { status: RunStatus }) {
+  return (
+    <span
+      aria-hidden
+      style={{
+        width: 7,
+        height: 7,
+        borderRadius: '50%',
+        background: runStatusColor(status),
+        display: 'inline-block',
+        flex: 'none',
+      }}
+    />
+  );
+}
+
+function nodeStatusColor(
+  status: 'pending' | 'running' | 'success' | 'error' | 'skipped',
+): string {
+  switch (status) {
+    case 'success': return 'var(--state-ok)';
+    case 'error': return 'var(--state-err)';
+    case 'skipped': return 'var(--state-skip)';
+    case 'running': return 'var(--state-run)';
+    default: return 'var(--ink-4)';
+  }
 }

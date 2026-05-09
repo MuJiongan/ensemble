@@ -204,6 +204,9 @@ export interface ChatToolCall {
    * data here so the panel can render rich cards. Untyped on purpose; each
    * card pulls the keys it cares about. */
   result?: unknown;
+  /** Set early for `run_workflow` from the `run_started` event so the card
+   * is clickable while still pending — `result.run_id` only lands at end. */
+  runId?: string;
 }
 
 export interface ChatParagraph {
@@ -238,9 +241,10 @@ interface Props {
   onSend: (text: string) => void;
   onCancel?: () => void;
   disabled?: boolean;
-  sessionTitle?: string;
+  workflowTitle?: string;
   modelLabel?: string;
   onClose?: () => void;
+  onClearContext?: () => void;
   /** Called when the user clicks "view this run on the canvas" in a
    * `run_workflow` tool card. The host can swap the canvas to render the
    * run's frozen `workflow_snapshot`. */
@@ -397,10 +401,18 @@ function RunWorkflowCard({
   args,
   status,
   result,
+  runId: earlyRunId,
   onViewRun,
 }: ChatToolCall & { onViewRun?: (runId: string) => void }) {
   const r = (result ?? {}) as RunWorkflowResult;
-  const runId = r.run_id;
+  // Prefer the runId stashed from `run_started` (lands at start) so the
+  // card is clickable while still pending; fall back to the run_id in the
+  // tool result once the call completes.
+  const runId = earlyRunId ?? r.run_id;
+  const canOpen = !!runId && !!onViewRun;
+  const openRun = () => {
+    if (runId && onViewRun) onViewRun(runId);
+  };
   const [snapshot, setSnapshot] = useState<Run | null>(null);
 
   useEffect(() => {
@@ -439,6 +451,20 @@ function RunWorkflowCard({
   return (
     <div
       className="tool-call fade-in"
+      role={canOpen ? 'button' : undefined}
+      tabIndex={canOpen ? 0 : undefined}
+      onClick={canOpen ? openRun : undefined}
+      onKeyDown={
+        canOpen
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                openRun();
+              }
+            }
+          : undefined
+      }
+      title={canOpen ? 'open this run' : undefined}
       style={{
         padding: '10px 12px',
         margin: '8px 0',
@@ -446,6 +472,7 @@ function RunWorkflowCard({
         display: 'flex',
         flexDirection: 'column',
         gap: 8,
+        cursor: canOpen ? 'pointer' : 'default',
       }}
     >
       {/* header row: tool name · status pill · cost */}
@@ -481,7 +508,7 @@ function RunWorkflowCard({
           <span className="mono" style={{ fontSize: 11, fontStyle: 'normal' }}>
             {wfSnap.nodes.length}-node
           </span>{' '}
-          workflow
+          project
           {inputName && (
             <>
               {' · '}
@@ -639,12 +666,17 @@ function RunWorkflowCard({
         </div>
       )}
 
-      {/* footer: view-on-canvas action */}
+      {/* footer: view-on-canvas action — duplicates the card-level click but
+          keeps a visible affordance so the click target reads as actionable. */}
       {runId && onViewRun && (
         <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
           <button
             type="button"
-            onClick={() => onViewRun(runId)}
+            onClick={(e) => {
+              // Outer card is also a click target; don't double-fire the open.
+              e.stopPropagation();
+              onViewRun(runId);
+            }}
             className="smallcaps"
             style={{
               background: 'transparent',
@@ -659,7 +691,7 @@ function RunWorkflowCard({
               letterSpacing: 0,
             }}
           >
-            view this run's graph →
+            view run →
           </button>
         </div>
       )}
@@ -783,7 +815,17 @@ function MessageBubble({
   );
 }
 
-export function ChatPanel({ messages, onSend, onCancel, disabled, sessionTitle, modelLabel, onClose, onViewRun }: Props) {
+export function ChatPanel({
+  messages,
+  onSend,
+  onCancel,
+  disabled,
+  workflowTitle,
+  modelLabel,
+  onClose,
+  onClearContext,
+  onViewRun,
+}: Props) {
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -820,59 +862,90 @@ export function ChatPanel({ messages, onSend, onCancel, disabled, sessionTitle, 
           borderBottom: '1px solid var(--rule)',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0 }}>
           <span className="smallcaps">orchestrator</span>
           <span style={{ flex: 1 }} />
-          {totalCost > 0 && (
-            <span
-              className="mono"
-              title="total OpenRouter cost across this session"
-              style={{ fontSize: 10.5, color: 'var(--ink-4)' }}
-            >
-              ${totalCost.toFixed(4)}
-            </span>
-          )}
           <span
             className="mono"
+            title={modelLabel || 'no orchestrator model set — using server fallback'}
             style={{
               fontSize: 10.5,
               color: 'var(--ink-4)',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
-              maxWidth: 160,
+              minWidth: 0,
             }}
-            title={modelLabel || 'no orchestrator model set — using server fallback'}
           >
             {modelLabel || '(default)'}
           </span>
+          {totalCost > 0 && (
+            <>
+              <span
+                className="asterisk"
+                aria-hidden
+                style={{ fontSize: 12, color: 'var(--ink-4)' }}
+              >
+                ·
+              </span>
+              <span
+                className="mono"
+                title="total OpenRouter cost across this chat context"
+                style={{ fontSize: 10.5, color: 'var(--ink-4)', whiteSpace: 'nowrap' }}
+              >
+                ${totalCost.toFixed(4)}
+              </span>
+            </>
+          )}
           {onClose && (
             <button
               onClick={onClose}
-              className="btn-ghost"
-              style={{ padding: '3px 9px', fontSize: 11 }}
+              className="text-btn"
               title="close chat"
+              style={{ marginLeft: 8 }}
             >
-              close ✕
+              close
             </button>
           )}
         </div>
         <div
-          className="serif"
           style={{
-            fontStyle: 'italic',
-            fontSize: 18,
-            lineHeight: 1.3,
-            color: 'var(--ink)',
+            display: 'flex',
+            alignItems: 'baseline',
+            gap: 12,
             marginTop: 6,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            display: '-webkit-box',
-            WebkitLineClamp: 2,
-            WebkitBoxOrient: 'vertical',
+            minWidth: 0,
           }}
         >
-          {sessionTitle || 'untitled session'}
+          <div
+            className="serif"
+            style={{
+              fontStyle: 'italic',
+              fontSize: 18,
+              lineHeight: 1.3,
+              color: 'var(--ink)',
+              flex: 1,
+              minWidth: 0,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              display: '-webkit-box',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
+            }}
+          >
+            {workflowTitle || 'untitled project'}
+          </div>
+          {onClearContext && messages.length > 0 && !disabled && (
+            <button
+              type="button"
+              onClick={onClearContext}
+              className="text-btn"
+              title="clear chat context while keeping this project and its runs"
+              style={{ flexShrink: 0 }}
+            >
+              reset chat
+            </button>
+          )}
         </div>
       </div>
 
@@ -898,11 +971,11 @@ export function ChatPanel({ messages, onSend, onCancel, disabled, sessionTitle, 
               lineHeight: 1.6,
             }}
           >
-            the canvas is yours. wire nodes by hand — or describe a problem and{' '}
+            describe what you want to build and{' '}
             <span className="italic-em" style={{ color: 'var(--ink-3)' }}>
               orchestra
             </span>{' '}
-            will sketch a pipeline. (the orchestrator is wired but quiet for now.)
+            will design the project graph for you.
           </div>
         )}
         {messages.map((m, i) => (
@@ -933,20 +1006,19 @@ export function ChatPanel({ messages, onSend, onCancel, disabled, sessionTitle, 
           {disabled && onCancel ? (
             <button
               type="button"
-              className="btn-ghost"
+              className="text-btn text-btn--danger"
               onClick={onCancel}
-              style={{ borderColor: 'var(--state-err)', color: 'var(--state-err)' }}
               title="stop the orchestrator"
             >
-              stop <span style={{ fontFamily: 'var(--serif)', fontStyle: 'italic' }}>✕</span>
+              stop
             </button>
           ) : (
             <button
               type="submit"
-              className="btn-ghost"
+              className="text-btn"
               disabled={!draft.trim() || disabled}
             >
-              send <span style={{ fontFamily: 'var(--serif)', fontStyle: 'italic' }}>↩</span>
+              send
             </button>
           )}
         </div>

@@ -1,7 +1,7 @@
 import type { ChatBlock, ChatMessage } from './components/ChatPanel';
 import type { ChatHistoryMessage, Run, WorkflowDetail } from './types';
 
-export const DEFAULT_WORKFLOW_NAME = 'untitled session';
+export const DEFAULT_WORKFLOW_NAME = 'untitled project';
 
 // Tools that mutate the graph — when we see one of these complete, refresh
 // the canvas detail.
@@ -50,6 +50,48 @@ export function snapshotToDetail(run: Run): WorkflowDetail | null {
   };
 }
 
+/**
+ * One-line, human-readable summary of a run — a preview of the input values,
+ * shown instead of the opaque run id wherever a run needs a title.
+ */
+export function summariseRun(run: Run): { text: string; kind: 'value' | 'id' } {
+  const populated = Object.entries(run.inputs ?? {}).filter(
+    ([, v]) => v !== null && v !== undefined && v !== '',
+  );
+
+  if (populated.length === 0) {
+    return { text: run.id.slice(0, 8), kind: 'id' };
+  }
+
+  const previewValue = (v: unknown): string => {
+    if (typeof v === 'string') return v;
+    try {
+      return JSON.stringify(v);
+    } catch {
+      return String(v);
+    }
+  };
+
+  const truncate = (s: string, n: number) =>
+    s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s;
+
+  const TOTAL_BUDGET = 60;
+
+  if (populated.length === 1) {
+    const [, v] = populated[0];
+    return {
+      text: truncate(previewValue(v).replace(/\s+/g, ' ').trim(), TOTAL_BUDGET),
+      kind: 'value',
+    };
+  }
+
+  const perValueBudget = Math.max(8, Math.floor(TOTAL_BUDGET / populated.length));
+  const joined = populated
+    .map(([, v]) => truncate(previewValue(v).replace(/\s+/g, ' ').trim(), perValueBudget))
+    .join(' · ');
+  return { text: truncate(joined, TOTAL_BUDGET), kind: 'value' };
+}
+
 export function historyToChatMessages(history: ChatHistoryMessage[]): ChatMessage[] {
   return history.map((m) => {
     if (m.role === 'user') return { role: 'user', text: m.text ?? '' };
@@ -71,8 +113,8 @@ export function historyToChatMessages(history: ChatHistoryMessage[]): ChatMessag
   });
 }
 
-/** Pick a session-name from the user's first message — same heuristic the modal used. */
-export function deriveSessionName(text: string): string {
+/** Pick a project name from the user's first message. */
+export function deriveWorkflowName(text: string): string {
   const trimmed = text.trim().replace(/\s+/g, ' ');
   if (!trimmed) return DEFAULT_WORKFLOW_NAME;
   return trimmed.length > 80 ? trimmed.slice(0, 77) + '…' : trimmed;
