@@ -74,7 +74,10 @@ def _node_summary(n: models.Node) -> dict:
 
 
 def _node_full(n: models.Node) -> dict:
-    """Full node payload — used by view_node_details. No truncation."""
+    """Full node payload — used by view_node_details. No truncation.
+    `position` and `user_edited_at` are deliberately omitted: the LLM can't
+    move nodes (no `set_position` tool — `add_node` auto-lays them out), and
+    the boolean `user_edited` flag in `view_graph` is all it needs."""
     cfg = n.config or {}
     return {
         "id": n.id,
@@ -86,9 +89,7 @@ def _node_full(n: models.Node) -> dict:
         "config": {
             "model": cfg.get("model", ""),
         },
-        "position": n.position or {"x": 0, "y": 0},
         "user_edited": n.user_edited_at is not None,
-        "user_edited_at": n.user_edited_at.isoformat() if n.user_edited_at else None,
     }
 
 
@@ -113,18 +114,19 @@ def add_node(
     *,
     name: str,
     description: str = "",
-    code: str = schemas.DEFAULT_CODE,
     inputs: list[dict] | None = None,
     outputs: list[dict] | None = None,
     model: str = "",
 ) -> dict:
-    """Create a new node in the workflow. Returns the new node id + summary."""
+    """Create a new node in the workflow. The node is created with the
+    default code stub — call ``configure_node`` to write its actual code.
+    Returns the new node id + summary."""
     _get_workflow(db, wid)
     n = models.Node(
         workflow_id=wid,
         name=name,
         description=description or "",
-        code=code or schemas.DEFAULT_CODE,
+        code=schemas.DEFAULT_CODE,
         inputs=_normalize_ports(inputs, "input"),
         outputs=_normalize_ports(outputs, "output"),
         config={
@@ -611,7 +613,9 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "function": {
             "name": "add_node",
             "description": (
-                "Create a new node. The `code` is Python following the run(inputs, ctx) -> dict contract. "
+                "Create a new node with its structure — name, description, ports, model. "
+                "The node is created with a stub `def run(inputs, ctx): return {}` body; "
+                "follow up with `configure_node` to write its actual Python code. "
                 "Returns {node_id, node}."
             ),
             "parameters": {
@@ -619,10 +623,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 "properties": {
                     "name": {"type": "string", "description": "snake_case node name"},
                     "description": {"type": "string", "description": "one-line italic description for the canvas"},
-                    "code": {
-                        "type": "string",
-                        "description": "Full Python source. Must define `def run(inputs, ctx) -> dict:`.",
-                    },
                     "inputs": _PORT_SCHEMA,
                     "outputs": _PORT_SCHEMA,
                     "model": {"type": "string", "description": "OpenRouter model id (optional)"},

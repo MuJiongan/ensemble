@@ -63,6 +63,28 @@ def test_add_node_creates_with_normalized_ports(db, workflow):
     assert "timeout_s" not in n.config
 
 
+def test_add_node_always_starts_with_stub_code(db, workflow):
+    """`add_node` is structure-only: code starts as the default stub and must
+    be set via `configure_node`."""
+    from app import schemas
+
+    nid = orch_tools.add_node(db, workflow.id, name="x")["node_id"]
+    n = db.get(models.Node, nid)
+    assert n.code == schemas.DEFAULT_CODE
+
+
+def test_add_node_rejects_code_kwarg(db, workflow):
+    """`add_node` no longer accepts a `code` argument — code lives on
+    `configure_node`. The dispatcher surfaces this as a bad-args error so the
+    LLM can self-correct."""
+    res = orch_tools.execute(
+        db, workflow.id, "add_node",
+        {"name": "x", "code": "def run(inputs, ctx):\n    return {'a': 1}\n"},
+    )
+    assert "error" in res
+    assert "code" in res["error"]
+
+
 def test_add_node_unknown_workflow_raises(db):
     with pytest.raises(ValueError):
         orch_tools.add_node(db, "nope", name="x")
@@ -351,12 +373,12 @@ def test_delete_workflow_cascades_rows_and_discards_run_events(db, workflow):
 
 
 def test_graph_state_omits_code_but_keeps_user_edited_flag(db, workflow):
-    nid = orch_tools.add_node(
-        db,
-        workflow.id,
-        name="loader",
+    nid = orch_tools.add_node(db, workflow.id, name="loader")["node_id"]
+    orch_tools.configure_node(
+        db, workflow.id,
+        node_id=nid,
         code="def run(inputs, ctx):\n    return {'x': 1}\n",
-    )["node_id"]
+    )
 
     msg = graph_state_message(db, workflow.id)
     state = json.loads(msg["content"].split("\n", 1)[1])
@@ -414,9 +436,9 @@ def test_view_node_details_returns_full_untruncated_code(db, workflow):
     nid = orch_tools.add_node(
         db, workflow.id, name="big",
         description="huge node",
-        code=long_code,
         model="anthropic/claude-sonnet-4.5",
     )["node_id"]
+    orch_tools.configure_node(db, workflow.id, node_id=nid, code=long_code)
 
     res = orch_tools.view_node_details(db, workflow.id, node_id=nid)
     assert res["id"] == nid
@@ -429,7 +451,10 @@ def test_view_node_details_returns_full_untruncated_code(db, workflow):
     assert "tools_enabled" not in res["config"]
     assert "timeout_s" not in res["config"]
     assert res["user_edited"] is False
-    assert res["user_edited_at"] is None
+    # position + user_edited_at are not exposed to the LLM (no point — it
+    # can't move nodes and the boolean `user_edited` is all it acts on).
+    assert "position" not in res
+    assert "user_edited_at" not in res
 
 
 def test_view_node_details_unknown_node_errors(db, workflow):
@@ -477,9 +502,12 @@ def test_run_snapshot_survives_subsequent_graph_mutation(db, workflow):
 
     a = orch_tools.add_node(
         db, workflow.id, name="loader",
-        code="def run(inputs, ctx):\n    return {'x': 1}\n",
         outputs=[{"name": "x"}],
     )["node_id"]
+    orch_tools.configure_node(
+        db, workflow.id, node_id=a,
+        code="def run(inputs, ctx):\n    return {'x': 1}\n",
+    )
     b = orch_tools.add_node(
         db, workflow.id, name="summariser",
         inputs=[{"name": "y", "required": True}],
