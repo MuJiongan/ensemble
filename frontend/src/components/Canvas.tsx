@@ -496,7 +496,7 @@ function CanvasInner({ detail, selectedNodeId, onSelectNode, nodeStates }: Canva
               style={{ fontSize: 12.5, maxWidth: 320, textAlign: 'center', lineHeight: 1.6 }}
             >
               describe a problem to{' '}
-              <span className="italic-em">orchestra</span>; she'll wire the nodes for you.
+              <span className="italic-em">ensemble</span>; she'll assemble the agent team for you.
             </div>
           </div>
         )}

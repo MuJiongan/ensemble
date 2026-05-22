@@ -744,7 +744,7 @@ function MessageBubble({
           gap: 6,
         }}
       >
-        <span>orchestra</span>
+        <span>ensemble</span>
         <span
           style={{
             fontFamily: 'var(--serif)',
@@ -863,7 +863,7 @@ export function ChatPanel({
         }}
       >
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0 }}>
-          <span className="smallcaps">orchestrator</span>
+          <span className="smallcaps">orchestrator agent</span>
           <span style={{ flex: 1 }} />
           <span
             className="mono"
