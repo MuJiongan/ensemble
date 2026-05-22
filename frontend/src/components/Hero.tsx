@@ -42,7 +42,7 @@ export function Hero({
       }}
     >
       <div style={{ width: '100%', maxWidth: 640, display: 'flex', flexDirection: 'column', gap: 18 }}>
-        <span className="smallcaps" style={{ color: 'var(--ink-4)' }}>orchestra</span>
+        <span className="smallcaps" style={{ color: 'var(--ink-4)' }}>ensemble</span>
         <h1
           className="serif"
           style={{
@@ -68,8 +68,8 @@ export function Hero({
           }}
         >
           {hasApiKey
-            ? 'the orchestrator will spawn a team of agents to help you — refine and run when ready.'
-            : 'the orchestrator runs on your openrouter key. add it once, then describe a problem and orchestra will spawn a team of agents to help you.'}
+            ? 'the orchestrator agent will dynamically assemble a team of specialized agents to solve your query — refine and execute when ready.'
+            : 'the application runs on your openrouter key. add it once, then describe a problem and ensemble will assemble a team of specialized agents to help you.'}
         </p>
 
         {hasApiKey ? (
@@ -126,7 +126,7 @@ export function Hero({
                 onClick={submit}
                 disabled={disabled || !text.trim()}
               >
-                ask orchestra <span className="italic-em">→</span>
+                ask ensemble <span className="italic-em">→</span>
               </button>
             </div>
           </div>
