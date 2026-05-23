@@ -91,7 +91,7 @@ export function TopBar({
             letterSpacing: '-0.01em',
           }}
         >
-          orchestra
+          ensemble
         </span>
       </div>
 

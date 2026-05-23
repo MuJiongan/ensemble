@@ -973,7 +973,7 @@ export function ChatPanel({
           >
             describe what you want to build and{' '}
             <span className="italic-em" style={{ color: 'var(--ink-3)' }}>
-              orchestra
+              ensemble
             </span>{' '}
             will design the project graph for you.
           </div>
@@ -999,7 +999,7 @@ export function ChatPanel({
             className="field"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            placeholder={disabled ? 'orchestra is working…' : 'refine, add a node, or ask anything'}
+            placeholder={disabled ? 'ensemble is working…' : 'refine, add a node, or ask anything'}
             disabled={disabled}
             style={{ flex: 1, fontStyle: 'italic' }}
           />
