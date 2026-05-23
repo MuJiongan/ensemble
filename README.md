@@ -17,6 +17,26 @@ Phases 0–6 are fully implemented, providing a robust local runtime for multi-a
 - **Phase 6** Orchestrator-driven executions: The orchestrator agent can trigger team runs (`run_workflow`) directly from chat, inspect collaboration results (`view_run`), and clear the collaboration board (`clean_canvas`) to transition between different stages of a multi-turn solve. All runs carry a frozen snapshot of the agent topology so past executions can be inspected or rerun independently.
 - **Team Forking & Branching**: Duplicate any live agent team or historical run snapshot into a brand-new editable project workspace (`POST /api/workflows/{wid}/fork` and `POST /api/runs/{rid}/fork`) to test variations and branch ideas.
 
+## Planned: User-Configured MCP Tool Integrations
+
+The next product addition is support for user-configured external MCP servers whose discovered tools can be used by specialized agent nodes. MCP tools are not exposed as direct Orchestrator Agent tools. Instead, each chat/session will have an allowlist UI that determines which MCP tools are visible to the orchestrator as configurable node capabilities and which tools are passed into node execution.
+
+Planned behavior:
+
+- Users add and test MCP server connections locally, then select allowed tools per session.
+- The orchestrator can inspect allowed MCP tool names/descriptions/schemas and configure specialized nodes to use them, but cannot call those external tools itself.
+- Specialized nodes can use allowed MCP tools directly through `ctx.tools` or agentically through `ctx.call_llm(..., tools=[...])`.
+- Tool calls execute without per-call approval once the tool is allowed for the session; audit logs and run traces must still record MCP tool usage.
+- MCP tools should be namespaced to avoid collisions with built-in tools such as `shell`, `web_search`, and `web_fetch`.
+
+Implementation guidance follows Codex-style MCP patterns:
+
+- Treat MCP availability as a lifecycle, not a boolean: `configured → auth_known → initialized → tools_discovered → allowed_in_session`.
+- For HTTP MCP servers, support OAuth 2.1 + PKCE, OAuth discovery, RFC 8707 resource parameters, and bearer tokens sourced from environment variables rather than inline secrets.
+- Verify a connection by completing the MCP handshake and `tools/list`; do not expose a server as usable from config presence alone.
+- Include startup and tool-call timeouts, enabled/disabled tool filtering, hot reload after config changes, token refresh, and redacted logging.
+- Provide a lightweight status endpoint that reports tools and auth status without requiring slow resource inventory.
+
 ## Run it
 
 Requires Python 3.11+ and Node 18+.
@@ -49,9 +69,11 @@ def run(inputs, ctx):
     # ctx.call_llm(model="", prompt=..., tools=["shell", "web_search", "web_fetch"])
     #   Run an LLM-mediated sub-agent. The selected model (defaults to workspace default) 
     #   uses the listed tools as-needed to satisfy the prompt.
+    #   Planned: allowed MCP tools can also be supplied here for agentic use.
     #
     # ctx.tools.shell(...) / ctx.tools.web_search(...) / ctx.tools.web_fetch(...)
     #   Execute direct, deterministic tool calls bypassing LLM routing.
+    #   Planned: allowed MCP tools can also be called directly from node code.
     #
     # ctx.log("...")                     — Appends a line to the agent's live run log
     # ctx.workdir                        — A temporary scratch directory unique to this execution

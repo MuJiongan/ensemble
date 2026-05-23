@@ -260,7 +260,7 @@ export function NodePanel({
             >
               ports are shaped by{' '}
               <span className="italic-em" style={{ color: 'var(--ink-3)' }}>
-                orchestra
+                ensemble
               </span>
               . ask in the chat to add, rename, or remove one.
             </div>
