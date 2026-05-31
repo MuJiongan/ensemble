@@ -9,7 +9,7 @@ import { Hero } from './components/Hero';
 import { SnapshotBanner } from './components/SnapshotBanner';
 import { SnapshotRunPanel } from './components/SnapshotRunPanel';
 import { api } from './api';
-import { loadSettings, SETTINGS_CHANGED_EVENT } from './localSettings';
+import { activeLlmApiKey, loadSettings, SETTINGS_CHANGED_EVENT } from './localSettings';
 import {
   DEFAULT_WORKFLOW_NAME,
   deriveWorkflowName,
@@ -159,13 +159,13 @@ export default function App() {
     () => loadSettings().default_orchestrator_model,
   );
   const [hasApiKey, setHasApiKey] = useState<boolean>(
-    () => !!loadSettings().openrouter_api_key,
+    () => !!activeLlmApiKey(loadSettings()),
   );
   useEffect(() => {
     const sync = () => {
       const s = loadSettings();
       setOrchestratorModel(s.default_orchestrator_model);
-      setHasApiKey(!!s.openrouter_api_key);
+      setHasApiKey(!!activeLlmApiKey(s));
     };
     window.addEventListener(SETTINGS_CHANGED_EVENT, sync);
     window.addEventListener('storage', sync);

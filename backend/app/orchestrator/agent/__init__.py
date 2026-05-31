@@ -9,8 +9,8 @@ UI.
 
 Implementation is split across submodules:
   * :mod:`.session`     — per-session turn cancellation registry
-  * :mod:`.persistence` — message rows + OpenRouter chat-shape conversion
-  * :mod:`.llm_stream`  — OpenRouter SSE call + chunk parsing
+  * :mod:`.persistence` — message rows + OpenAI-compatible chat-shape conversion
+  * :mod:`.llm_stream`  — SSE call + chunk parsing for the configured provider
 
 This module owns the orchestration loop itself plus :func:`render_history`
 (history → chat-bubble flattener used by GET /sessions/:id/messages).
@@ -42,7 +42,7 @@ from .persistence import (
     _persist_tool_result,
     _persist_user,
 )
-from .llm_stream import _call_openrouter_stream, _parse_sse_chunks
+from .llm_stream import _call_llm_stream, _parse_sse_chunks
 
 
 __all__ = [
@@ -52,7 +52,7 @@ __all__ = [
     # Re-exported for callers (api/orchestrator.py) and tests:
     "_TURN_CANCEL_EVENTS",
     "_TURN_LOCK",
-    "_call_openrouter_stream",
+    "_call_llm_stream",
     "_claim_turn",
     "_history_messages",
     "_parse_sse_chunks",
@@ -164,7 +164,7 @@ def run_turn(db: DbSession, session_id: str, user_text: str) -> Iterator[dict]:
             # the "done" marker; we only persist *once* per round.
             assembled_msg: dict | None = None
             round_usage: dict = {}
-            for kind, payload in _call_openrouter_stream(
+            for kind, payload in _call_llm_stream(
                 model, messages, tool_specs, cancel_event
             ):
                 if kind == "text":

@@ -65,7 +65,8 @@ def run_workflow_streaming(
             "default_model": default_model,
             "workdir": workdir,
             "env": {
-                "OPENROUTER_API_KEY": os.getenv("OPENROUTER_API_KEY", ""),
+                "LLM_API_KEY": os.getenv("LLM_API_KEY", ""),
+                "LLM_BASE_URL": os.getenv("LLM_BASE_URL", ""),
                 "PARALLEL_API_KEY": os.getenv("PARALLEL_API_KEY", ""),
             },
         }

@@ -1211,7 +1211,7 @@ def test_run_turn_streams_chunks_executes_tools_and_persists(db, workflow, monke
         # The agent loop calls this once per round; pull the next scripted set.
         return iter(next(rounds_iter))
 
-    monkeypatch.setattr(orch_agent, "_call_openrouter_stream", fake_stream)
+    monkeypatch.setattr(orch_agent, "_call_llm_stream", fake_stream)
 
     events = list(orch_agent.run_turn(db, sess.id, "build me one"))
     kinds = [e["kind"] for e in events]
@@ -1263,12 +1263,12 @@ def test_run_turn_user_cancel_mid_stream_does_not_persist_partial(db, workflow, 
         yield ("text", "okay,")
         if cancel_event is not None:
             cancel_event.set()
-        # The real `_call_openrouter_stream` would observe cancel_event and
+        # The real `_call_llm_stream` would observe cancel_event and
         # break out. We simulate that by emitting only the final done with
         # whatever was assembled so far (no tool_calls, partial content).
         yield ("done", {"message": {"role": "assistant", "content": "okay,"}, "usage": {}})
 
-    monkeypatch.setattr(orch_agent, "_call_openrouter_stream", fake_stream)
+    monkeypatch.setattr(orch_agent, "_call_llm_stream", fake_stream)
 
     events = list(orch_agent.run_turn(db, sess.id, "build something"))
     kinds = [e["kind"] for e in events]
@@ -1297,7 +1297,7 @@ def test_run_turn_supersede_emits_error_banner(db, workflow, monkeypatch):
             orch_agent._claim_turn(sess.id)  # rotates registry, sets old event
         yield ("done", {"message": {"role": "assistant", "content": "starting…"}, "usage": {}})
 
-    monkeypatch.setattr(orch_agent, "_call_openrouter_stream", fake_stream)
+    monkeypatch.setattr(orch_agent, "_call_llm_stream", fake_stream)
 
     events = list(orch_agent.run_turn(db, sess.id, "first message"))
     kinds = [e["kind"] for e in events]
@@ -1314,7 +1314,7 @@ def test_run_turn_supersede_emits_error_banner(db, workflow, monkeypatch):
         orch_agent._TURN_CANCEL_EVENTS.pop(sess.id, None)
 
 
-def test_call_openrouter_stream_skips_remaining_lines_when_cancelled():
+def test_call_llm_stream_skips_remaining_lines_when_cancelled():
     """The HTTP-layer cancel check: once cancel_event is set between iter_lines
     yields, no further lines feed into the SSE parser, and the parser still
     emits a clean final `done` with whatever was assembled."""
