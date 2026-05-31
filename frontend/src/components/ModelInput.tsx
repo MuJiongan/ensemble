@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { fetchLlmModels, type LLMModel } from '../llmModels';
+import { fetchLlmModels, modelsCacheKey, type LLMModel } from '../llmModels';
+import { loadSettings } from '../localSettings';
+import type { Settings } from '../types';
 
 interface Props {
   value: string;
@@ -8,6 +10,10 @@ interface Props {
   /** Visual style — `underline` matches the Settings page, `bordered` matches the NodePanel cell. */
   variant?: 'underline' | 'bordered';
   ariaLabel?: string;
+  /** Optional in-memory settings snapshot. Lets the Settings panel feed its
+   *  unsaved state so the model list reflects the active provider before the
+   *  user clicks Save. Defaults to ``loadSettings()`` (i.e. localStorage). */
+  settings?: Settings;
 }
 
 const MAX_RESULTS = 80;
@@ -18,6 +24,7 @@ export function ModelInput({
   placeholder,
   variant = 'underline',
   ariaLabel,
+  settings,
 }: Props) {
   const [models, setModels] = useState<LLMModel[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -26,10 +33,27 @@ export function ModelInput({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
-  // Lazy-load the model list the first time the input is focused.
+  // Recompute when the active provider changes so the dropdown reflects the
+  // current preset, even before the user has clicked Save. The cache key is a
+  // stable per-provider string (preset id), which is exactly the right
+  // invalidation signal.
+  const sourceKey = useMemo(
+    () => modelsCacheKey(settings ?? loadSettings()),
+    [settings],
+  );
+
+  // Reset cached results whenever the source changes so the next focus
+  // re-runs the loader against the new provider.
+  useEffect(() => {
+    setModels(null);
+    setError(null);
+  }, [sourceKey]);
+
+  // Lazy-load the model list the first time the input is focused (and after
+  // a provider switch resets the state above).
   const loadModels = () => {
     if (models || error) return;
-    fetchLlmModels()
+    fetchLlmModels(settings ?? loadSettings())
       .then((m) => setModels(m))
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   };

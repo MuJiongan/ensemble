@@ -98,6 +98,28 @@ class Setting(Base):
     value = Column(Text, default="")
 
 
+class Credential(Base):
+    """OAuth credentials for a provider (e.g. 'codex', 'xai').
+
+    Single-user local app — one row per provider is plenty. Tokens are
+    persisted server-side rather than in localStorage because refresh tokens
+    are sensitive and the OAuth callback handshake happens against a
+    backend-bound loopback server anyway.
+    """
+    __tablename__ = "credentials"
+    provider = Column(String, primary_key=True)  # 'codex' | 'xai'
+    access_token = Column(Text, nullable=False)
+    refresh_token = Column(Text, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    # Codex needs the ChatGPT-Account-Id header on every request; xAI has no
+    # equivalent. Pulled from the id_token JWT claims at exchange time.
+    account_id = Column(String, nullable=True)
+    # Optional human label (e.g. email) for the Settings UI's "signed in as ..."
+    label = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Session(Base):
     """One orchestrator chat session attached to a workflow."""
     __tablename__ = "sessions"

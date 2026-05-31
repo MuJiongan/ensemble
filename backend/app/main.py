@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.db import init_db, SessionLocal
 from app.api import workflows, nodes, edges, runs, orchestrator
 from app.api import settings as settings_api
+from app.api import auth as auth_api
 
 
 # Map of inbound request header → process env var. Settings live client-side
@@ -19,6 +20,16 @@ _HEADER_TO_ENV = {
     "x-orchestrator-model": "DEFAULT_ORCHESTRATOR_MODEL",
     "x-node-model": "DEFAULT_NODE_MODEL",
 }
+
+# X-Llm-Provider-Id is handled separately from the additive map above. The
+# frontend sends it on every LLM-bound request (a non-empty string for OAuth
+# presets like ``codex``/``xai``; empty string when on an API-key preset).
+# *Other* requests — notably the auth-status polls running concurrently with
+# a streaming orchestrator response — must NOT touch the env, or they'll race
+# with the orchestrator's in-flight rounds and drop us back to the API-key
+# dispatch mid-turn.
+_PROVIDER_ID_HEADER = "x-llm-provider-id"
+_PROVIDER_ID_ENV = "LLM_PROVIDER_ID"
 
 
 @asynccontextmanager
@@ -51,6 +62,16 @@ async def apply_settings_headers(request: Request, call_next):
     """Copy localStorage-sourced settings headers into process env for the
     duration of this request. Single-user local app — no concurrent-user
     cross-contamination concerns."""
+    # Provider-id semantics: header *present* (any value) is authoritative;
+    # header *absent* means "this request isn't an LLM call — leave env
+    # alone." That keeps concurrent auth-status polls from clearing the
+    # provider mid-turn for a streaming orchestrator response.
+    provider_id = request.headers.get(_PROVIDER_ID_HEADER)
+    if provider_id is not None:
+        if provider_id:
+            os.environ[_PROVIDER_ID_ENV] = provider_id
+        else:
+            os.environ.pop(_PROVIDER_ID_ENV, None)
     for header, env in _HEADER_TO_ENV.items():
         value = request.headers.get(header)
         if value:
@@ -69,3 +90,4 @@ app.include_router(edges.router)
 app.include_router(runs.router)
 app.include_router(orchestrator.router)
 app.include_router(settings_api.router)
+app.include_router(auth_api.router)

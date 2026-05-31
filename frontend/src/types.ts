@@ -103,13 +103,27 @@ export interface Settings {
    * Per-provider API keys, keyed by provider preset id (see `llmProviders.ts`)
    * — `openrouter`, `openai`, ..., or `custom` for the bring-your-own-base-url
    * option. Switching providers in the Settings UI swaps which entry is shown
-   * and which one is sent on the wire.
+   * and which one is sent on the wire. OAuth presets (`codex`, `xai-oauth`)
+   * don't use this — they store tokens server-side.
    */
   llm_api_keys: Record<string, string>;
+  /**
+   * Explicit current-preset id. Required to disambiguate OAuth presets from
+   * api-key ones (api-key presets can also be derived from the base URL, but
+   * OAuth presets have no URL of their own). Empty string means "infer from
+   * `llm_base_url`" — used as the backwards-compat default.
+   */
+  llm_provider_preset_id: string;
   llm_base_url: string;
   parallel_api_key: string;
-  default_orchestrator_model: string;
-  default_node_model: string;
+  /**
+   * Per-provider default orchestrator model, keyed by preset id. Model ids
+   * are provider-specific (``anthropic/claude-sonnet-4.5`` on OpenRouter vs
+   * ``gpt-5.4`` on Codex), so switching providers swaps which value is shown
+   * and which is sent on the wire.
+   */
+  default_orchestrator_models: Record<string, string>;
+  default_node_models: Record<string, string>;
 }
 
 // --- streaming run events --------------------------------------------------

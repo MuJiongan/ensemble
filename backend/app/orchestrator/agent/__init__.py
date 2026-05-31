@@ -95,6 +95,50 @@ def _format_args_summary(args: dict) -> str:
     return ", ".join(parts)
 
 
+def _resolve_llm_stream(
+    db: DbSession,
+    model: str,
+    messages: list[dict],
+    tool_specs: list[dict],
+    cancel_event,
+):
+    """Pick the right LLM transport for this turn.
+
+    OAuth-backed presets (``codex``, ``xai``) come in via ``LLM_PROVIDER_ID``
+    on the request — we fetch the active credential, refresh it if needed,
+    and route through the right module. xAI uses the same chat-completions
+    transport as the API-key path (its env is rewritten in place); Codex
+    uses the Responses API.
+    """
+    from app.auth.resolve import current_provider_id, resolve
+
+    pid = current_provider_id()
+    if pid == "codex":
+        creds = resolve("codex", db)
+        if creds is None:
+            raise RuntimeError("Codex/ChatGPT sign-in required (no active credential)")
+        from app.auth.codex_api import call_codex_stream
+        codex_stream = call_codex_stream(
+            model, messages, tool_specs, creds.access_token, creds.account_id, cancel_event
+        )
+        # The Codex SSE parser also emits ("tool_args", idx, name, delta)
+        # 4-tuples so the node-runtime UI can render streaming tool-arg
+        # deltas. The orchestrator loop unpacks strict 2-tuples and doesn't
+        # need that granularity — tool calls land in the final ``done``
+        # message anyway. Filter them out here.
+        return (item for item in codex_stream if item[0] in ("text", "thinking", "done"))
+    if pid == "xai":
+        creds = resolve("xai", db)
+        if creds is None:
+            raise RuntimeError("xAI sign-in required (no active credential)")
+        # xAI uses the standard chat-completions transport; we just need to
+        # point the env at xAI and substitute the OAuth bearer for this call.
+        os.environ["LLM_API_KEY"] = creds.access_token
+        os.environ["LLM_BASE_URL"] = "https://api.x.ai/v1"
+
+    return _call_llm_stream(model, messages, tool_specs, cancel_event)
+
+
 def _resolve_model(db: DbSession) -> str:
     # localStorage (forwarded as a header by the frontend, applied to env in
     # main.middleware) wins; the DB row is only a backwards-compat fallback.
@@ -164,9 +208,8 @@ def run_turn(db: DbSession, session_id: str, user_text: str) -> Iterator[dict]:
             # the "done" marker; we only persist *once* per round.
             assembled_msg: dict | None = None
             round_usage: dict = {}
-            for kind, payload in _call_llm_stream(
-                model, messages, tool_specs, cancel_event
-            ):
+            stream = _resolve_llm_stream(db, model, messages, tool_specs, cancel_event)
+            for kind, payload in stream:
                 if kind == "text":
                     yield {"kind": "assistant_text_chunk", "text": payload}
                 elif kind == "thinking":

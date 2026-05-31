@@ -59,16 +59,34 @@ def run_workflow_streaming(
     """
     workdir = tempfile.mkdtemp(prefix="wfrun-")
     try:
+        env_for_child: dict[str, str] = {
+            "LLM_API_KEY": os.getenv("LLM_API_KEY", ""),
+            "LLM_BASE_URL": os.getenv("LLM_BASE_URL", ""),
+            "PARALLEL_API_KEY": os.getenv("PARALLEL_API_KEY", ""),
+        }
+        # OAuth-backed providers: resolve the access token (refresh if needed)
+        # once at spawn time and forward it as the effective LLM_API_KEY. The
+        # subprocess never touches the credentials DB itself; that keeps the
+        # subprocess decoupled from the auth layer and matches how the
+        # subprocess already consumes API-key settings (env-only).
+        pid = (os.getenv("LLM_PROVIDER_ID") or "").strip()
+        if pid in ("codex", "xai"):
+            from app.auth.resolve import resolve
+            creds = resolve(pid)
+            if creds is not None:
+                env_for_child["LLM_API_KEY"] = creds.access_token
+                env_for_child["LLM_PROVIDER_ID"] = pid
+                if pid == "codex":
+                    env_for_child["LLM_ACCOUNT_ID"] = creds.account_id or ""
+                elif pid == "xai":
+                    env_for_child["LLM_BASE_URL"] = "https://api.x.ai/v1"
+
         payload = {
             "workflow": workflow,
             "inputs": inputs,
             "default_model": default_model,
             "workdir": workdir,
-            "env": {
-                "LLM_API_KEY": os.getenv("LLM_API_KEY", ""),
-                "LLM_BASE_URL": os.getenv("LLM_BASE_URL", ""),
-                "PARALLEL_API_KEY": os.getenv("PARALLEL_API_KEY", ""),
-            },
+            "env": env_for_child,
         }
 
         env = os.environ.copy()
