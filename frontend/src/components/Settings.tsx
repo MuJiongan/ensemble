@@ -4,17 +4,21 @@ import { loadSettings, saveSettings } from '../localSettings';
 import {
   CUSTOM_PRESET_ID,
   PROVIDER_PRESETS,
+  isOAuthPreset,
+  isApiKeyPreset,
   presetById,
   presetIdForUrl,
 } from '../llmProviders';
 import { ModelInput } from './ModelInput';
+import { OAuthLoginField } from './OAuthLoginField';
 
 const EMPTY: Settings = {
   llm_api_keys: {},
+  llm_provider_preset_id: '',
   llm_base_url: '',
   parallel_api_key: '',
-  default_orchestrator_model: '',
-  default_node_model: '',
+  default_orchestrator_models: {},
+  default_node_models: {},
 };
 
 export function SettingsPanel({ onClose }: { onClose: () => void }) {
@@ -29,21 +33,30 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     const loaded = loadSettings();
     setS(loaded);
-    setPresetId(presetIdForUrl(loaded.llm_base_url));
+    setPresetId(loaded.llm_provider_preset_id || presetIdForUrl(loaded.llm_base_url));
   }, []);
 
   const onPresetChange = (id: string) => {
     setPresetId(id);
+    setS((prev) => ({ ...prev, llm_provider_preset_id: id }));
     if (id === CUSTOM_PRESET_ID) {
       // Leave llm_base_url as-is — the input becomes editable so the user
       // can paste their endpoint.
       return;
     }
     const preset = presetById(id);
-    if (preset) setS((prev) => ({ ...prev, llm_base_url: preset.baseUrl }));
+    if (isApiKeyPreset(preset)) {
+      // Snap llm_base_url to the chosen api-key preset's endpoint.
+      setS((prev) => ({ ...prev, llm_base_url: preset.baseUrl }));
+    }
+    // OAuth presets leave llm_base_url alone — the backend ignores it when
+    // X-Llm-Provider-Id is set.
   };
 
-  const currentPreset = presetId === CUSTOM_PRESET_ID ? null : presetById(presetId);
+  const currentPreset =
+    presetId === CUSTOM_PRESET_ID ? undefined : presetById(presetId);
+  const currentApiKeyPreset = isApiKeyPreset(currentPreset) ? currentPreset : null;
+  const currentOAuthPreset = isOAuthPreset(currentPreset) ? currentPreset : null;
 
   const save = () => {
     saveSettings(s);
@@ -100,19 +113,23 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               hint="we POST to {base}/chat/completions. any openai-compatible endpoint works — gateways, self-hosted vllm/llama.cpp, etc."
             />
           )}
-          <Field
-            label={`${currentPreset?.label.toLowerCase() ?? 'custom'} api key`}
-            value={s.llm_api_keys[presetId] ?? ''}
-            onChange={(v) =>
-              setS({ ...s, llm_api_keys: { ...s.llm_api_keys, [presetId]: v } })
-            }
-            secret={!revealKeys}
-            hint={
-              currentPreset
-                ? `bearer token for ${currentPreset.label}. each provider keeps its own key — switch providers above to manage another.`
-                : 'bearer token for the endpoint above. each provider (and the custom slot) keeps its own key.'
-            }
-          />
+          {currentOAuthPreset ? (
+            <OAuthLoginField preset={currentOAuthPreset} />
+          ) : (
+            <Field
+              label={`${currentApiKeyPreset?.label.toLowerCase() ?? 'custom'} api key`}
+              value={s.llm_api_keys[presetId] ?? ''}
+              onChange={(v) =>
+                setS({ ...s, llm_api_keys: { ...s.llm_api_keys, [presetId]: v } })
+              }
+              secret={!revealKeys}
+              hint={
+                currentApiKeyPreset
+                  ? `bearer token for ${currentApiKeyPreset.label}. each provider keeps its own key — switch providers above to manage another.`
+                  : 'bearer token for the endpoint above. each provider (and the custom slot) keeps its own key.'
+              }
+            />
+          )}
           <Field
             label="parallel.ai api key"
             value={s.parallel_api_key}
@@ -144,15 +161,29 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
 
           <ModelField
             label="default orchestrator model"
-            value={s.default_orchestrator_model}
-            onChange={(v) => setS({ ...s, default_orchestrator_model: v })}
-            hint="used by the orchestrator. model id as the configured provider expects it (e.g. anthropic/claude-sonnet-4.5 on openrouter, gpt-4o on openai)."
+            value={s.default_orchestrator_models[presetId] ?? ''}
+            onChange={(v) =>
+              setS({
+                ...s,
+                default_orchestrator_models: { ...s.default_orchestrator_models, [presetId]: v },
+              })
+            }
+            hint={`used by the orchestrator when the ${
+              currentPreset?.label ?? 'active'
+            } provider is selected. each provider keeps its own default.`}
+            settings={s}
           />
           <ModelField
             label="default node model"
-            value={s.default_node_model}
-            onChange={(v) => setS({ ...s, default_node_model: v })}
+            value={s.default_node_models[presetId] ?? ''}
+            onChange={(v) =>
+              setS({
+                ...s,
+                default_node_models: { ...s.default_node_models, [presetId]: v },
+              })
+            }
             hint="default for ctx.call_llm inside nodes when no model is specified."
+            settings={s}
           />
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 }}>
@@ -177,9 +208,13 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
 interface ProviderOption {
   id: string;
   label: string;
-  /** Inline URL preview shown under the label in the row; null for custom. */
-  baseUrl: string | null;
-  /** External "get a key" link shown only when this option is selected. */
+  /** What to show as the second line under the label.
+   *  ``url`` — a base URL (api-key presets).
+   *  ``info`` — a description string (OAuth presets + the Custom slot). */
+  secondaryKind: 'url' | 'info';
+  secondary: string;
+  /** External "get a key" link shown only when this option is selected and
+   *  the option is an api-key preset. */
   keysUrl?: string;
 }
 
@@ -197,13 +232,28 @@ function ProviderField({
   const listRef = useRef<HTMLDivElement | null>(null);
 
   const options: ProviderOption[] = [
-    ...PROVIDER_PRESETS.map((p) => ({
-      id: p.id,
-      label: p.label,
-      baseUrl: p.baseUrl,
-      keysUrl: p.keysUrl,
-    })),
-    { id: CUSTOM_PRESET_ID, label: 'Custom', baseUrl: null },
+    ...PROVIDER_PRESETS.map((p): ProviderOption =>
+      p.auth === 'api_key'
+        ? {
+            id: p.id,
+            label: p.label,
+            secondaryKind: 'url',
+            secondary: p.baseUrl,
+            keysUrl: p.keysUrl,
+          }
+        : {
+            id: p.id,
+            label: p.label,
+            secondaryKind: 'info',
+            secondary: p.description,
+          },
+    ),
+    {
+      id: CUSTOM_PRESET_ID,
+      label: 'Custom',
+      secondaryKind: 'info',
+      secondary: 'bring your own openai-compatible base url',
+    },
   ];
   const selectedIdx = Math.max(options.findIndex((o) => o.id === value), 0);
   const selected = options[selectedIdx];
@@ -301,16 +351,17 @@ function ProviderField({
             {selected.label}
           </span>
           <span
-            className="mono"
+            className={selected.secondaryKind === 'url' ? 'mono' : 'serif'}
             style={{
-              fontSize: 11.5,
+              fontSize: selected.secondaryKind === 'url' ? 11.5 : 12,
+              fontStyle: selected.secondaryKind === 'info' ? 'italic' : 'normal',
               color: 'var(--ink-4)',
               whiteSpace: 'nowrap',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
             }}
           >
-            {selected.baseUrl ?? 'bring your own openai-compatible base url'}
+            {selected.secondary}
           </span>
         </div>
         <Chevron open={open} />
@@ -399,16 +450,18 @@ function ProviderField({
                     {o.label}
                   </span>
                   <span
-                    className="mono"
+                    className={o.secondaryKind === 'url' ? 'mono' : 'serif'}
                     style={{
-                      fontSize: 11,
+                      fontSize: o.secondaryKind === 'url' ? 11 : 11.5,
+                      fontStyle: o.secondaryKind === 'info' ? 'italic' : 'normal',
                       color: 'var(--ink-4)',
-                      whiteSpace: 'nowrap',
+                      whiteSpace: o.secondaryKind === 'url' ? 'nowrap' : 'normal',
                       overflow: 'hidden',
                       textOverflow: 'ellipsis',
+                      lineHeight: 1.4,
                     }}
                   >
-                    {o.baseUrl ?? 'bring your own openai-compatible base url'}
+                    {o.secondary}
                   </span>
                 </div>
               </div>
@@ -486,19 +539,28 @@ function Field({
 }
 
 function ModelField({
-  label, value, onChange, hint,
+  label, value, onChange, hint, settings,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   hint?: string;
+  /** Settings snapshot forwarded to ModelInput so the autocomplete list
+   *  refreshes when the active provider changes in the panel — before the
+   *  user clicks Save. */
+  settings?: Settings;
 }) {
   return (
     <div>
       <label className="smallcaps" style={{ display: 'block', marginBottom: 6 }}>
         {label}
       </label>
-      <ModelInput value={value} onChange={onChange} ariaLabel={label} />
+      <ModelInput
+        value={value}
+        onChange={onChange}
+        ariaLabel={label}
+        settings={settings}
+      />
       {hint && (
         <div
           className="serif"

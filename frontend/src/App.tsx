@@ -9,7 +9,15 @@ import { Hero } from './components/Hero';
 import { SnapshotBanner } from './components/SnapshotBanner';
 import { SnapshotRunPanel } from './components/SnapshotRunPanel';
 import { api } from './api';
-import { activeLlmApiKey, loadSettings, SETTINGS_CHANGED_EVENT } from './localSettings';
+import {
+  activeLlmApiKey,
+  activeOrchestratorModel,
+  activePreset,
+  loadSettings,
+  SETTINGS_CHANGED_EVENT,
+} from './localSettings';
+import { isCachedSignedIn } from './auth';
+import { isOAuthPreset } from './llmProviders';
 import {
   DEFAULT_WORKFLOW_NAME,
   deriveWorkflowName,
@@ -23,6 +31,15 @@ import type {
 } from './types';
 
 type View = 'workflow' | 'settings';
+
+/** True when the active provider preset has working credentials configured —
+ * a pasted API key for api-key presets, or a recent ``signed_in`` for OAuth
+ * presets (cached in localStorage; truth lives server-side). */
+function hasCredsForPreset(s: ReturnType<typeof loadSettings>): boolean {
+  const preset = activePreset(s);
+  if (isOAuthPreset(preset)) return isCachedSignedIn(preset.authProviderId);
+  return !!activeLlmApiKey(s);
+}
 
 export default function App() {
   const [view, setView] = useState<View>('workflow');
@@ -156,16 +173,14 @@ export default function App() {
   // what's actually being sent over the wire. Refreshed on save (custom event)
   // and on cross-tab edits (`storage`).
   const [orchestratorModel, setOrchestratorModel] = useState<string>(
-    () => loadSettings().default_orchestrator_model,
+    () => activeOrchestratorModel(loadSettings()),
   );
-  const [hasApiKey, setHasApiKey] = useState<boolean>(
-    () => !!activeLlmApiKey(loadSettings()),
-  );
+  const [hasApiKey, setHasApiKey] = useState<boolean>(() => hasCredsForPreset(loadSettings()));
   useEffect(() => {
     const sync = () => {
       const s = loadSettings();
-      setOrchestratorModel(s.default_orchestrator_model);
-      setHasApiKey(!!activeLlmApiKey(s));
+      setOrchestratorModel(activeOrchestratorModel(s));
+      setHasApiKey(hasCredsForPreset(s));
     };
     window.addEventListener(SETTINGS_CHANGED_EVENT, sync);
     window.addEventListener('storage', sync);

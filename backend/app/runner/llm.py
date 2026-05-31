@@ -153,6 +153,25 @@ def call_llm(
     Returns:
         {content, messages, tool_calls_made, usage, cost}
     """
+    # Subscription-OAuth provider dispatch — the runner subprocess gets an
+    # OAuth bearer + (for Codex) account id pre-resolved in env at spawn time.
+    # Codex uses the Responses API, not chat completions, so the call shape
+    # diverges enough to live in its own module.
+    if (os.getenv("LLM_PROVIDER_ID") or "").strip() == "codex":
+        from app.auth.codex_api import call_codex_chat
+        return call_codex_chat(
+            model=model,
+            prompt=prompt,
+            tools=tools,
+            tool_registry=REGISTRY,
+            tool_schemas_by_name=TOOL_SCHEMAS,
+            on_event=on_event,
+            call_id=call_id,
+            access_token=os.getenv("LLM_API_KEY", ""),
+            account_id=os.getenv("LLM_ACCOUNT_ID") or None,
+            **opts,
+        )
+
     api_key = os.getenv("LLM_API_KEY", "")
     if not api_key:
         raise RuntimeError("LLM_API_KEY not set")
