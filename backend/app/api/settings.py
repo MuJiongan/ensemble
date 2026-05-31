@@ -9,13 +9,14 @@ from app import models
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
-SECRET_KEYS = {"openrouter_api_key", "parallel_api_key"}
-MODEL_KEYS = {"default_orchestrator_model", "default_node_model"}
-ALL_KEYS = SECRET_KEYS | MODEL_KEYS
+SECRET_KEYS = {"llm_api_key", "parallel_api_key"}
+PLAIN_KEYS = {"llm_base_url", "default_orchestrator_model", "default_node_model"}
+ALL_KEYS = SECRET_KEYS | PLAIN_KEYS
 
 
 class SettingsBody(BaseModel):
-    openrouter_api_key: str = ""
+    llm_api_key: str = ""
+    llm_base_url: str = ""
     parallel_api_key: str = ""
     default_orchestrator_model: str = ""
     default_node_model: str = ""
@@ -39,8 +40,10 @@ def _read_settings(db: Session) -> dict:
 
 def apply_settings_to_env(db: Session) -> None:
     raw = _read_settings(db)
-    if raw["openrouter_api_key"]:
-        os.environ["OPENROUTER_API_KEY"] = raw["openrouter_api_key"]
+    if raw["llm_api_key"]:
+        os.environ["LLM_API_KEY"] = raw["llm_api_key"]
+    if raw["llm_base_url"]:
+        os.environ["LLM_BASE_URL"] = raw["llm_base_url"]
     if raw["parallel_api_key"]:
         os.environ["PARALLEL_API_KEY"] = raw["parallel_api_key"]
 
@@ -49,7 +52,8 @@ def apply_settings_to_env(db: Session) -> None:
 def get_settings(db: Session = Depends(get_db)) -> SettingsBody:
     raw = _read_settings(db)
     return SettingsBody(
-        openrouter_api_key=_mask(raw["openrouter_api_key"]),
+        llm_api_key=_mask(raw["llm_api_key"]),
+        llm_base_url=raw["llm_base_url"],
         parallel_api_key=_mask(raw["parallel_api_key"]),
         default_orchestrator_model=raw["default_orchestrator_model"],
         default_node_model=raw["default_node_model"],

@@ -116,8 +116,8 @@ class Session(Base):
 class Message(Base):
     """A single LLM-format message: user / assistant / tool / system.
 
-    Stored in OpenAI/OpenRouter message shape so the agent loop can replay
-    history verbatim across turns.
+    Stored in OpenAI-compatible chat message shape so the agent loop can
+    replay history verbatim across turns.
     """
     __tablename__ = "messages"
     id = Column(String, primary_key=True, default=uid)
@@ -129,11 +129,12 @@ class Message(Base):
     name = Column(String, nullable=True)  # tool role: tool name
     # Anthropic extended-thinking blocks. We must echo these back unmodified
     # in the assistant message on the next turn for tool-calling to stay
-    # valid (OpenRouter / Anthropic enforce ordering).
+    # valid (the Anthropic chat shape enforces ordering of these blocks).
     reasoning_details = Column(JSON, default=list)
-    # OpenRouter-reported USD cost for the LLM round that produced this
-    # assistant message. 0 for user/tool/system rows. Surfaced on the
-    # assistant bubble in the orchestrator chat panel.
+    # Provider-reported USD cost for the LLM round that produced this
+    # assistant message — only OpenRouter currently reports cost; other
+    # providers leave this at 0. Surfaced on the assistant bubble in the
+    # orchestrator chat panel.
     cost = Column(Float, default=0.0)
     ts = Column(DateTime, default=datetime.utcnow)
     session = relationship("Session", back_populates="messages")

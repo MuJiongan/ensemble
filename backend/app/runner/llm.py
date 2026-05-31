@@ -1,9 +1,18 @@
-"""call_llm — single function over OpenRouter with optional tool-calling agent loop.
+"""call_llm — single function over any OpenAI-compatible chat completions API,
+with optional tool-calling agent loop.
 
-When an ``on_event`` callback is provided, the call streams the response from
-OpenRouter and emits per-token events tagged with ``call_id`` so the run panel
-can render live content/reasoning/tool-arg deltas. Multiple ``ctx.call_llm``
-invocations within the same node are disambiguated by their ``call_id``.
+The provider is configured by the user in Settings (``llm_base_url`` +
+``llm_api_key``) and forwarded as headers, which the FastAPI middleware maps
+to ``LLM_BASE_URL`` / ``LLM_API_KEY`` env vars. We POST to
+``{base}/chat/completions`` with a standard OpenAI chat-completion payload.
+OpenRouter is the default base and gets a couple of OpenRouter-only extras
+(usage cost reporting, reasoning effort) which we omit for other providers so
+strict servers don't 400 on unknown fields.
+
+When an ``on_event`` callback is provided, the call streams the response and
+emits per-token events tagged with ``call_id`` so the run panel can render
+live content/reasoning/tool-arg deltas. Multiple ``ctx.call_llm`` invocations
+within the same node are disambiguated by their ``call_id``.
 
 Without ``on_event`` it falls back to a non-streaming POST — kept for any
 caller that doesn't need live progress.
@@ -19,11 +28,19 @@ import httpx
 
 from app.runner.tools import REGISTRY, TOOL_SCHEMAS
 
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
+
+
+def _base_url() -> str:
+    return (os.getenv("LLM_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
+
+
+def _is_openrouter(base_url: str) -> bool:
+    return "openrouter" in base_url.lower()
 
 
 def _parse_sse_lines(lines: Iterator[str]) -> Iterator[tuple]:
-    """Parse OpenRouter-compatible SSE chat-completion deltas.
+    """Parse OpenAI-compatible SSE chat-completion deltas.
 
     Yields:
       ("text", delta_str)
@@ -118,26 +135,29 @@ def call_llm(
     **opts,
 ) -> dict:
     """
-    Call an LLM via OpenRouter.
+    Call an LLM over an OpenAI-compatible chat completions API.
 
     Args:
-        model:    OpenRouter model id (e.g. "anthropic/claude-sonnet-4.5").
+        model:    model id, as expected by the configured provider (e.g.
+                  "anthropic/claude-sonnet-4.5" on OpenRouter, "gpt-4o" on OpenAI).
         prompt:   str or list of messages [{role, content}].
         tools:    list of tool names exposed to the LLM (subset of REGISTRY keys).
         on_event: optional callback for streaming events. When provided, the
-                  call streams from OpenRouter and emits ``llm_call_chunk`` and
-                  ``tool_call_started``/``tool_call_finished`` events tagged
-                  with ``call_id``.
+                  call streams from the provider and emits ``llm_call_chunk``
+                  and ``tool_call_started``/``tool_call_finished`` events
+                  tagged with ``call_id``.
         call_id:  unique id for this call, included on every emitted event so
                   concurrent calls within one node can be disambiguated.
-        **opts:   forwarded as additional fields in the OpenRouter request body.
+        **opts:   forwarded as additional fields in the request body.
 
     Returns:
         {content, messages, tool_calls_made, usage, cost}
     """
-    api_key = os.getenv("OPENROUTER_API_KEY", "")
+    api_key = os.getenv("LLM_API_KEY", "")
     if not api_key:
-        raise RuntimeError("OPENROUTER_API_KEY not set")
+        raise RuntimeError("LLM_API_KEY not set")
+    base_url = _base_url()
+    chat_url = base_url + "/chat/completions"
 
     if isinstance(prompt, str):
         messages: list[dict] = [{"role": "user", "content": prompt}]
@@ -170,10 +190,13 @@ def call_llm(
             payload: dict = {
                 "model": model,
                 "messages": messages,
+            }
+            if _is_openrouter(base_url):
                 # Opt into OpenRouter's cost accounting — without this,
                 # `usage.cost` is omitted and every reported cost is $0.
-                "usage": {"include": True},
-            }
+                # Other OpenAI-compatible providers don't understand this
+                # field and may reject the request, so we gate it.
+                payload["usage"] = {"include": True}
             if tool_schemas:
                 payload["tools"] = tool_schemas
             if streaming:
@@ -186,11 +209,11 @@ def call_llm(
                 assembled_msg: dict | None = None
                 round_usage: dict = {}
                 with client.stream(
-                    "POST", OPENROUTER_URL, headers=headers, json=payload
+                    "POST", chat_url, headers=headers, json=payload
                 ) as r:
                     if r.status_code >= 400:
                         body = r.read().decode(errors="replace")[:500]
-                        raise RuntimeError(f"OpenRouter {r.status_code}: {body}")
+                        raise RuntimeError(f"LLM {r.status_code}: {body}")
                     for item in _parse_sse_lines(r.iter_lines()):
                         kind = item[0]
                         if kind == "text":
@@ -233,9 +256,9 @@ def call_llm(
                 usage = round_usage
                 msg = assembled_msg
             else:
-                r = client.post(OPENROUTER_URL, headers=headers, json=payload)
+                r = client.post(chat_url, headers=headers, json=payload)
                 if r.status_code >= 400:
-                    raise RuntimeError(f"OpenRouter {r.status_code}: {r.text[:500]}")
+                    raise RuntimeError(f"LLM {r.status_code}: {r.text[:500]}")
                 data = r.json()
                 usage = data.get("usage") or {}
                 choice = data["choices"][0]

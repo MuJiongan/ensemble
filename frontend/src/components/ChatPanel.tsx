@@ -230,7 +230,7 @@ export interface AssistantMessage {
   role: 'assistant';
   content: ChatBlock[];
   streaming?: boolean;
-  /** Accumulated OpenRouter $ cost across all LLM rounds in this turn. */
+  /** Accumulated provider-reported $ cost across all LLM rounds in this turn. */
   cost?: number;
 }
 
@@ -762,7 +762,7 @@ function MessageBubble({
         {typeof msg.cost === 'number' && msg.cost > 0 && (
           <span
             className="mono"
-            title="OpenRouter-reported cost for this turn"
+            title="provider-reported cost for this turn"
             style={{
               textTransform: 'none',
               letterSpacing: 0,
@@ -890,7 +890,7 @@ export function ChatPanel({
               </span>
               <span
                 className="mono"
-                title="total OpenRouter cost across this chat context"
+                title="total provider-reported cost across this chat context"
                 style={{ fontSize: 10.5, color: 'var(--ink-4)', whiteSpace: 'nowrap' }}
               >
                 ${totalCost.toFixed(4)}

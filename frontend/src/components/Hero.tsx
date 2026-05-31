@@ -69,7 +69,7 @@ export function Hero({
         >
           {hasApiKey
             ? 'the orchestrator agent will dynamically assemble a team of specialized agents to solve your query — refine and execute when ready.'
-            : 'the application runs on your openrouter key. add it once, then describe a problem and ensemble will assemble a team of specialized agents to help you.'}
+            : 'the application runs on your own llm key — any openai-compatible endpoint works (openrouter, openai, a self-hosted gateway, etc.). add it once, then describe a problem and ensemble will assemble a team of specialized agents to help you.'}
         </p>
 
         {hasApiKey ? (
@@ -145,8 +145,9 @@ export function Hero({
           >
             <div style={{ fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.6 }}>
               you'll need an{' '}
-              <span className="mono" style={{ fontSize: 12 }}>openrouter</span> api key — keys are
-              stored in your browser only.
+              <span className="mono" style={{ fontSize: 12 }}>llm</span> api key for any
+              openai-compatible endpoint (openrouter by default) — keys are stored in your
+              browser only.
             </div>
             <div>
               <button className="btn-ink" onClick={onOpenSettings}>

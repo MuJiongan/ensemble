@@ -1,8 +1,13 @@
-"""OpenRouter streaming + SSE parsing for the orchestrator agent.
+"""Streaming + SSE parsing for the orchestrator agent.
+
+The provider is whatever OpenAI-compatible chat-completions endpoint the user
+configured in Settings (``llm_base_url`` + ``llm_api_key``). The default is
+OpenRouter; a couple of OpenRouter-only request extras (cost reporting,
+reasoning effort) are gated so stricter providers don't 400 on unknown fields.
 
 Pulled out of the agent loop so the chunk parser can be unit-tested without
 spinning up an HTTP server, and so the loop module isn't bogged down in
-provider-specific protocol details.
+protocol details.
 """
 from __future__ import annotations
 import json
@@ -13,9 +18,17 @@ from typing import Any, Iterator
 import httpx
 
 
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 
 REASONING_EFFORT = "medium"
+
+
+def _base_url() -> str:
+    return (os.getenv("LLM_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
+
+
+def _is_openrouter(base_url: str) -> bool:
+    return "openrouter" in base_url.lower()
 
 
 def _merge_reasoning_delta(blocks: list[dict], rd: dict) -> str:
@@ -104,7 +117,7 @@ def _assemble_message(
 
 
 def _parse_sse_chunks(lines: Iterator[str]) -> Iterator[tuple[str, Any]]:
-    """Parse OpenAI/OpenRouter-compatible streaming SSE lines.
+    """Parse OpenAI-compatible streaming SSE lines.
 
     Yields:
       ``("text", delta_str)`` for each visible text delta,
@@ -133,7 +146,7 @@ def _parse_sse_chunks(lines: Iterator[str]) -> Iterator[tuple[str, Any]]:
         except Exception:
             continue
 
-        # OpenRouter sometimes piggybacks usage at the tail of the stream.
+        # OpenAI-compatible providers piggyback usage at the tail of the stream.
         u = chunk.get("usage")
         if u:
             usage = u
@@ -178,38 +191,43 @@ def _parse_sse_chunks(lines: Iterator[str]) -> Iterator[tuple[str, Any]]:
     )
 
 
-def _call_openrouter_stream(
+def _call_llm_stream(
     model: str,
     messages: list[dict],
     tool_specs: list[dict],
     cancel_event: threading.Event | None = None,
 ) -> Iterator[tuple[str, Any]]:
-    """Open a streaming chat completion against OpenRouter and yield parsed
-    chunks via :func:`_parse_sse_chunks`.
+    """Open a streaming chat completion against the configured OpenAI-compatible
+    provider and yield parsed chunks via :func:`_parse_sse_chunks`.
 
     If ``cancel_event`` is provided and gets set during streaming, the SSE
     read terminates between chunks and the parser emits a final ``done``
     with whatever partial text was assembled — letting the agent loop bail
     immediately instead of waiting for the LLM to finish."""
-    api_key = os.getenv("OPENROUTER_API_KEY", "")
+    api_key = os.getenv("LLM_API_KEY", "")
     if not api_key:
-        raise RuntimeError("OPENROUTER_API_KEY not set")
+        raise RuntimeError("LLM_API_KEY not set")
+    base_url = _base_url()
+    chat_url = base_url + "/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {
+    payload: dict = {
         "model": model,
         "messages": messages,
         "tools": tool_specs,
         "stream": True,
-        "reasoning": {"effort": REASONING_EFFORT},
-        # Opt into OpenRouter's cost accounting — without this, `usage.cost`
-        # is omitted from the final stream chunk and orchestrator cost is $0.
-        "usage": {"include": True},
     }
+    if _is_openrouter(base_url):
+        # OpenRouter-specific knobs: a configurable reasoning effort, and
+        # cost accounting (without `usage.include`, `usage.cost` is omitted
+        # and orchestrator cost is $0). Other providers don't understand
+        # these fields and may reject the request, so we gate them.
+        payload["reasoning"] = {"effort": REASONING_EFFORT}
+        payload["usage"] = {"include": True}
     with httpx.Client(timeout=None) as client:
-        with client.stream("POST", OPENROUTER_URL, headers=headers, json=payload) as r:
+        with client.stream("POST", chat_url, headers=headers, json=payload) as r:
             if r.status_code >= 400:
                 body = r.read().decode(errors="replace")[:500]
-                raise RuntimeError(f"OpenRouter {r.status_code}: {body}")
+                raise RuntimeError(f"LLM {r.status_code}: {body}")
 
             def cancellable_lines():
                 for line in r.iter_lines():

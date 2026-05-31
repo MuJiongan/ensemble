@@ -13,7 +13,8 @@ from app.api import settings as settings_api
 # in localStorage; the frontend forwards them on every request and we apply
 # them to the process env so existing call_llm / runner code keeps working.
 _HEADER_TO_ENV = {
-    "x-openrouter-key": "OPENROUTER_API_KEY",
+    "x-llm-api-key": "LLM_API_KEY",
+    "x-llm-base-url": "LLM_BASE_URL",
     "x-parallel-key": "PARALLEL_API_KEY",
     "x-orchestrator-model": "DEFAULT_ORCHESTRATOR_MODEL",
     "x-node-model": "DEFAULT_NODE_MODEL",

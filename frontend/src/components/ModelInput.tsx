@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { fetchOpenRouterModels, type OpenRouterModel } from '../openrouterModels';
+import { fetchLlmModels, type LLMModel } from '../llmModels';
 
 interface Props {
   value: string;
@@ -19,7 +19,7 @@ export function ModelInput({
   variant = 'underline',
   ariaLabel,
 }: Props) {
-  const [models, setModels] = useState<OpenRouterModel[] | null>(null);
+  const [models, setModels] = useState<LLMModel[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(0);
@@ -29,7 +29,7 @@ export function ModelInput({
   // Lazy-load the model list the first time the input is focused.
   const loadModels = () => {
     if (models || error) return;
-    fetchOpenRouterModels()
+    fetchLlmModels()
       .then((m) => setModels(m))
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   };
@@ -166,7 +166,7 @@ export function ModelInput({
               className="serif"
               style={{ padding: 10, fontStyle: 'italic', color: 'var(--ink-4)', fontSize: 12.5 }}
             >
-              couldn't load openrouter models — {error}.
+              couldn't load models — {error}. type the model id directly.
             </div>
           )}
           {!error && !models && (

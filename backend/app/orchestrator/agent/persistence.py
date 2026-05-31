@@ -71,7 +71,7 @@ def _persist_tool_result(
 
 
 def _history_messages(db: DbSession, sid: str) -> list[dict]:
-    """Replay persisted messages back in OpenRouter chat shape."""
+    """Replay persisted messages back in OpenAI-compatible chat shape."""
     rows = (
         db.query(models.Message)
         .filter_by(session_id=sid)

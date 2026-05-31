@@ -99,7 +99,14 @@ export interface Run {
 }
 
 export interface Settings {
-  openrouter_api_key: string;
+  /**
+   * Per-provider API keys, keyed by provider preset id (see `llmProviders.ts`)
+   * — `openrouter`, `openai`, ..., or `custom` for the bring-your-own-base-url
+   * option. Switching providers in the Settings UI swaps which entry is shown
+   * and which one is sent on the wire.
+   */
+  llm_api_keys: Record<string, string>;
+  llm_base_url: string;
   parallel_api_key: string;
   default_orchestrator_model: string;
   default_node_model: string;
@@ -248,7 +255,7 @@ export interface ChatHistoryAssistant {
   role: 'assistant';
   text?: null;
   content: ChatBlock[];
-  /** OpenRouter-reported USD cost for the round; omitted when unknown / 0. */
+  /** Provider-reported USD cost for the round; omitted when unknown / 0. */
   cost?: number | null;
 }
 
@@ -268,7 +275,7 @@ export type OrchestratorEvent =
   // assistant_thinking_chunk fires for each reasoning-token delta during a round.
   | { kind: 'assistant_thinking_chunk'; text: string }
   // assistant_cost fires once per LLM round (after persistence) with the
-  // OpenRouter-reported USD cost for that round. The chat bubble accumulates
+  // provider-reported USD cost for that round. The chat bubble accumulates
   // it across rounds in the same turn.
   | { kind: 'assistant_cost'; cost: number }
   | {
