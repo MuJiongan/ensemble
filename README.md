@@ -48,7 +48,12 @@ make backend       # Start the API and orchestration server on http://localhost:
 make frontend      # Start the Vite development UI on http://localhost:5173
 ```
 
-Open http://localhost:5173. Open **settings**, paste your OpenRouter and (optionally) parallel.ai API keys, and select default LLM strings (e.g., `anthropic/claude-sonnet-4.5`). Keys are stored safely in browser `localStorage` and sent as headers with requests—the backend never persists them.
+Open http://localhost:5173 and configure an **LLM provider preset** in **settings**:
+
+- **API-key presets** — OpenRouter (default), OpenAI, Groq, Together, DeepSeek, Cerebras, Fireworks, xAI, Mistral, or **Custom** for any other OpenAI-compatible `{base}/chat/completions` endpoint. Each preset stores its own key; switching providers swaps the active key, default orchestrator model, and default node model.
+- **Subscription-OAuth presets** — **ChatGPT (subscription)** (PKCE flow against `auth.openai.com`, routes calls through `chatgpt.com/backend-api/codex/responses` against your ChatGPT Pro/Plus subscription; GPT-5.x models only) and **xAI (sign in)** (PKCE flow against `auth.x.ai`). These replace the key field with a Sign in / Sign out widget that drives an OAuth popup; tokens live server-side in a `Credential` table, refreshed automatically on expiry. Both flows pin loopback callback ports (`1455` and `127.0.0.1:56121`) required by upstream's registered redirect URIs.
+
+Optionally add a parallel.ai API key for the `web_search` / `web_fetch` tools. API keys are kept in browser `localStorage` and ride as request headers — the backend never persists them.
 
 ### Application Layout & Interaction
 
@@ -89,14 +94,16 @@ backend/
   app/
     main.py                # FastAPI server & per-request headers middleware
     db.py models.py schemas.py
-    api/                   # Teams, agents, handoffs, executions, settings, orchestrator
+    api/                   # Teams, agents, handoffs, executions, settings, orchestrator, auth
+    auth/                  # Subscription-OAuth (Codex/ChatGPT, xAI) PKCE flows, loopback HTTP server,
+                           #   per-provider token storage & refresh, Codex Responses-API translator
     runner/
       runner.py            # Parent: Spawns the isolated runner process, publishes events
       child.py             # Child: Subprocess boundary executing topological sort & skip rules
       service.py           # Team run lifecycle, process spawning, and persistence
       ctx.py               # Injected agent context (call_llm, direct tools, logging)
       tools.py             # Tool registry & LLM function schemas
-      llm.py               # OpenRouter caller (agent loop with tool calling)
+      llm.py               # OpenAI-compatible LLM caller (provider-agnostic; agent loop with tool calling)
       events.py            # In-memory execution pub/sub feeding WebSockets
     orchestrator/
       agent/               # SSE orchestrator agent loop modules:
@@ -117,7 +124,9 @@ frontend/
     appHelpers.ts          # Topology mutation actions & chat helpers
     api.ts types.ts localSettings.ts
     notify.ts              # Browser notifications on run completion
-    openrouterModels.ts    # Model autocomplete caching
+    llmProviders.ts        # LLM provider preset registry (api-key + OAuth presets, Custom)
+    llmModels.ts           # Model autocomplete caching (per base URL)
+    auth.ts                # OAuth popup driver for subscription-login providers
     orchestratorStream.ts  # Orchestrator SSE event reducer
     runWebSocket.ts        # Execution WebSocket status receiver
     components/

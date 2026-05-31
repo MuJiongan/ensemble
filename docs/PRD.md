@@ -76,7 +76,7 @@ Below is how the user-facing **Agent-Team Metaphor** maps directly to the underl
 ## 4. Functional Requirements
 
 ### 4.1 Orchestrator Agent
-- Powered by an LLM over OpenRouter; default model is read from the user's settings (`default_orchestrator_model`), falling back to `anthropic/claude-opus-4.7`.
+- Powered by an LLM over any OpenAI-compatible chat-completions provider (OpenRouter default, OpenAI, Groq, Together, DeepSeek, Cerebras, Fireworks, xAI, Mistral, or any custom base URL — plus subscription-OAuth presets that authenticate via PKCE against ChatGPT/Codex and xAI). The frontend maintains a `default_orchestrator_models[provider_id]` map and forwards the active value on each request; the backend reads it from the request env (with a legacy DB setting as backwards-compat fallback) and ultimately falls back to `anthropic/claude-opus-4.7`. OpenRouter-only request fields (`usage.include`, `reasoning.effort`) are gated by base-URL inspection so stricter providers don't reject calls.
 - Leverages always-on extended thinking (`reasoning.effort = "medium"`) to plan topologies and debug code. Extended thinking outputs are saved and echoed back to the LLM on subsequent turns to maintain Anthropic's strict contextual continuity.
 - **Decoupled Agent Customization**: To prevent massive LLM context payloads, the tool surface splits structural recruitment from programming. The orchestrator first calls `add_node` to recruit a specialized agent (defining its name, role description, and port contracts) which creates a basic Python stub. The orchestrator then calls `configure_node` separately to author and inject the actual custom Python code.
 - **Outcome Reporting**: When `run_workflow` successfully executes the team, the Orchestrator Agent calls `view_run` to inspect outputs, extracts the most valuable slices of information, and presents them in chat alongside direct highlights.
@@ -110,9 +110,10 @@ The injected execution context (`ctx`) provides:
 - Logs, sub-LLM calls, and tool calls are piped to the parent process as structured JSON lines (`app.runner.events`), which are published via memory queues directly into the live WebSocket server (`/api/runs/{rid}/events`).
 
 ### 4.3 `call_llm` Framework
-- Global utility over OpenRouter.
+- Provider-agnostic utility that POSTs to `{base}/chat/completions` against the active LLM provider. The base URL, API key (or OAuth bearer), and provider id ride along the request as headers (`X-Llm-Base-Url`, `X-Llm-Api-Key`, `X-Llm-Provider-Id`); the backend never persists them.
 - Signature: `call_llm(model: str, prompt: str | messages, tools: list[str] = [], **opts) -> dict`.
 - If equipped with `tools`, runs a local agent loop: calls the LLM, parses tool calls, executes tools locally, and feeds results back until the LLM returns a final text block.
+- For OAuth providers, the runtime resolves the bearer from the server-side `Credential` table and refreshes it before calls when expiry is near. The ChatGPT-subscription preset additionally translates chat-completions payloads to/from the Codex Responses-API transport, yielding the same `(text | thinking | tool_args | done)` SSE tuples downstream consumers already expect.
 - Streams token-by-token using unique `call_id` headers, allowing the React frontend to display multiple sub-LLM calls executing in parallel as live, updating text cards.
 
 ### 4.4 Specialized Agent Tool Library (v1)
@@ -193,7 +194,7 @@ Tools are configured in the global registry `app.runner.tools.REGISTRY`. Agents 
   - **chat**: Displays the Orchestrator Agent's SSE text stream, collapsible planning/reasoning logs, and live status badges for tool runs.
   - **workspace**: Displays `RunPanel` (when no agent is selected) showing the input form and live trace feeds, `NodePanel` (when an agent is selected) exposing the Monaco code editor, or snapshot panels when in historical view.
 - **Dollar-sign Rendering Guard**: `remark-math` is configured with `singleDollarTextMath: false` to ensure common notations like currency (`$50K`) render as normal text, reserving math block rendering strictly for double dollar signs (`$$...$$`).
-- **Settings Panel**: Input keys for OpenRouter and parallel.ai, and configure default models. Data is held in browser storage and passed on headers, preventing database persistence of keys.
+- **Settings Panel**: A provider dropdown lists **API-key presets** (OpenRouter default, OpenAI, Groq, Together, DeepSeek, Cerebras, Fireworks, xAI, Mistral, Custom) and **OAuth presets** (ChatGPT subscription via Codex, xAI sign-in via Grok-CLI). API-key presets show a per-provider key field; switching providers swaps the active key, default orchestrator model, and default node model. OAuth presets replace the key field with a Sign in / Sign out widget that opens a PKCE flow popup against the upstream provider, with tokens stored server-side. A parallel.ai key is configured alongside for `web_search` / `web_fetch`. API keys live in browser `localStorage` and ride request headers; OAuth tokens are persisted server-side in the `Credential` table and never round-trip to the browser.
 - **MCP Settings & Session Access**: Planned controls for adding user-configured MCP servers, testing connections, refreshing discovered tools, and selecting allowed MCP tools per session.
 
 ### 4.7 Data Persistence & Workspaces
@@ -203,6 +204,7 @@ Tools are configured in the global registry `app.runner.tools.REGISTRY`. Agents 
   - `Edge` (underlying record of a Handoff Channel)
   - `Session`, `Message` (chat histories)
   - `Run`, `NodeRun` (execution records)
+  - `Credential` (OAuth access/refresh tokens for subscription-login providers, e.g. ChatGPT subscription, xAI sign-in; never exposed to the frontend)
   - Default database sits at `./workflow_builder.db`.
 - **Filesystem Workspace**: Sandboxed temporary execution folders (`tempfile.mkdtemp(prefix="wfrun-")`) allocated per run to house files, code outputs, or scrap scripts created by active agents.
 - **Run Deletion Protection**: Projects cannot be deleted if a team collaboration run is currently `pending` or `running` to avoid orphaned system processes.
@@ -250,6 +252,12 @@ NodeRun    { id, run_id, node_id, status, inputs, outputs,
 
 Setting    { key, value }
 
+Credential { id, provider_id, access_token, refresh_token,
+             expires_at, account_id?, scope?,
+             created_at, updated_at }
+           # provider_id: e.g. "chatgpt-subscription", "xai-oauth"
+           # account_id used by Codex (sent as X-ChatGPT-Account-Id header)
+
 Planned MCP additions:
 
 McpServer  { id, name, transport, config, enabled, created_at, updated_at,
@@ -293,7 +301,7 @@ run_workflow(inputs)                   -> {run_id, status, total_cost}  # Trigge
 ---
 
 ## 8. Technology Stack
-- **Backend:** Python 3.11+, FastAPI, WebSockets, Server-Sent Events, SQLAlchemy + SQLite, isolated `subprocess` execution, HTTPX client for OpenRouter.
+- **Backend:** Python 3.11+, FastAPI, WebSockets, Server-Sent Events, SQLAlchemy + SQLite, isolated `subprocess` execution, HTTPX client for any OpenAI-compatible LLM provider, plus a Codex Responses-API translator for the ChatGPT-subscription transport and a loopback HTTP server for OAuth PKCE callbacks.
 - **Frontend:** React 18, Vite, `@xyflow/react` for Canvas, `@monaco-editor/react` for the code workbench, `react-markdown` + `remark-gfm` for chat. Vanilla CSS and layout styling.
 - **Planned MCP Layer:** Python MCP client integration for user-configured servers, tool discovery, schema normalization, node runtime dispatch, and cancellation-aware execution.
 
@@ -317,6 +325,7 @@ run_workflow(inputs)                   -> {run_id, status, total_cost}  # Trigge
 - **Reasoning Order Rules**: Strict compliance with OpenRouter/Anthropic's sequence requirements (re-sending reasoning blocks unmodified) is critical to prevent turn execution failures.
 - **External MCP Tool Trust**: User-configured MCP servers can perform arbitrary external actions. Session allowlists, namespacing, redacted logging, traceability, and local-only deployment are required to keep behavior understandable.
 - **Schema Drift**: MCP tool schemas can change between discovery and execution. Run snapshots must pin the schema used at execution time to preserve reproducibility.
+- **Reused Public OAuth Client IDs**: Subscription-OAuth presets reuse Codex CLI's and Grok-CLI's published `client_id`s (matching the opencode pattern) and pin specific loopback callback ports (`1455`, `127.0.0.1:56121`) required by upstream's registered redirect URIs. Either provider can revoke the client at any time or change the redirect contract, breaking sign-in until a new client_id is wired up. Local port conflicts surface as a clear 409.
 
 ---
 
@@ -327,6 +336,7 @@ run_workflow(inputs)                   -> {run_id, status, total_cost}  # Trigge
 4. **Active Event Streaming** ✅ WebSockets, real-time node state changes, cancel support.
 5. **Orchestrator Agent v1** ✅ SSE chat stream, collapsible reasoning logs, tool call cards, and `user_edited` locks.
 6. **Orchestrator-Driven Collaboration** ✅ Orchestrator can run graphs, diagnose trace errors, clear board between stage solves, and fork snapshots into fresh active projects.
-7. **External MCP Tool Integrations** ⏳ User-configured MCP servers, session-level MCP tool allowlists, and node-only direct/agentic MCP tool execution.
-8. **Generative UI / Designer Agent** ⏳ Dedicated Design tab allowing a specialized designer agent to generate tailor-made UI pages for running stable agent teams.
-9. **Distribution Polish** ⏳ Run pruning and single-process packaging integration.
+7. **Multi-Provider LLM Support** ✅ Provider-agnostic LLM caller for any OpenAI-compatible `{base}/chat/completions` endpoint; curated preset registry (OpenRouter, OpenAI, Groq, Together, DeepSeek, Cerebras, Fireworks, xAI, Mistral, Custom); per-provider API-key storage with active-provider headers; subscription-OAuth presets (ChatGPT via Codex PKCE, xAI via Grok-CLI PKCE) with server-side `Credential` token storage, automatic refresh-on-expiry, and a Codex Responses-API ↔ chat-completions translator.
+8. **External MCP Tool Integrations** ⏳ User-configured MCP servers, session-level MCP tool allowlists, and node-only direct/agentic MCP tool execution.
+9. **Generative UI / Designer Agent** ⏳ Dedicated Design tab allowing a specialized designer agent to generate tailor-made UI pages for running stable agent teams.
+10. **Distribution Polish** ⏳ Run pruning and single-process packaging integration.
