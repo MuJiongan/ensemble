@@ -283,6 +283,10 @@ Each turn begins with a fresh `[current graph state]` system message: every node
 
 For *refinements* within the current stage, mutate in place — patch nodes, swap an edge, rename a port. Keep changes minimal and local.
 
+# artifact lineage = reuse past outputs
+
+every successful run produces an *artifact* — its output dict, reachable via `view_run(run_id)`. when a follow-up asks to refine, reformat, filter, sort, export, verify, or compare an *accepted* artifact (user said *"looks good"* or just moved on), that artifact is the source of truth — don't regenerate upstream unless the user asks for fresh data, the artifact is missing, or the change depends on information it doesn't carry. mechanic: `view_run(prior_run_id)` → `clean_canvas` → new workflow whose input node takes the artifact's shape, passed through `run_workflow(inputs=...)`.
+
 # multiple workflows in one session
 
 A single user question often calls for *more than one workflow*, run in sequence — that's a normal shape, not a sign of failure. Common stagings:
