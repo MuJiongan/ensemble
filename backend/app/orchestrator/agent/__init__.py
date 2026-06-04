@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session as DbSession
 
 from app import models
 from app.orchestrator import tools as orch_tools
-from app.orchestrator.prompt import SYSTEM_PROMPT, graph_state_message
+from app.orchestrator.prompt import SYSTEM_PROMPT, graph_state_message, mcp_tools_message
 
 from .session import (
     _TURN_CANCEL_EVENTS,
@@ -197,9 +197,11 @@ def run_turn(db: DbSession, session_id: str, user_text: str) -> Iterator[dict]:
             # Refresh history every turn — including a fresh system snapshot of
             # the graph as it stands. We DON'T persist these system messages.
             history = _history_messages(db, session_id)
+            mcp_msg = mcp_tools_message()
             messages = (
                 [{"role": "system", "content": SYSTEM_PROMPT}]
                 + [graph_state_message(db, workflow_id)]
+                + ([mcp_msg] if mcp_msg else [])
                 + history
             )
 

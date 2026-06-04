@@ -74,6 +74,31 @@ def _read_payload() -> dict:
     return payload
 
 
+def _load_mcp_tools():
+    """Connect to configured MCP servers and register their tools into the
+    runtime registry so node code can use them via ``ctx.call_llm(tools=[...])``
+    or ``ctx.tools.<name>(...)``. Best-effort: a connection failure is logged to
+    stderr (captured by the parent for diagnostics) but never fails the run.
+    Returns the live manager so the caller can shut it down on exit."""
+    raw = os.environ.get("MCP_SERVERS", "")
+    if not raw.strip():
+        return None
+    try:
+        from app.runner import mcp as mcp_mod
+        from app.runner import tools as tools_mod
+
+        manager = mcp_mod.register_runtime_tools(
+            raw, tools_mod.REGISTRY, tools_mod.TOOL_SCHEMAS, tools_mod.MCP_NAMESPACES
+        )
+        if manager is not None:
+            for name, st in manager.status().items():
+                print(f"[mcp] {name}: {st}", file=sys.stderr)
+        return manager
+    except Exception as e:
+        print(f"[mcp] failed to load MCP tools: {type(e).__name__}: {e}", file=sys.stderr)
+        return None
+
+
 @dataclass
 class _Schedule:
     """Pre-computed DAG state used to drive node scheduling."""
@@ -364,6 +389,8 @@ def main() -> None:
     workdir = Path(payload["workdir"])
     workdir.mkdir(parents=True, exist_ok=True)
 
+    mcp_manager = _load_mcp_tools()
+
     try:
         sched = _build_schedule(workflow)
     except Exception as e:
@@ -401,6 +428,13 @@ def main() -> None:
     # cancel a second time; skip the wait and forcibly exit below.
     cancelled = state.cancel_reason is not None
     pool.shutdown(wait=not cancelled, cancel_futures=cancelled)
+
+    # On a clean finish, close MCP transports so local stdio servers get a
+    # graceful shutdown. On cancel we skip it — `_emit_run_finished` force-exits
+    # the process, which tears down the child servers anyway, and we don't want
+    # to block the cancel on a slow server.
+    if mcp_manager is not None and not cancelled:
+        mcp_manager.shutdown()
 
     _emit_run_finished(state)
 

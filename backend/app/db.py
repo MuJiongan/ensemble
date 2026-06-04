@@ -26,6 +26,7 @@ _PENDING_COLUMNS: list[tuple[str, str, str]] = [
     ("messages", "reasoning_details", "JSON DEFAULT '[]'"),
     ("messages", "cost", "FLOAT DEFAULT 0.0"),
     ("runs", "workflow_snapshot", "JSON DEFAULT NULL"),
+    ("mcp_credentials", "token_endpoint_auth_method", "VARCHAR DEFAULT NULL"),
 ]
 
 

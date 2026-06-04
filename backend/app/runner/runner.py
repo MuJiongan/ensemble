@@ -20,6 +20,25 @@ from typing import Any
 from app.runner import events as ev_mod
 
 
+def _resolve_mcp_servers() -> str:
+    """Augment the MCP config with fresh OAuth bearer tokens for remote servers.
+
+    The child subprocess has no DB access, so the API process resolves a fresh
+    access token per OAuth server here and injects it as an Authorization
+    header. Falls back to the raw config if resolution can't run.
+    """
+    raw = os.getenv("MCP_SERVERS", "")
+    if not raw.strip():
+        return raw
+    try:
+        from app.runner import mcp as mcp_mod
+        from app.db import SessionLocal
+
+        return mcp_mod.resolve_oauth_config(raw, SessionLocal)
+    except Exception:
+        return raw
+
+
 def topo_sort(nodes: list[dict], edges: list[dict]) -> list[str]:
     indeg: dict[str, int] = defaultdict(int)
     adj: dict[str, list[str]] = defaultdict(list)
@@ -63,6 +82,11 @@ def run_workflow_streaming(
             "LLM_API_KEY": os.getenv("LLM_API_KEY", ""),
             "LLM_BASE_URL": os.getenv("LLM_BASE_URL", ""),
             "PARALLEL_API_KEY": os.getenv("PARALLEL_API_KEY", ""),
+            # MCP server config (opencode-style JSON); the child connects to
+            # these and registers their tools into its runtime registry. Remote
+            # OAuth servers get a fresh bearer injected here (the child has no
+            # DB access), mirroring the LLM-credential resolution below.
+            "MCP_SERVERS": _resolve_mcp_servers(),
         }
         # OAuth-backed providers: resolve the access token (refresh if needed)
         # once at spawn time and forward it as the effective LLM_API_KEY. The

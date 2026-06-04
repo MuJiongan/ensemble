@@ -21,7 +21,20 @@ const EMPTY: Settings = {
   parallel_api_key: '',
   default_orchestrator_models: {},
   default_node_models: {},
+  mcp_servers: '',
 };
+
+/** Collapse a JSON string to one line (header values can't hold newlines).
+ * Returns '' when the input isn't valid JSON — the backend treats that as
+ * "no MCP servers". */
+function minifyJson(raw: string): string {
+  if (!raw.trim()) return '';
+  try {
+    return JSON.stringify(JSON.parse(raw));
+  } catch {
+    return '';
+  }
+}
 
 function asStringMap(v: unknown): Record<string, string> {
   if (!v || typeof v !== 'object') return {};
@@ -82,6 +95,7 @@ export function loadSettings(): Settings {
       parallel_api_key: parsed.parallel_api_key ?? '',
       default_orchestrator_models: orchestratorModels,
       default_node_models: nodeModels,
+      mcp_servers: typeof parsed.mcp_servers === 'string' ? parsed.mcp_servers : '',
     };
   } catch {
     return { ...EMPTY, llm_api_keys: {} };
@@ -147,6 +161,11 @@ export function settingsHeaders(): Record<string, string> {
     if (s.llm_base_url) h['X-Llm-Base-Url'] = s.llm_base_url;
   }
   if (s.parallel_api_key) h['X-Parallel-Key'] = s.parallel_api_key;
+  // MCP config travels as a single JSON header. Always send it (even empty) so
+  // clearing all servers actually clears the backend env. Minify to one line —
+  // header values can't contain raw newlines — and send empty if it isn't
+  // valid JSON (the backend treats that as "no servers" anyway).
+  h['X-Mcp-Servers'] = minifyJson(s.mcp_servers);
   const orch = activeOrchestratorModel(s);
   if (orch) h['X-Orchestrator-Model'] = orch;
   const node = activeNodeModel(s);

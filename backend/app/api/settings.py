@@ -10,7 +10,12 @@ from app import models
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 SECRET_KEYS = {"llm_api_key", "parallel_api_key"}
-PLAIN_KEYS = {"llm_base_url", "default_orchestrator_model", "default_node_model"}
+PLAIN_KEYS = {
+    "llm_base_url",
+    "default_orchestrator_model",
+    "default_node_model",
+    "mcp_servers",
+}
 ALL_KEYS = SECRET_KEYS | PLAIN_KEYS
 
 
@@ -20,6 +25,7 @@ class SettingsBody(BaseModel):
     parallel_api_key: str = ""
     default_orchestrator_model: str = ""
     default_node_model: str = ""
+    mcp_servers: str = ""
 
 
 def _mask(v: str) -> str:
@@ -46,6 +52,8 @@ def apply_settings_to_env(db: Session) -> None:
         os.environ["LLM_BASE_URL"] = raw["llm_base_url"]
     if raw["parallel_api_key"]:
         os.environ["PARALLEL_API_KEY"] = raw["parallel_api_key"]
+    if raw["mcp_servers"]:
+        os.environ["MCP_SERVERS"] = raw["mcp_servers"]
 
 
 @router.get("", response_model=SettingsBody)
@@ -57,6 +65,7 @@ def get_settings(db: Session = Depends(get_db)) -> SettingsBody:
         parallel_api_key=_mask(raw["parallel_api_key"]),
         default_orchestrator_model=raw["default_orchestrator_model"],
         default_node_model=raw["default_node_model"],
+        mcp_servers=raw["mcp_servers"],
     )
 
 

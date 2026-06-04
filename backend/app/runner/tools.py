@@ -77,6 +77,12 @@ REGISTRY = {
     "web_fetch": web_fetch,
 }
 
+# MCP tools, grouped for the dotted direct-call form
+# ``ctx.tools.<server>.<tool>(...)``. Populated at run start by
+# ``app.runner.mcp.register_runtime_tools``. Shape: {server_attr: {tool_attr:
+# qualified_registry_key}}.
+MCP_NAMESPACES: dict[str, dict[str, str]] = {}
+
 
 TOOL_SCHEMAS = {
     "shell": {
