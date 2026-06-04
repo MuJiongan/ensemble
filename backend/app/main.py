@@ -8,6 +8,7 @@ from app.db import init_db, SessionLocal
 from app.api import workflows, nodes, edges, runs, orchestrator
 from app.api import settings as settings_api
 from app.api import auth as auth_api
+from app.api import mcp as mcp_api
 
 
 # Map of inbound request header → process env var. Settings live client-side
@@ -30,6 +31,14 @@ _HEADER_TO_ENV = {
 # dispatch mid-turn.
 _PROVIDER_ID_HEADER = "x-llm-provider-id"
 _PROVIDER_ID_ENV = "LLM_PROVIDER_ID"
+
+# MCP server config travels as a single JSON header. Unlike the additive map
+# above, an explicitly-present-but-empty value must *clear* the env — otherwise
+# a user who removes all their MCP servers would keep spawning them from stale
+# process env until the next restart. The config string is identical on every
+# request, so set/clear here can't race a concurrent poll.
+_MCP_SERVERS_HEADER = "x-mcp-servers"
+_MCP_SERVERS_ENV = "MCP_SERVERS"
 
 
 @asynccontextmanager
@@ -76,6 +85,12 @@ async def apply_settings_headers(request: Request, call_next):
         value = request.headers.get(header)
         if value:
             os.environ[env] = value
+    mcp_servers = request.headers.get(_MCP_SERVERS_HEADER)
+    if mcp_servers is not None:
+        if mcp_servers:
+            os.environ[_MCP_SERVERS_ENV] = mcp_servers
+        else:
+            os.environ.pop(_MCP_SERVERS_ENV, None)
     return await call_next(request)
 
 
@@ -91,3 +106,4 @@ app.include_router(runs.router)
 app.include_router(orchestrator.router)
 app.include_router(settings_api.router)
 app.include_router(auth_api.router)
+app.include_router(mcp_api.router)

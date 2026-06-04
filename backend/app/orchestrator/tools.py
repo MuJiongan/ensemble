@@ -313,6 +313,53 @@ def view_node_details(db: DbSession, wid: str, *, node_id: str) -> dict:
     return _node_full(n)
 
 
+def get_mcp_tool_schema(db: DbSession, wid: str, *, server: str, tool: str) -> dict:
+    """Return the complete, untruncated JSON input schema for one MCP tool.
+
+    The per-turn MCP advertisement caps each tool's schema to keep the prompt
+    small, so a large tool (e.g. Notion's create_pages) shows up truncated.
+    Call this to get the full schema before writing a *direct*
+    ``ctx.tools.<server>.<tool>(...)`` call with nested/union arguments —
+    otherwise the args you hand-write may fail the server's validation."""
+    import os
+
+    raw = os.getenv("MCP_SERVERS", "")
+    if not raw.strip():
+        return {"error": "no MCP servers configured in Settings"}
+    try:
+        from app.runner import mcp as mcp_mod
+        from app.db import SessionLocal
+
+        descriptors = mcp_mod.discover(raw, db_factory=SessionLocal)
+    except Exception as e:  # pragma: no cover — defensive
+        return {"error": f"could not load MCP tools: {type(e).__name__}: {e}"}
+    if not descriptors:
+        return {"error": "no MCP tools available (servers unreachable or none enabled)"}
+
+    s = (server or "").strip()
+    t = (tool or "").strip()
+    match = next(
+        (
+            d
+            for d in descriptors
+            if (d.server_attr == s or d.server == s)
+            and (d.tool_attr == t or d.tool == t or d.qualified == t)
+        ),
+        None,
+    )
+    if match is None:
+        available = sorted(f"{d.server_attr}.{d.tool_attr}" for d in descriptors)
+        return {"error": f"no MCP tool '{s}.{t}'; available: {available}"}
+    return {
+        "server": match.server_attr,
+        "tool": match.tool_attr,
+        "call": f"ctx.tools.{match.server_attr}.{match.tool_attr}(...)",
+        "llm_name": match.qualified,
+        "description": match.description or "",
+        "input_schema": match.input_schema or {},
+    }
+
+
 # ---------------------------------------------------------------------------
 # run trigger — kicks off a workflow run with explicit inputs and returns
 # immediately with `{run_id, status: "running"}`. The agent loop detects
@@ -685,6 +732,7 @@ def _materialise_node_run(
 REGISTRY = {
     "view_graph": view_graph,
     "view_node_details": view_node_details,
+    "get_mcp_tool_schema": get_mcp_tool_schema,
     "add_node": add_node,
     "remove_node": remove_node,
     "rename_node": rename_node,
@@ -708,6 +756,7 @@ REGISTRY = {
 NON_GRAPH_MUTATING_TOOLS: set[str] = {
     "view_graph",
     "view_node_details",
+    "get_mcp_tool_schema",
     "list_runs",
     "view_run",
     "run_workflow",
@@ -756,6 +805,30 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 "type": "object",
                 "properties": {"node_id": {"type": "string"}},
                 "required": ["node_id"],
+            },
+        },
+    },
+    "get_mcp_tool_schema": {
+        "type": "function",
+        "function": {
+            "name": "get_mcp_tool_schema",
+            "description": (
+                "Return the complete, untruncated JSON input schema for one MCP tool. "
+                "The per-turn MCP tool list caps each tool's schema to save space, so a "
+                "large tool shows up truncated. Call this BEFORE writing a direct "
+                "`ctx.tools.<server>.<tool>(...)` call whose arguments are nested or use a "
+                "union (anyOf/oneOf) — e.g. Notion's create_pages — so you can construct "
+                "valid args instead of guessing. Pass the same `server`/`tool` names shown "
+                "in the MCP tool list (the dotted `ctx.tools.<server>.<tool>` form). "
+                "Returns {server, tool, call, llm_name, description, input_schema}."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "server": {"type": "string", "description": "server namespace, e.g. 'notion'"},
+                    "tool": {"type": "string", "description": "tool name within the server, e.g. 'create_pages'"},
+                },
+                "required": ["server", "tool"],
             },
         },
     },

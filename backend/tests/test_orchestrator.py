@@ -268,6 +268,7 @@ def test_llm_tool_specs_covers_full_surface():
     assert names == {
         "view_graph",
         "view_node_details",
+        "get_mcp_tool_schema",
         "add_node",
         "remove_node",
         "rename_node",
@@ -464,6 +465,63 @@ def test_view_node_details_unknown_node_errors(db, workflow):
     )
     assert "error" in res
     assert "not found" in res["error"]
+
+
+def test_get_mcp_tool_schema_no_servers_configured(db, workflow, monkeypatch):
+    monkeypatch.delenv("MCP_SERVERS", raising=False)
+    res = orch_tools.execute(
+        db, workflow.id, "get_mcp_tool_schema", {"server": "notion", "tool": "create_pages"}
+    )
+    assert "error" in res
+    assert "no MCP servers" in res["error"]
+
+
+def test_get_mcp_tool_schema_returns_full_schema(db, workflow, monkeypatch):
+    from app.runner import mcp as mcp_mod
+
+    monkeypatch.setenv("MCP_SERVERS", '{"Notion": {"type": "remote", "url": "https://x/mcp"}}')
+
+    server_attr, tool_attr, qualified = mcp_mod.tool_identifiers("Notion", "notion-create-pages")
+    full_schema = {
+        "type": "object",
+        "properties": {"pages": {"type": "array"}, "parent": {"type": "object"}},
+        "required": ["pages", "parent"],
+    }
+    desc = mcp_mod.ToolDescriptor(
+        server="Notion",
+        tool="notion-create-pages",
+        qualified=qualified,
+        server_attr=server_attr,
+        tool_attr=tool_attr,
+        description="Create Notion pages",
+        input_schema=full_schema,
+    )
+    monkeypatch.setattr(mcp_mod, "discover", lambda *a, **k: [desc])
+
+    res = orch_tools.execute(
+        db, workflow.id, "get_mcp_tool_schema", {"server": "notion", "tool": "create_pages"}
+    )
+    assert res["server"] == "notion"
+    assert res["tool"] == "create_pages"
+    assert res["llm_name"] == qualified
+    assert res["input_schema"] == full_schema
+
+
+def test_get_mcp_tool_schema_unknown_tool_lists_available(db, workflow, monkeypatch):
+    from app.runner import mcp as mcp_mod
+
+    monkeypatch.setenv("MCP_SERVERS", '{"Notion": {"type": "remote", "url": "https://x/mcp"}}')
+    desc = mcp_mod.ToolDescriptor(
+        server="Notion", tool="search", qualified="notion_search",
+        server_attr="notion", tool_attr="search", description="", input_schema={},
+    )
+    monkeypatch.setattr(mcp_mod, "discover", lambda *a, **k: [desc])
+
+    res = orch_tools.execute(
+        db, workflow.id, "get_mcp_tool_schema", {"server": "notion", "tool": "create_pages"}
+    )
+    assert "error" in res
+    assert "notion.search" in res["error"]
 
 
 def test_view_tools_work_during_active_run(db, workflow):
@@ -1017,6 +1075,7 @@ def test_non_graph_mutating_tools_set_matches_registry():
     assert orch_tools.NON_GRAPH_MUTATING_TOOLS == {
         "view_graph",
         "view_node_details",
+        "get_mcp_tool_schema",
         "list_runs",
         "view_run",
         "run_workflow",

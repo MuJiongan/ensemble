@@ -124,6 +124,14 @@ export interface Settings {
    */
   default_orchestrator_models: Record<string, string>;
   default_node_models: Record<string, string>;
+  /**
+   * MCP (Model Context Protocol) server config as a raw JSON string, in
+   * opencode's shape — a map of server name → `{type: "local", command: [...]}`
+   * or `{type: "remote", url: "..."}`. Sent to the backend as the
+   * `X-Mcp-Servers` header; the runner connects to these servers and exposes
+   * their tools to node code. Empty string means "no MCP servers".
+   */
+  mcp_servers: string;
 }
 
 // --- streaming run events --------------------------------------------------

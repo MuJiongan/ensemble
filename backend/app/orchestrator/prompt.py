@@ -2,6 +2,7 @@
 from __future__ import annotations
 import inspect
 import json
+import os
 from datetime import date
 
 from sqlalchemy.orm import Session as DbSession
@@ -144,6 +145,10 @@ Each node-runtime tool has two call sites; the choice is a structural design dec
 - *Wrapped in an agent* (`ctx.call_llm(prompt, tools=[...])`): use when iteration or judgment is the node's reason to exist — the inner LLM decides *whether*, *when*, *how many times*, and *with what arguments* to call.
 
 The heuristic: if you'd write essentially the same prompt every time and expect the same single tool call back, you don't need an agent — call the tool directly. If the node's value comes from the model's reasoning *between* and *around* the calls, wrap it.
+
+## don't overrely on direct calls
+
+direct calls feel safe and cheap, so they're easy to reach for first. *resist that pull when judgment is the point of the node.* if the next step depends on what the tool actually returned — what to fetch next, whether the result is enough, how to phrase the follow-up, which of several calls to make — hand the tools to an inner agent via `ctx.call_llm(prompt, tools=[...])` and let it decide. one extra round-trip is small next to the value of a node that can read and react.
 
 ## node-runtime tool signatures
 
@@ -360,3 +365,88 @@ def graph_state_message(db: DbSession, workflow_id: str) -> dict:
         "role": "system",
         "content": "[current graph state]\n" + json.dumps(state, indent=2),
     }
+
+
+def mcp_tools_message() -> dict | None:
+    """Describe the MCP tools currently available to node code, grouped by
+    server, so the orchestrator writes node code that references them by their
+    exact `<server>_<tool>` names. Returns None when no MCP servers are
+    configured or none could be reached — in which case nothing is injected and
+    the orchestrator simply doesn't know about MCP tools this turn.
+
+    Reads the config from the ``MCP_SERVERS`` env var (set per-request by the
+    settings-header middleware). Discovery is cached by config string, so this
+    only pays a connection cost when the config changes."""
+    raw = os.getenv("MCP_SERVERS", "")
+    if not raw.strip():
+        return None
+    try:
+        from app.runner import mcp as mcp_mod
+        from app.db import SessionLocal
+
+        # Pass a db factory so remote OAuth servers connect through their
+        # provider and auto-refresh tokens during discovery.
+        descriptors = mcp_mod.discover(raw, db_factory=SessionLocal)
+        # Strip per-tool opt-outs so the orchestrator never sees tools the user
+        # turned off in Settings — discover itself stays unfiltered so the UI
+        # can render the disabled rows.
+        configs = mcp_mod.parse_config(raw)
+        descriptors = [
+            d for d in descriptors
+            if d.server not in configs or d.tool not in configs[d.server].disabled_tools
+        ]
+    except Exception:
+        return None
+    if not descriptors:
+        return None
+
+    by_server: dict[str, list] = {}
+    for d in descriptors:
+        by_server.setdefault(d.server, []).append(d)
+
+    lines = [
+        "[available MCP tools]",
+        "The user has connected external Model Context Protocol (MCP) servers "
+        "in Settings. Their tools are available to node code this turn, "
+        "alongside shell / web_search / web_fetch. Call one directly with the "
+        "dotted form `ctx.tools.<server>.<tool>(arg=...)` (keyword args only), "
+        "or name it in `ctx.call_llm(tools=[...])` to let the inner LLM call it "
+        "— in that case use the flat tool name shown in parentheses. Each "
+        "returns `{content: str, isError: bool, structured?: ...}`. Only "
+        "reference tools that appear in the list below — never invent a server "
+        "or tool name.",
+        "The list below shows each tool's name and a one-line summary only — "
+        "no argument names, no shapes. Before you use a tool, call "
+        "`get_mcp_tool_schema(server, tool)` to fetch its complete JSON input "
+        "schema, then write arguments that match it exactly. Do not guess "
+        "argument names from the summary.",
+    ]
+    for server, descs in by_server.items():
+        server_attr = descs[0].server_attr
+        lines.append(f"\nfrom server '{server}' (ctx.tools.{server_attr}):")
+        for d in descs:
+            summary = _one_line_summary(d.description)
+            suffix = f" — {summary}" if summary else ""
+            lines.append(
+                f"- `ctx.tools.{server_attr}.{d.tool_attr}` "
+                f"[llm name: {d.qualified}]{suffix}"
+            )
+    return {"role": "system", "content": "\n".join(lines)}
+
+
+def _one_line_summary(description: str | None) -> str:
+    """Collapse a tool's description to a single short line for the listing.
+
+    Tool descriptions vary wildly — some are one-liners, some are
+    multi-paragraph specs. We keep just the first sentence (or first line) and
+    cap it so the upfront advertisement stays compact; the orchestrator pulls
+    the full detail via ``get_mcp_tool_schema`` when it actually needs it."""
+    if not description:
+        return ""
+    text = description.strip()
+    # Prefer the first sentence; fall back to the first non-empty line.
+    head = text.split(". ", 1)[0]
+    head = head.split("\n", 1)[0].strip(" .")
+    if len(head) > 120:
+        head = head[:117] + "..."
+    return head

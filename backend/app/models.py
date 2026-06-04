@@ -120,6 +120,42 @@ class Credential(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class McpCredential(Base):
+    """OAuth credentials for a remote MCP server, keyed by server name.
+
+    Mirrors ``Credential`` but adds the dynamic-client-registration fields the
+    MCP SDK's ``TokenStorage`` round-trips (``OAuthClientInformationFull``): a
+    server may register a fresh client on first login, and we must persist that
+    client id/secret to refresh later. The API process owns these tokens and
+    refreshes them; the runner subprocess only ever receives a fresh bearer.
+    """
+    __tablename__ = "mcp_credentials"
+    server_name = Column(String, primary_key=True)
+    server_url = Column(String, nullable=False)
+    # Nullable: during dynamic registration the SDK persists client info before
+    # it has any token, so a row can briefly exist with no access token.
+    access_token = Column(Text, nullable=True)
+    refresh_token = Column(Text, nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    scope = Column(String, nullable=True)
+    token_type = Column(String, nullable=True)
+    # Dynamic / pre-registered client info (OAuthClientInformationFull).
+    client_id = Column(String, nullable=True)
+    client_secret = Column(String, nullable=True)
+    client_id_issued_at = Column(Integer, nullable=True)
+    client_secret_expires_at = Column(Integer, nullable=True)
+    # How the SDK should authenticate at the token endpoint. RFC 7591's default
+    # is "client_secret_basic", but many auth servers (Notion) only return a
+    # client_secret without setting this field on the DCR response — and the
+    # SDK then sends *no* client auth, getting a 401. We coerce to
+    # "client_secret_post" whenever we have a secret, both at storage time
+    # (mutating the in-memory client_info so the first token exchange works)
+    # and on restore.
+    token_endpoint_auth_method = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Session(Base):
     """One orchestrator chat session attached to a workflow."""
     __tablename__ = "sessions"

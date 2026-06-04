@@ -15,15 +15,35 @@ import threading
 from pathlib import Path
 from typing import Callable
 
-from app.runner.tools import REGISTRY
+from app.runner.tools import MCP_NAMESPACES, REGISTRY
 from app.runner import llm as llm_mod
 
 
 EmitFn = Callable[[dict], None]
 
 
+class _ServerProxy:
+    """One MCP server's tools as attributes: ``ctx.tools.notion.create_pages(...)``."""
+
+    def __init__(self, parent: "_ToolsProxy", server: str, tools: dict[str, str]):
+        self._parent = parent
+        self._server = server
+        self._tools = tools  # tool_attr -> registry key
+
+    def __getattr__(self, name: str):
+        key = self._tools.get(name)
+        if key is None:
+            raise AttributeError(
+                f"no tool '{name}' on MCP server '{self._server}'"
+            )
+        return self._parent._bind(key)
+
+
 class _ToolsProxy:
-    """Direct (non-LLM) access: ctx.tools.shell(command="..."), etc."""
+    """Direct (non-LLM) access. Built-in tools are attributes
+    (``ctx.tools.shell(...)``); MCP tools are reachable both flat
+    (``ctx.tools.notion_create_pages(...)``) and dotted by server
+    (``ctx.tools.notion.create_pages(...)``)."""
 
     def __init__(self, recorder: list[dict], on_event: EmitFn, lock: threading.Lock):
         self._recorder = recorder
@@ -35,6 +55,13 @@ class _ToolsProxy:
         self._call_counter = itertools.count(1)
 
     def __getattr__(self, name: str):
+        if name in REGISTRY:
+            return self._bind(name)
+        if name in MCP_NAMESPACES:
+            return _ServerProxy(self, name, MCP_NAMESPACES[name])
+        raise AttributeError(f"no tool '{name}' in registry")
+
+    def _bind(self, name: str):
         fn = REGISTRY.get(name)
         if fn is None:
             raise AttributeError(f"no tool '{name}' in registry")
