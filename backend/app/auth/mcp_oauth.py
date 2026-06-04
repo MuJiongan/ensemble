@@ -28,7 +28,9 @@ from app.runner.mcp import (
     MCP_OAUTH_PORT,
     OAuthConfig,
     ServerConfig,
+    _format_connect_error,
     build_oauth_provider,
+    effective_redirect_uri,
 )
 
 
@@ -36,6 +38,21 @@ CALLBACK_TIMEOUT_SECS = 5 * 60
 # How long /start blocks waiting for the provider to produce an authorize URL.
 AUTHORIZE_URL_TIMEOUT_SECS = 30
 _CALLBACK_HOST = "127.0.0.1"
+
+
+def _loopback_params(oauth_cfg: OAuthConfig) -> tuple[str, int, str] | None:
+    """Resolve loopback (host, port, path) from the OAuth config, or None when
+    the configured redirect URI is non-loopback (HTTPS tunnel etc.) and we
+    can't catch the callback ourselves."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(effective_redirect_uri(oauth_cfg))
+    host = parsed.hostname or _CALLBACK_HOST
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        return None
+    port = parsed.port or MCP_OAUTH_PORT
+    path = parsed.path or MCP_OAUTH_CALLBACK_PATH
+    return host, port, path
 
 
 def state_key(server_name: str) -> str:
@@ -89,10 +106,13 @@ def _login_worker(
         login_state.update_if_owner(key, owner, status="complete", label=cfg.name)
     except Exception as e:
         # If we failed before producing the authorize URL, unblock /start.
+        # _format_connect_error trims the HTML blob the SDK includes when DCR
+        # 404s (Slack et al.) down to an actionable one-liner.
+        err = _format_connect_error(e)
         if not url_box["event"].is_set():
-            url_box["error"] = str(e)
+            url_box["error"] = err
             url_box["event"].set()
-        login_state.update_if_owner(key, owner, status="error", error=str(e))
+        login_state.update_if_owner(key, owner, status="error", error=err)
     finally:
         server.stop()
 
@@ -108,17 +128,30 @@ def start_login(
     """
     key = state_key(server_name)
     login_state.reset(key)
-    cfg = ServerConfig(
-        name=server_name,
-        type="remote",
-        url=server_url,
-        oauth=OAuthConfig(
-            client_id=str((oauth_cfg or {}).get("clientId") or (oauth_cfg or {}).get("client_id") or ""),
-            client_secret=str((oauth_cfg or {}).get("clientSecret") or (oauth_cfg or {}).get("client_secret") or ""),
-            scope=str((oauth_cfg or {}).get("scope") or ""),
-        ),
+    raw = oauth_cfg or {}
+    port_raw = raw.get("callbackPort") or raw.get("callback_port") or 0
+    try:
+        callback_port = int(port_raw) if port_raw else 0
+    except (TypeError, ValueError):
+        callback_port = 0
+    oauth = OAuthConfig(
+        client_id=str(raw.get("clientId") or raw.get("client_id") or ""),
+        client_secret=str(raw.get("clientSecret") or raw.get("client_secret") or ""),
+        scope=str(raw.get("scope") or ""),
+        redirect_uri=str(raw.get("redirectUri") or raw.get("redirect_uri") or ""),
+        callback_port=callback_port,
     )
-    server = LoopbackCallbackServer(_CALLBACK_HOST, MCP_OAUTH_PORT, MCP_OAUTH_CALLBACK_PATH)
+    cfg = ServerConfig(name=server_name, type="remote", url=server_url, oauth=oauth)
+    loopback = _loopback_params(oauth)
+    if loopback is None:
+        # Non-loopback redirect (e.g. an HTTPS tunnel): we have no way to catch
+        # the callback from here. Tell the user up-front rather than spinning
+        # up a doomed flow.
+        raise RuntimeError(
+            "redirectUri must be a loopback URL (http://127.0.0.1:... or http://localhost:...) "
+            "for emdash to catch the OAuth callback"
+        )
+    server = LoopbackCallbackServer(*loopback)
     server.start()
     url_box: dict = {"url": None, "error": None, "event": threading.Event()}
     my_state = login_state.LoginState(status="pending", started_at=time.time(), server=server)
