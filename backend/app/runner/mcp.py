@@ -54,10 +54,17 @@ _CALL_TIMEOUT_S = 120.0
 @dataclass
 class OAuthConfig:
     """OAuth client config for a remote server. All fields optional: with no
-    client id we fall back to dynamic client registration (RFC 7591)."""
+    client id we fall back to dynamic client registration (RFC 7591).
+
+    ``redirect_uri`` / ``callback_port`` let a user override the loopback
+    callback per server — required when a provider (e.g. some Slack app modes)
+    rejects ``http://127.0.0.1`` and only accepts an HTTPS tunnel, or when
+    multiple emdash instances need different ports."""
     client_id: str = ""
     client_secret: str = ""
     scope: str = ""
+    redirect_uri: str = ""
+    callback_port: int = 0
 
 
 @dataclass
@@ -170,10 +177,17 @@ def _parse_oauth(raw: Any) -> OAuthConfig | None:
     if raw is False:
         return None
     if isinstance(raw, dict):
+        port_raw = raw.get("callbackPort") or raw.get("callback_port") or 0
+        try:
+            callback_port = int(port_raw) if port_raw else 0
+        except (TypeError, ValueError):
+            callback_port = 0
         return OAuthConfig(
             client_id=str(raw.get("clientId") or raw.get("client_id") or ""),
             client_secret=str(raw.get("clientSecret") or raw.get("client_secret") or ""),
             scope=str(raw.get("scope") or ""),
+            redirect_uri=str(raw.get("redirectUri") or raw.get("redirect_uri") or ""),
+            callback_port=callback_port,
         )
     return OAuthConfig()
 
@@ -189,6 +203,19 @@ def _parse_oauth(raw: Any) -> OAuthConfig | None:
 MCP_OAUTH_PORT = int(os.getenv("MCP_OAUTH_PORT", "19876"))
 MCP_OAUTH_CALLBACK_PATH = "/mcp/oauth/callback"
 MCP_OAUTH_REDIRECT_URI = f"http://127.0.0.1:{MCP_OAUTH_PORT}{MCP_OAUTH_CALLBACK_PATH}"
+
+
+def effective_redirect_uri(oauth_cfg: "OAuthConfig | None") -> str:
+    """Resolve the OAuth redirect URI for a server, honouring per-server
+    overrides. Precedence: explicit ``redirectUri`` > ``callbackPort`` shorthand
+    > the global default. The loopback server, the OAuthClientMetadata, and the
+    seeded OAuthClientInformationFull must all agree on this value or the
+    authorize → callback → token-exchange handshake will mismatch."""
+    if oauth_cfg and oauth_cfg.redirect_uri:
+        return oauth_cfg.redirect_uri
+    if oauth_cfg and oauth_cfg.callback_port:
+        return f"http://127.0.0.1:{oauth_cfg.callback_port}{MCP_OAUTH_CALLBACK_PATH}"
+    return MCP_OAUTH_REDIRECT_URI
 
 
 def _oauth_imports():
@@ -208,12 +235,23 @@ def _oauth_imports():
     )
 
 
-def _make_db_token_storage(server_name: str, server_url: str, db_factory: Callable):
+def _make_db_token_storage(
+    server_name: str,
+    server_url: str,
+    db_factory: Callable,
+    oauth_cfg: "OAuthConfig | None" = None,
+):
     """Build a TokenStorage backed by the ``McpCredential`` table.
 
     Each method opens a short-lived session from ``db_factory`` so nothing is
     held across the async/loop boundary. ``set_client_info`` may run before any
     token exists (dynamic registration), so both setters upsert.
+
+    When ``oauth_cfg`` carries a pre-registered ``client_id``, ``get_client_info``
+    returns it directly — bypassing the DB and short-circuiting the SDK's DCR
+    fallback (``oauth2.py:572``). This is required for servers that don't
+    implement RFC 7591 (Slack, others); without it, the SDK POSTs to a
+    non-existent ``/register`` endpoint and fails on the HTML 404.
     """
     (_, TokenStorage, OAuthClientInformationFull, _, OAuthToken) = _oauth_imports()
     from app import models
@@ -261,6 +299,21 @@ def _make_db_token_storage(server_name: str, server_url: str, db_factory: Callab
                 db.close()
 
         async def get_client_info(self) -> Optional["OAuthClientInformationFull"]:  # type: ignore[name-defined]
+            # Config-supplied client wins over the DB. The SDK's DCR gate
+            # (oauth2.py:572) only fires DCR when client_info is None — so
+            # returning config credentials here short-circuits registration for
+            # providers (Slack, others) that don't implement RFC 7591. It also
+            # makes a user-edited clientId in settings take effect immediately
+            # without needing to clear any stored state.
+            if oauth_cfg and oauth_cfg.client_id:
+                return OAuthClientInformationFull(
+                    client_id=oauth_cfg.client_id,
+                    client_secret=oauth_cfg.client_secret or None,
+                    token_endpoint_auth_method=(
+                        "client_secret_post" if oauth_cfg.client_secret else "none"
+                    ),
+                    redirect_uris=[effective_redirect_uri(oauth_cfg)],
+                )
             db = db_factory()
             try:
                 row = db.query(models.McpCredential).filter_by(server_name=server_name).first()
@@ -277,7 +330,7 @@ def _make_db_token_storage(server_name: str, server_url: str, db_factory: Callab
                     client_id_issued_at=row.client_id_issued_at,
                     client_secret_expires_at=row.client_secret_expires_at,
                     token_endpoint_auth_method=auth_method,
-                    redirect_uris=[MCP_OAUTH_REDIRECT_URI],
+                    redirect_uris=[effective_redirect_uri(oauth_cfg)],
                 )
             finally:
                 db.close()
@@ -323,27 +376,28 @@ def build_oauth_provider(
     fresh authorization.
     """
     (OAuthClientProvider, _, _, OAuthClientMetadata, _) = _oauth_imports()
-    storage = _make_db_token_storage(cfg.name, cfg.url, db_factory)
+    storage = _make_db_token_storage(cfg.name, cfg.url, db_factory, cfg.oauth)
+    redirect_uri = effective_redirect_uri(cfg.oauth)
     metadata = OAuthClientMetadata(
-        redirect_uris=[MCP_OAUTH_REDIRECT_URI],
+        redirect_uris=[redirect_uri],
         client_name="emdash",
         grant_types=["authorization_code", "refresh_token"],
         response_types=["code"],
         scope=(cfg.oauth.scope or None) if cfg.oauth else None,
+        # Confidential clients (we hold a secret) must authenticate at the
+        # token endpoint; public clients use PKCE alone. The SDK reads this off
+        # the metadata for DCR registration and off client_info for the token
+        # exchange — we set both consistently (see get_client_info above).
+        token_endpoint_auth_method=(
+            "client_secret_post" if cfg.oauth and cfg.oauth.client_secret else "none"
+        ),
     )
-    kwargs: dict = {}
-    if cfg.oauth and cfg.oauth.client_id:
-        # Pre-registered client: seed the metadata so the SDK skips dynamic
-        # registration. (clientId/secret are surfaced via stored client_info on
-        # subsequent connects.)
-        metadata.client_name = "emdash"
     return OAuthClientProvider(
         server_url=cfg.url,
         client_metadata=metadata,
         storage=storage,
         redirect_handler=redirect_handler,
         callback_handler=callback_handler,
-        **kwargs,
     )
 
 
@@ -359,6 +413,18 @@ def _ident(s: str) -> str:
     return out or "tool"
 
 
+def _unwrap_exception_group(e: BaseException) -> BaseException:
+    """Recursively peel single-child ``BaseExceptionGroup`` wrappers to the
+    inner cause. anyio's ``TaskGroup`` (used by ``streamablehttp_client`` under
+    the hood) re-raises a single failure as an ExceptionGroup whose
+    ``str()`` is ``"unhandled errors in a TaskGroup (1 sub-exception)"`` —
+    completely opaque in the UI. Unwrap until we hit a leaf or a multi-error
+    group (which we leave alone since the messages differ)."""
+    while isinstance(e, BaseExceptionGroup) and len(e.exceptions) == 1:
+        e = e.exceptions[0]
+    return e
+
+
 def _classify_error(e: BaseException) -> str:
     """Map a connect-time exception to a probe status.
 
@@ -367,13 +433,47 @@ def _classify_error(e: BaseException) -> str:
     we inspect the exception type name and message rather than importing every
     transport-specific error class.
     """
+    e = _unwrap_exception_group(e)
     name = type(e).__name__.lower()
     msg = str(e).lower()
+    if "registration" in name:
+        # DCR explicitly failed (server has no /register endpoint, or rejected
+        # us). User needs to supply a pre-registered clientId — not retryable
+        # as a fresh credential prompt.
+        return "failed"
     if "unauthorized" in name or "auth" in name and "error" in name:
         return "needs_auth"
     if "401" in msg or "403" in msg or "unauthorized" in msg or "forbidden" in msg:
         return "needs_auth"
     return "failed"
+
+
+def _format_connect_error(e: BaseException) -> str:
+    """Build a short, user-facing error string for a connect-time exception.
+
+    The MCP SDK's ``OAuthRegistrationError`` embeds the full HTML response body
+    when DCR hits a 404 (Slack et al.) — a 30 KB wall of script tags surfaced
+    into the Settings UI. Detect that case and replace it with an actionable
+    one-liner; pass everything else through unchanged.
+
+    Also unwraps ``BaseExceptionGroup`` first so the user sees the real failure
+    instead of anyio's opaque ``"unhandled errors in a TaskGroup"`` wrapper."""
+    e = _unwrap_exception_group(e)
+    name = type(e).__name__
+    msg = str(e)
+    if "registration" in name.lower():
+        return (
+            "this server does not support dynamic client registration — "
+            "set oauth.clientId (and clientSecret if confidential) in the server config"
+        )
+    # Some exceptions still carry HTML in their message (the SDK formats
+    # registration_response.text into the OAuthRegistrationError above, but
+    # downstream wrappers may inherit it). Trim to the first line + a length
+    # cap so the UI doesn't render a 30 KB document.
+    msg = msg.splitlines()[0] if msg else msg
+    if len(msg) > 400:
+        msg = msg[:400] + "…"
+    return f"{name}: {msg}"
 
 
 def tool_identifiers(server: str, tool: str) -> tuple[str, str, str]:
@@ -501,7 +601,7 @@ class MCPManager:
             ready.result(timeout=_CONNECT_TIMEOUT_S + 5)
         except Exception as e:  # connect phase blew up entirely
             self._status = {
-                name: {"status": "failed", "error": f"{type(e).__name__}: {e}"}
+                name: {"status": "failed", "error": _format_connect_error(e)}
                 for name in configs
             }
         return self._status
@@ -529,7 +629,7 @@ class MCPManager:
                         "error": (
                             "authentication required"
                             if status == "needs_auth"
-                            else f"{type(e).__name__}: {e}"
+                            else _format_connect_error(e)
                         ),
                     }
             if not ready.done():

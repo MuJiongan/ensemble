@@ -23,9 +23,9 @@ Below is how the user-facing **Agent-Team Metaphor** maps directly to the underl
 | **Agent Execution Trace** | NodeRun | The specific outputs, inputs, logs, and sub-LLM or tool calls recorded for an individual agent during a team collaboration run. |
 | **Collaboration Board** | Canvas | The visual board rendering the team topology, displaying active execution statuses in real time. |
 | **Team Forking** | Workflow Forking | Duplicating a live team session or historical run snapshot into a brand new project session for variation testing. |
-| **External MCP Server** | MCP Server Config | A user-configured local or remote Model Context Protocol server that exposes external tools to Ensemble. |
-| **Session MCP Allowlist** | Session Tool Policy | A per-session selection of MCP tools that are allowed to be passed into specialized agent nodes. |
-| **External MCP Tool** | Tool Registry Entry | A discovered MCP tool normalized into Ensemble's tool registry so nodes can invoke it directly or agentically. |
+| **External MCP Server** | MCP Server Config | A user-configured local stdio or remote streamable-HTTP Model Context Protocol server. Configured in Settings as an opencode-style JSON map; each server can be enabled/disabled and can disable individual tools. |
+| **External MCP Tool** | Tool Registry Entry | A discovered MCP tool registered into the runner's in-process tool registry (alongside `shell` / `web_search` / `web_fetch`), namespaced `<server>_<tool>` for LLM tool-calling and reachable from node code as `ctx.tools.<server>.<tool>` (dotted) or `ctx.tools.<server>_<tool>` (flat). |
+| **MCP OAuth Credential** | `McpCredential` row | OAuth client info + access/refresh tokens for one remote MCP server, persisted server-side. The API process owns refresh; the runner subprocess only ever receives a fresh bearer at spawn time. |
 
 ---
 
@@ -63,13 +63,13 @@ Below is how the user-facing **Agent-Team Metaphor** maps directly to the underl
 - If the user edits the code or model and clicks save, the agent is flagged with a `user_edited` marker. 
 - The Orchestrator Agent is injected with this `user_edited` state per agent during its planning turns. The system instructions mandate that the Orchestrator must respect user edits: it must call `view_node_details` first and surgically modify code rather than rewriting it, unless explicitly directed otherwise.
 
-### 3.5 Configuring Session MCP Tool Access
-1. The user opens settings and adds a user-configured MCP server connection. The product supports testing connectivity and discovering available tools.
-2. For a specific chat/session, the user opens an MCP tool access interface and selects which discovered tools are allowed for that session.
-3. The Orchestrator Agent receives only metadata for the session-allowed MCP tools: names, descriptions, argument schemas, and usage guidance.
-4. The Orchestrator Agent cannot directly call MCP tools. It can only configure specialized nodes to call allowed MCP tools directly in Python or expose those tools to a node-level `ctx.call_llm(...)` sub-agent.
-5. During a team collaboration run, specialized nodes invoke allowed MCP tools without per-call user approval. Every MCP invocation is captured in the node trace with tool name, arguments, result summary, latency, and error state.
-6. The user can change the session allowlist between runs. Historical runs preserve the exact MCP tool allowlist snapshot used at execution time.
+### 3.5 Connecting External MCP Servers
+1. The user opens settings and adds one or more MCP server connections. Two transports are supported: **local** (a stdio child process — `{type: "local", command: [...], environment: {...}}`) and **remote** (a streamable-HTTP URL — `{type: "remote", url, headers: {...}}`). The structured editor serialises to the opencode-style JSON map stored in `settings.mcp_servers`; settings autosave on every edit.
+2. Each server row has a per-card test button that probes the connection and reports `connected` / `needs_auth` / `failed` along with the discovered tool count. Clicking "view tools" pops out the full per-server tool list with each tool's complete input schema; individual tools can be disabled from this dialog (persisted as `disabled_tools` on the server).
+3. Remote servers are OAuth-capable by default (matching opencode's `oauth !== false`). A sign-in widget on the row runs an OAuth flow that uses metadata discovery, dynamic client registration (RFC 7591), and PKCE — all handled by the MCP SDK. Tokens are persisted in the backend `McpCredential` table and never round-tripped to the browser; the API process refreshes them automatically on expiry.
+4. On run start, the runner subprocess connects to every enabled server, runs `tools/list`, and registers the surviving tools (after per-server `disabled_tools` filtering) into its in-process tool registry alongside `shell` / `web_search` / `web_fetch`.
+5. The Orchestrator Agent receives a per-turn system message listing every discovered tool with a one-line summary and the names to call it by. It cannot invoke MCP tools itself; it only writes node Python that uses them. Before constructing a direct call with nested arguments, it can call `get_mcp_tool_schema(server, tool)` to fetch the untruncated JSON input schema.
+6. During a run, every MCP invocation is captured in the node trace (same shape as built-in tool calls) — tool name, arguments, result summary, status, and error details all stream over the existing run WebSocket.
 
 ---
 
@@ -82,7 +82,7 @@ Below is how the user-facing **Agent-Team Metaphor** maps directly to the underl
 - **Outcome Reporting**: When `run_workflow` successfully executes the team, the Orchestrator Agent calls `view_run` to inspect outputs, extracts the most valuable slices of information, and presents them in chat alongside direct highlights.
 - Streams extended thinking, assistant content, tool-call states, and execution notifications over **Server-Sent Events** (`POST /api/sessions/{sid}/messages`).
 - Every turn, the Orchestrator receives a concise system message describing the `[current graph state]`. Code is omitted; the orchestrator retrieves code only when necessary using `view_node_details` to keep context window sizes minimal and fast.
-- **MCP Tool Boundary**: The Orchestrator Agent never receives external MCP tools as callable tools in its own tool surface. It may inspect session-allowed MCP tool metadata and configure specialized agents to use those tools, but execution is restricted to node runtime only.
+- **MCP Tool Boundary**: The Orchestrator Agent never receives external MCP tools as callable tools in its own tool surface. When MCP servers are connected, an additional per-turn system message lists each discovered tool with a one-line summary and the exact names to invoke it by (the flat `<server>_<tool>` for LLM tool-calling and the dotted `ctx.tools.<server>.<tool>` for direct calls). The orchestrator uses this directory to write node code; it can fetch the untruncated JSON input schema for any tool via the `get_mcp_tool_schema(server, tool)` helper. Execution itself is restricted to node runtime.
 
 ### 4.2 Agent Runtime & Skip Protocols
 Each recruited agent executes its script inside an isolated runner environment, conforming to the following Python contract:
@@ -93,9 +93,8 @@ def run(inputs: dict, ctx) -> dict:
 ```
 
 The injected execution context (`ctx`) provides:
-- `ctx.call_llm(model, prompt, tools=[...], **opts)`: Runs an LLM inside the agent. Pass `model=""` to inherit the default node model. The sub-LLM uses the list of built-in or session-allowed MCP tools to fulfill its task.
-- `ctx.tools.<name>(...)`: Direct access to a built-in tool bypassing LLM routing (discouraged in v1; agents are intended to be LLM-driven).
-- `ctx.tools.mcp_call(tool_name, arguments)`: Planned direct access to a session-allowed MCP tool from node code, bypassing LLM routing while preserving schema validation and trace logging.
+- `ctx.call_llm(model, prompt, tools=[...], **opts)`: Runs an LLM inside the agent. Pass `model=""` to inherit the default node model. The `tools` list names entries from the runner's in-process registry — built-in tools (`shell`, `web_search`, `web_fetch`) and any discovered MCP tools by their flat `<server>_<tool>` namespace.
+- `ctx.tools.<name>(...)`: Direct access to a registry tool bypassing LLM routing. MCP tools are reachable both flat (`ctx.tools.<server>_<tool>(...)`) and dotted by server (`ctx.tools.<server>.<tool>(arg=...)`).
 - `ctx.log(msg)`: Appends an execution log line visible in the run console.
 - `ctx.workdir`: Path to an isolated scratch folder on the local filesystem.
 
@@ -129,64 +128,59 @@ Tools are configured in the global registry `app.runner.tools.REGISTRY`. Agents 
 ### 4.5 External MCP Tool Integrations
 
 **Scope**
-- Support user-configured MCP servers only. A curated built-in integration catalog is out of scope for this requirement.
-- MCP tools are available only to specialized agent nodes during team collaboration runs.
-- MCP tools can be used in two node-level modes:
-  - **Direct tool mode**: node Python calls an allowed MCP tool through `ctx.tools.mcp_call(...)`.
-  - **Agentic tool mode**: node Python passes allowed MCP tool names to `ctx.call_llm(..., tools=[...])`, allowing the node's sub-LLM to decide when to invoke them.
+- Users connect any number of external MCP servers; a curated built-in integration catalog is out of scope.
+- MCP tools are available only to specialized agent nodes at run time. The orchestrator is told *about* them but never calls them.
+- Node code can invoke a discovered MCP tool two ways:
+  - **Direct** — `ctx.tools.<server>.<tool>(arg=...)` (dotted, keyword args only) or the flat `ctx.tools.<server>_<tool>(...)` form.
+  - **Agentic** — name the flat `<server>_<tool>` in `ctx.call_llm(..., tools=[...])` and let the node's inner LLM decide when to call it.
 
 **Server Configuration**
-- The settings UI must let users create, edit, delete, test, and disable MCP server connections.
-- Server configuration must support command-based local MCP servers and URL-based remote MCP servers where the selected MCP client library supports them.
-- HTTP MCP authentication must support OAuth 2.1 with PKCE S256, OAuth metadata discovery, optional RFC 8707 `resource` parameters, configured scopes, and bearer tokens sourced from environment variable references.
-- Inline bearer tokens or other raw secrets must not be accepted in persisted MCP configuration.
-- Secrets and environment values must be redacted from logs, traces, and persisted summaries.
-- Failed server starts, failed handshakes, and incompatible MCP protocol responses must surface actionable errors in the UI.
-- Each server should support `enabled`, startup timeout, tool-call timeout, and optional required-server semantics for future batch/CLI execution modes.
+- The Settings panel renders a structured editor over the `settings.mcp_servers` JSON string (opencode shape: a map of `name → { type: "local" | "remote", ... }`). Settings autosave on every edit, so a row becomes live the instant it parses.
+- Local servers are stdio child processes: `{type: "local", command: [...], environment: {...}}`. Remote servers are streamable-HTTP URLs: `{type: "remote", url, headers: {...}}`.
+- Remote servers are OAuth-capable by default (matching opencode's `oauth !== false`); per-server `enabled` and `disabled_tools` are first-class fields. A `timeout` (ms) overrides the default per-call ceiling.
+- Static `headers` on a remote server round-trip verbatim — a user can paste a pre-issued bearer if they prefer that to OAuth. The structured editor does not surface `oauth` client overrides; a hand-edited `oauth` block (pre-registered client_id/secret/scope) is preserved through the editor untouched.
+- Failed transports, failed handshakes, and protocol errors surface in the per-server status probe with a status of `failed` and the underlying error message.
 
 **Tool Discovery & Registry**
-- On successful connection, Ensemble discovers MCP tools and stores their names, descriptions, input schemas, server association, and last-discovered timestamp.
-- MCP tools must be namespaced in the registry, e.g. `mcp.<server_slug>.<tool_name>`, to prevent collisions with built-in tools or other MCP servers.
-- MCP input schemas must be converted into the same callable schema format used by the existing `call_llm` framework.
-- Tool discovery can be refreshed manually and should update stale schemas without silently changing historical run snapshots.
-- Tool input schemas must be normalized for LLM tool-calling compatibility, including inserting empty `properties` for object schemas that omit it.
-- Per-server `enabled_tools` and `disabled_tools` filters should be applied before any session allowlist selection so dangerous or noisy tools can be hidden globally.
+- On the first connection (and after a config change), the MCP module performs the initialize handshake and runs `tools/list`, caching the discovered descriptors keyed by config string.
+- Discovered tools are registered with the qualified name `<server>_<tool>` (sanitized to match the `^[a-zA-Z0-9_-]{1,64}$` shape OpenAI-style tool calling requires) so two servers can expose tools with the same raw name without colliding. The same descriptor also drives the dotted `ctx.tools.<server>.<tool>` form via a server-keyed namespace map.
+- Tool input schemas are normalised into the same callable JSON-schema format `ctx.call_llm` already uses for built-ins. Object schemas that omit `properties` get an empty one inserted so strict providers don't reject the tool spec.
+- Per-server `disabled_tools` are applied *before* the orchestrator advertisement and *before* registry registration — a globally disabled tool is invisible everywhere. Discovery itself stays unfiltered so the Settings "view tools" dialog can render the disabled rows with their toggle off.
 
 **Connection Verification & Health**
-- MCP availability is a staged lifecycle: `configured → auth_known → initialized → tools_discovered → allowed_in_session`.
-- A configured server must not be marked usable until Ensemble completes the MCP initialization handshake and successfully runs `tools/list`.
-- The UI should distinguish connection failures from authentication failures, missing/empty bearer token environment variables, unsupported OAuth, protocol incompatibility, and zero-tools-discovered states.
-- The product should provide a lightweight status API that returns configured servers, auth status, and discovered tools without fetching slow resource inventories.
-- Disabled servers must be skipped during auth probing and tool discovery to avoid startup latency from intentionally inactive integrations.
-- Config changes should support hot reload so sessions can refresh MCP inventory without restarting the backend.
+- A configured server is not considered usable until Ensemble completes the MCP initialization handshake and successfully runs `tools/list`.
+- A lightweight `POST /api/mcp/status` endpoint reports per-server `{status, tool_count?, error?}` where `status ∈ {connected, needs_auth, failed}`, optionally narrowed to a single server for the per-card test button. A companion `POST /api/mcp/tools` returns the full per-tool list with descriptions and untruncated input schemas (powers the "view tools" dialog).
+- Disabled servers are skipped entirely during status probing and discovery.
+- Status probes use the in-memory descriptor cache, so a connected server's tool count is returned without a second `tools/list` round-trip.
 
-**Session-Level Allowlist**
-- Each session has an MCP tool access interface where users select which discovered MCP tools are allowed.
-- No per-call approval is required once a tool is allowed for the session.
-- The session allowlist is the only mechanism that determines which MCP tools are passed to the Orchestrator Agent as configurable capabilities and to node execution as runnable tools.
-- Default behavior for new sessions should be no MCP tools allowed unless the user opts in.
+**OAuth (Remote Servers)**
+- The MCP SDK handles metadata discovery, dynamic client registration (RFC 7591), PKCE, and token refresh. Ensemble plugs in a `TokenStorage` bridge that persists everything the SDK round-trips — access token, refresh token, expiry, scope, dynamically-registered `client_id`/`client_secret`, and the token-endpoint auth method.
+- Server-name-keyed login endpoints (`POST /api/mcp/{server}/login/start` / `…/login/status` / `…/login/cancel` / `…/logout`) mirror the existing LLM subscription-OAuth shape so the same `OAuthLoginField` widget can drive them.
+- The OAuth callback runs on a fixed loopback port (`MCP_OAUTH_PORT`); a conflict surfaces as a 409 with an actionable message.
+- A workaround for auth servers (e.g. Notion) that return a `client_secret` on DCR without setting `token_endpoint_auth_method`: the storage layer coerces to `client_secret_post` whenever a secret is present, both at storage time and on restore, so the SDK doesn't silently send no client auth and 401.
 
 **Orchestrator Restrictions**
-- The Orchestrator Agent receives session-allowed MCP tool metadata only.
-- The Orchestrator Agent cannot call MCP tools directly and must not receive them in its own OpenRouter tool list.
-- The Orchestrator Agent may configure node code, node descriptions, and node tool lists so specialized agents use allowed MCP tools.
-- The Orchestrator prompt must explicitly state that MCP tools are executable only inside node runs.
+- The Orchestrator Agent's LLM tool list never includes MCP tools — they are not callable by the orchestrator.
+- When MCP servers are configured, every orchestrator turn additionally receives an `[available MCP tools]` system message grouping the discovered tools by server, with each line showing the dotted `ctx.tools.<server>.<tool>` form, the flat `<server>_<tool>` LLM name, and a one-line summary derived from the tool description.
+- A new inspection tool `get_mcp_tool_schema(server, tool)` returns the complete `{server, tool, call, llm_name, description, input_schema}` for one tool so the orchestrator can construct nested arguments that pass server-side validation.
+- The orchestrator prompt explicitly states that MCP tools are executable only inside node runs.
 
 **Node Runtime Execution**
-- Before running a node, the runner builds an execution-scoped tool registry containing built-in tools plus the session-allowed MCP tools captured in the run snapshot.
-- Direct MCP calls validate arguments against the discovered schema before execution.
-- Agentic MCP calls use the existing local agent loop: LLM tool calls are routed to the MCP client, results are fed back to the node-level LLM, and final text is returned to node code.
-- MCP tool failures must be captured as structured tool-call errors and should not crash the FastAPI parent process.
-- MCP calls should have configurable timeouts and cancellation propagation when a run is cancelled.
-- HTTP MCP clients should refresh OAuth tokens before calls when needed and persist refreshed tokens without exposing them in traces.
-- Streamable HTTP clients should recover from expired sessions when possible by reinitializing the MCP session before retrying the operation.
-- MCP tool results should be truncated or summarized in persisted events when they exceed trace-size limits while preserving the full result for in-process execution where feasible.
+- At child-subprocess startup, the runner reads `MCP_SERVERS` from its environment, connects to every enabled server on a single shared asyncio loop, and registers the surviving tools into the in-process `app.runner.tools.REGISTRY` (and the dotted-namespace map). Connection failures are logged to stderr (captured by the parent) but never fail the run.
+- Direct calls are bridged from sync node code onto the asyncio loop via `run_coroutine_threadsafe`. Each call gets a unique `call_id` and emits `tool_call_started` / `tool_call_finished` events on the run WebSocket alongside built-in tool calls.
+- Agentic calls use the existing `call_llm` agent loop: LLM tool calls land in the same registry, are dispatched into the MCP client, and the result is fed back to the node-level LLM as a tool message.
+- Tool-call timeouts default to a generous 120s ceiling (well above opencode's 5s default — MCP tools may launch browsers or do long searches). A per-server `timeout` (ms) overrides this.
+- On a clean run, MCP transports are shut down gracefully so local stdio servers exit cleanly. On cancel, the runner force-exits and lets process teardown reap them — we don't block a cancel on a slow server.
+- MCP tool failures (timeout, transport error, server-reported `isError: true`) are captured as structured tool-call errors and never crash the FastAPI parent.
+
+**OAuth Bearer Resolution Across the Process Boundary**
+- OAuth credentials live in the API process's `mcp_credentials` table. The child runner subprocess has no DB access on purpose.
+- At child spawn time, the parent calls `mcp.resolve_oauth_config(...)` which, for every remote OAuth-backed server, refreshes the token if it's near expiry and rewrites the config to inject `Authorization: Bearer <token>` into the server's headers. The child reads the resulting `MCP_SERVERS` env var and connects without ever touching the credentials DB.
+- A long-running child does *not* auto-refresh — token refresh is only at spawn time, since runs are short-lived and refresh during a run would create a parent/child credential split.
 
 **Traceability**
-- `NodeRun.tool_calls` must include MCP tool invocations with namespace, server id/name, arguments, output summary, status, latency, and error details.
-- Run snapshots must preserve the MCP server/tool metadata and session allowlist used for that run.
-- The frontend trace cards should visually distinguish built-in tools from external MCP tools.
-- Logs and telemetry must preserve secret redaction for headers, environment variables, OAuth tokens, bearer tokens, and MCP tool outputs likely to contain credentials.
+- `NodeRun.tool_calls` records every MCP invocation with its qualified name, arguments, result (or error), status, and `via: "direct" | "llm"` source. Run snapshots preserve the workflow graph that executed; MCP tools resolved at run-start via the live config.
+- The frontend run-trace cards render MCP tool calls in the same shape as built-in tool calls so behaviour is uniform across both.
 
 ### 4.6 User Interface
 - **Visual Collaboration Board (Canvas)**: Left pane (2/5 width) rendering the `@xyflow/react` graph. Agents display as structured cards with execution state indicators. Manual dragging or edge editing is disabled; the Orchestrator Agent maintains complete ownership over layout generation. Clicking an agent selects it.
@@ -194,8 +188,8 @@ Tools are configured in the global registry `app.runner.tools.REGISTRY`. Agents 
   - **chat**: Displays the Orchestrator Agent's SSE text stream, collapsible planning/reasoning logs, and live status badges for tool runs.
   - **workspace**: Displays `RunPanel` (when no agent is selected) showing the input form and live trace feeds, `NodePanel` (when an agent is selected) exposing the Monaco code editor, or snapshot panels when in historical view.
 - **Dollar-sign Rendering Guard**: `remark-math` is configured with `singleDollarTextMath: false` to ensure common notations like currency (`$50K`) render as normal text, reserving math block rendering strictly for double dollar signs (`$$...$$`).
-- **Settings Panel**: A provider dropdown lists **API-key presets** (OpenRouter default, OpenAI, Groq, Together, DeepSeek, Cerebras, Fireworks, xAI, Mistral, Custom) and **OAuth presets** (ChatGPT subscription via Codex, xAI sign-in via Grok-CLI). API-key presets show a per-provider key field; switching providers swaps the active key, default orchestrator model, and default node model. OAuth presets replace the key field with a Sign in / Sign out widget that opens a PKCE flow popup against the upstream provider, with tokens stored server-side. A parallel.ai key is configured alongside for `web_search` / `web_fetch`. API keys live in browser `localStorage` and ride request headers; OAuth tokens are persisted server-side in the `Credential` table and never round-trip to the browser.
-- **MCP Settings & Session Access**: Planned controls for adding user-configured MCP servers, testing connections, refreshing discovered tools, and selecting allowed MCP tools per session.
+- **Settings Panel**: A provider dropdown lists **API-key presets** (OpenRouter default, OpenAI, Groq, Together, DeepSeek, Cerebras, Fireworks, xAI, Mistral, Custom) and **OAuth presets** (ChatGPT subscription via Codex, xAI sign-in via Grok-CLI). API-key presets show a per-provider key field; switching providers swaps the active key, default orchestrator model, and default node model. OAuth presets replace the key field with a Sign in / Sign out widget that opens a PKCE flow popup against the upstream provider, with tokens stored server-side. A parallel.ai key is configured alongside for `web_search` / `web_fetch`. API keys live in browser `localStorage` and ride request headers; OAuth tokens are persisted server-side in the `Credential` table and never round-trip to the browser. The panel autosaves on every edit.
+- **MCP Section**: A structured editor over `settings.mcp_servers` (opencode-shape JSON, kept in `localStorage` and forwarded via the `X-Mcp-Servers` request header). Each row supports local (stdio command) and remote (HTTP URL) types with their own field set, a per-card status probe (connected / needs_auth / failed + discovered-tool count), a "view tools" popout that lists the full per-server tool inventory with input schemas and per-tool disable toggles, and — for remote servers — a Sign in / Sign out widget mirroring the LLM OAuth flow.
 
 ### 4.7 Data Persistence & Workspaces
 - **SQLite Database**: Standard relational storage containing:
@@ -205,6 +199,7 @@ Tools are configured in the global registry `app.runner.tools.REGISTRY`. Agents 
   - `Session`, `Message` (chat histories)
   - `Run`, `NodeRun` (execution records)
   - `Credential` (OAuth access/refresh tokens for subscription-login providers, e.g. ChatGPT subscription, xAI sign-in; never exposed to the frontend)
+  - `McpCredential` (OAuth client info + access/refresh tokens for one remote MCP server, keyed by server name; persists everything the MCP SDK's `TokenStorage` round-trips — access/refresh tokens, expiry, scope, dynamically-registered `client_id`/`client_secret`, and the token-endpoint auth method)
   - Default database sits at `./workflow_builder.db`.
 - **Filesystem Workspace**: Sandboxed temporary execution folders (`tempfile.mkdtemp(prefix="wfrun-")`) allocated per run to house files, code outputs, or scrap scripts created by active agents.
 - **Run Deletion Protection**: Projects cannot be deleted if a team collaboration run is currently `pending` or `running` to avoid orphaned system processes.
@@ -258,16 +253,17 @@ Credential { id, provider_id, access_token, refresh_token,
            # provider_id: e.g. "chatgpt-subscription", "xai-oauth"
            # account_id used by Codex (sent as X-ChatGPT-Account-Id header)
 
-Planned MCP additions:
-
-McpServer  { id, name, transport, config, enabled, created_at, updated_at,
-             last_connected_at?, last_error? }
-
-McpTool    { id, server_id, name, registry_name, description,
-             input_schema, discovered_at, enabled }
-
-SessionMcpTool
-           { session_id, mcp_tool_id, enabled }
+McpCredential
+           { server_name, server_url,
+             access_token?, refresh_token?, expires_at?, scope?, token_type?,
+             client_id?, client_secret?,
+             client_id_issued_at?, client_secret_expires_at?,
+             token_endpoint_auth_method?,
+             created_at, updated_at }
+           # MCP server config itself lives in the browser (localStorage,
+           # `settings.mcp_servers`) and forwards as the X-Mcp-Servers header —
+           # no McpServer / McpTool tables are needed, since discovery runs
+           # in-process and caches by config string.
 ```
 
 ---
@@ -280,6 +276,7 @@ The Orchestrator Agent is equipped with the following tool signatures to inspect
 # Read-Only Inspection (Always allowed)
 view_graph()                           -> {workflow_id, name, input_node_id, output_node_id, nodes[], edges[]}
 view_node_details(node_id)             -> {full node record incl. code, user_edited}
+get_mcp_tool_schema(server, tool)      -> {server, tool, call, llm_name, description, input_schema}  # untruncated input schema for one MCP tool
 list_runs(limit?)                      -> {runs: [{run_id, status, kind, started_at, ended_at, total_cost, error}], count, limit}
 view_run(run_id, node_id?, fields?)    -> {run_id, status, outputs, node_errors, error, total_cost} or per-agent traces
 
@@ -303,7 +300,7 @@ run_workflow(inputs)                   -> {run_id, status, total_cost}  # Trigge
 ## 8. Technology Stack
 - **Backend:** Python 3.11+, FastAPI, WebSockets, Server-Sent Events, SQLAlchemy + SQLite, isolated `subprocess` execution, HTTPX client for any OpenAI-compatible LLM provider, plus a Codex Responses-API translator for the ChatGPT-subscription transport and a loopback HTTP server for OAuth PKCE callbacks.
 - **Frontend:** React 18, Vite, `@xyflow/react` for Canvas, `@monaco-editor/react` for the code workbench, `react-markdown` + `remark-gfm` for chat. Vanilla CSS and layout styling.
-- **Planned MCP Layer:** Python MCP client integration for user-configured servers, tool discovery, schema normalization, node runtime dispatch, and cancellation-aware execution.
+- **MCP Layer:** Official `mcp` Python SDK for stdio + streamable-HTTP transports, single shared asyncio loop bridging the synchronous threaded runner via `run_coroutine_threadsafe`, custom `TokenStorage` bridging the SDK's OAuth state into the `mcp_credentials` SQLite table.
 
 ---
 
@@ -312,7 +309,8 @@ run_workflow(inputs)                   -> {run_id, status, total_cost}  # Trigge
 - Visual loop connections (edges forming cycles). Sub-agent looping is handled inside an individual agent's Python logic instead.
 - Curated built-in MCP integration marketplace/catalog.
 - Direct Orchestrator Agent execution of MCP tools.
-- Per-call approval prompts for MCP tools after session-level allowlisting.
+- Per-session MCP tool allowlists or per-call approval prompts (per-server `disabled_tools` are global, not per-session).
+- Mid-run MCP OAuth token refresh (resolution happens at child-subprocess spawn time only).
 - **Generative UI (Designer Agent)**: A planned Phase 7 addition where a secondary agent generates custom, standalone HTML user interfaces tailored to the team's input/output schemas, letting users execute workflows via tailored forms rather than simple textareas.
 - **Run Pruning**: Automatic garbage-collection of runs exceeding 20 is on the roadmap; currently, older runs accumulate in SQLite.
 - **Single-Process Packaging**: Packaging Vite and FastAPI together inside a single pip-installable distribution remains a polish goal.
@@ -323,8 +321,9 @@ run_workflow(inputs)                   -> {run_id, status, total_cost}  # Trigge
 - **Agent Code Quality**: The application relies heavily on the LLM's capability to author functional Python code. The orchestrator uses `run_workflow` and `view_run` to inspect and debug its own generated code before concluding turns.
 - **Subprocess Isolation**: Malicious or recursive scripts executed by custom agents are isolated within the subprocess boundary; trusted local execution mitigates high security concerns.
 - **Reasoning Order Rules**: Strict compliance with OpenRouter/Anthropic's sequence requirements (re-sending reasoning blocks unmodified) is critical to prevent turn execution failures.
-- **External MCP Tool Trust**: User-configured MCP servers can perform arbitrary external actions. Session allowlists, namespacing, redacted logging, traceability, and local-only deployment are required to keep behavior understandable.
-- **Schema Drift**: MCP tool schemas can change between discovery and execution. Run snapshots must pin the schema used at execution time to preserve reproducibility.
+- **External MCP Tool Trust**: User-configured MCP servers can perform arbitrary external actions. Per-server enable/disable, per-tool `disabled_tools` opt-outs, qualified `<server>_<tool>` namespacing, full trace capture, and local-only deployment are the safeguards. There is no per-call approval step — once a tool is configured and enabled, node code can invoke it without further prompting.
+- **MCP Schema Drift / Cache Invalidation**: Tool descriptors are cached by raw config string and reused across orchestrator turns. A live MCP server that changes its tool schema mid-session won't be re-probed until the user edits the config. For long-lived servers (Notion etc.) this is fine; for actively-developed local servers, restart-the-config is the workaround.
+- **MCP OAuth Provider Drift**: The MCP SDK handles dynamic client registration + token refresh, but auth servers can vary in non-spec ways (Notion's missing `token_endpoint_auth_method` is the live example). New providers may need similar small storage-layer coercions.
 - **Reused Public OAuth Client IDs**: Subscription-OAuth presets reuse Codex CLI's and Grok-CLI's published `client_id`s (matching the opencode pattern) and pin specific loopback callback ports (`1455`, `127.0.0.1:56121`) required by upstream's registered redirect URIs. Either provider can revoke the client at any time or change the redirect contract, breaking sign-in until a new client_id is wired up. Local port conflicts surface as a clear 409.
 
 ---
@@ -337,6 +336,6 @@ run_workflow(inputs)                   -> {run_id, status, total_cost}  # Trigge
 5. **Orchestrator Agent v1** ✅ SSE chat stream, collapsible reasoning logs, tool call cards, and `user_edited` locks.
 6. **Orchestrator-Driven Collaboration** ✅ Orchestrator can run graphs, diagnose trace errors, clear board between stage solves, and fork snapshots into fresh active projects.
 7. **Multi-Provider LLM Support** ✅ Provider-agnostic LLM caller for any OpenAI-compatible `{base}/chat/completions` endpoint; curated preset registry (OpenRouter, OpenAI, Groq, Together, DeepSeek, Cerebras, Fireworks, xAI, Mistral, Custom); per-provider API-key storage with active-provider headers; subscription-OAuth presets (ChatGPT via Codex PKCE, xAI via Grok-CLI PKCE) with server-side `Credential` token storage, automatic refresh-on-expiry, and a Codex Responses-API ↔ chat-completions translator.
-8. **External MCP Tool Integrations** ⏳ User-configured MCP servers, session-level MCP tool allowlists, and node-only direct/agentic MCP tool execution.
+8. **External MCP Tool Integrations** ✅ User-configured MCP servers (local stdio + remote streamable-HTTP) in Settings, runtime tool discovery on every run, dotted + flat ctx.tools access, MCP tools in `ctx.call_llm(tools=[...])`, orchestrator per-turn MCP directory + `get_mcp_tool_schema` helper, OAuth (discovery + DCR + PKCE + refresh) for remote servers persisted in `mcp_credentials`, per-server `disabled_tools` opt-outs, per-card connection status + tool browser in Settings.
 9. **Generative UI / Designer Agent** ⏳ Dedicated Design tab allowing a specialized designer agent to generate tailor-made UI pages for running stable agent teams.
 10. **Distribution Polish** ⏳ Run pruning and single-process packaging integration.

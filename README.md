@@ -6,7 +6,7 @@ See `docs/PRD.md` for the full product specification.
 
 ## Status
 
-Phases 0–6 are fully implemented, providing a robust local runtime for multi-agent collaboration and design:
+Phases 0–7 are fully implemented, providing a robust local runtime for multi-agent collaboration and design:
 
 - **Phase 0** Backend (FastAPI) + frontend (Vite/React/React Flow/Monaco) scaffold.
 - **Phase 1** Multi-agent coordination runtime: tool registry (`shell`, `web_search`, `web_fetch`), `call_llm` over OpenRouter with agent-loop tool-calling, execution context (`ctx`) injected into specialized agents, subprocess-isolated runner with topological dependency resolution, null-propagation, and skip rule execution.
@@ -15,27 +15,25 @@ Phases 0–6 are fully implemented, providing a robust local runtime for multi-a
 - **Phase 4** Live execution streaming over WebSocket: real-time agent status indicators on the canvas, live logs / LLM calls / tool invocations in the panel, and execution cancellation.
 - **Phase 5** Orchestrator Agent: SSE chat session with extended thinking, topology-mutation tool surface (`add_node` / `add_edge` / `configure_node` / …), live collaboration board refresh, and `user_edited` preservation (hand-edited agent code is locked across orchestrator turns).
 - **Phase 6** Orchestrator-driven executions: The orchestrator agent can trigger team runs (`run_workflow`) directly from chat, inspect collaboration results (`view_run`), and clear the collaboration board (`clean_canvas`) to transition between different stages of a multi-turn solve. All runs carry a frozen snapshot of the agent topology so past executions can be inspected or rerun independently.
+- **Phase 7** External MCP tool integrations: users connect any number of external Model Context Protocol servers in Settings (local stdio commands or remote streamable-HTTP URLs); discovered tools are exposed to specialized agent nodes and surfaced to the orchestrator as a per-turn directory so it can write nodes that call them.
 - **Team Forking & Branching**: Duplicate any live agent team or historical run snapshot into a brand-new editable project workspace (`POST /api/workflows/{wid}/fork` and `POST /api/runs/{rid}/fork`) to test variations and branch ideas.
 
-## Planned: User-Configured MCP Tool Integrations
+## External MCP Tool Integrations
 
-The next product addition is support for user-configured external MCP servers whose discovered tools can be used by specialized agent nodes. MCP tools are not exposed as direct Orchestrator Agent tools. Instead, each chat/session will have an allowlist UI that determines which MCP tools are visible to the orchestrator as configurable node capabilities and which tools are passed into node execution.
+The settings panel includes an MCP section where you add servers in the opencode shape — a JSON map of `name → {type: "local", command: [...], environment: {...}} | {type: "remote", url, headers: {...}}`. Each row supports a per-server status probe (connected / needs_auth / failed + discovered-tool count), a per-tool disable toggle, and — for remote servers — an OAuth sign-in flow with discovery, dynamic client registration (RFC 7591), PKCE, and automatic token refresh handled by the MCP SDK. Settings autosave.
 
-Planned behavior:
+Servers that don't implement RFC 7591 (Slack's `https://mcp.slack.com/mcp`, others) require a pre-registered OAuth app: supply `oauth: {clientId, clientSecret}` (and `scope` if the provider needs it) on the server entry, and emdash skips DCR and uses your client for the authorize → token-exchange flow. The loopback callback is `http://127.0.0.1:19876/mcp/oauth/callback` by default; override per-server with `oauth.redirectUri` (any loopback URL) or `oauth.callbackPort` (port shorthand) when a provider needs a different URI — register whichever you choose as a redirect URI on the OAuth app.
 
-- Users add and test MCP server connections locally, then select allowed tools per session.
-- The orchestrator can inspect allowed MCP tool names/descriptions/schemas and configure specialized nodes to use them, but cannot call those external tools itself.
-- Specialized nodes can use allowed MCP tools directly through `ctx.tools` or agentically through `ctx.call_llm(..., tools=[...])`.
-- Tool calls execute without per-call approval once the tool is allowed for the session; audit logs and run traces must still record MCP tool usage.
-- MCP tools should be namespaced to avoid collisions with built-in tools such as `shell`, `web_search`, and `web_fetch`.
+At run start the runner subprocess connects to each enabled server, calls `tools/list`, and registers each tool into the same in-process registry the built-in tools live in. Node code reaches MCP tools two ways:
 
-Implementation guidance follows Codex-style MCP patterns:
+- **Direct** — `ctx.tools.<server>.<tool>(arg=...)` (dotted, keyword args), or the flat namespaced form `ctx.tools.<server>_<tool>(...)`.
+- **Agentic** — name the flat form in `ctx.call_llm(tools=[...])` and let the node's inner LLM decide when to invoke it.
 
-- Treat MCP availability as a lifecycle, not a boolean: `configured → auth_known → initialized → tools_discovered → allowed_in_session`.
-- For HTTP MCP servers, support OAuth 2.1 + PKCE, OAuth discovery, RFC 8707 resource parameters, and bearer tokens sourced from environment variables rather than inline secrets.
-- Verify a connection by completing the MCP handshake and `tools/list`; do not expose a server as usable from config presence alone.
-- Include startup and tool-call timeouts, enabled/disabled tool filtering, hot reload after config changes, token refresh, and redacted logging.
-- Provide a lightweight status endpoint that reports tools and auth status without requiring slow resource inventory.
+Tools return `{content, isError, structured?}`; failures are captured as structured tool-call errors and recorded in the node trace alongside built-in tool calls.
+
+The orchestrator never executes MCP tools itself — its graph-shaping tool surface is unchanged. Instead, each orchestrator turn includes a system message listing every discovered tool with a one-line summary and the exact `<server>_<tool>` / `ctx.tools.<server>.<tool>` names to call it by. A new `get_mcp_tool_schema(server, tool)` helper fetches the untruncated JSON input schema before the orchestrator constructs nested args. Per-server `disabled_tools` opt-outs are applied before either the orchestrator listing or the node-runtime registry, so a globally disabled tool is invisible everywhere.
+
+OAuth credentials live in a new `mcp_credentials` table on the backend; the FastAPI process owns the refresh loop and the child runner subprocess only ever receives a fresh bearer (injected into the `MCP_SERVERS` env var at spawn time).
 
 ## Run it
 
@@ -71,14 +69,15 @@ Each specialized agent runs a custom Python block with access to a rich executio
 
 ```python
 def run(inputs, ctx):
-    # ctx.call_llm(model="", prompt=..., tools=["shell", "web_search", "web_fetch"])
-    #   Run an LLM-mediated sub-agent. The selected model (defaults to workspace default) 
-    #   uses the listed tools as-needed to satisfy the prompt.
-    #   Planned: allowed MCP tools can also be supplied here for agentic use.
+    # ctx.call_llm(model="", prompt=..., tools=["shell", "web_search", "web_fetch", "<server>_<tool>"])
+    #   Run an LLM-mediated sub-agent. The selected model (defaults to workspace default)
+    #   uses the listed tools as-needed to satisfy the prompt. MCP tools from connected
+    #   servers can be named here using their flat <server>_<tool> form.
     #
     # ctx.tools.shell(...) / ctx.tools.web_search(...) / ctx.tools.web_fetch(...)
-    #   Execute direct, deterministic tool calls bypassing LLM routing.
-    #   Planned: allowed MCP tools can also be called directly from node code.
+    # ctx.tools.<server>.<tool>(arg=...) / ctx.tools.<server>_<tool>(...)
+    #   Direct, deterministic tool calls bypassing LLM routing — both built-ins and
+    #   MCP tools, reachable either dotted-by-server or as a flat namespaced attribute.
     #
     # ctx.log("...")                     — Appends a line to the agent's live run log
     # ctx.workdir                        — A temporary scratch directory unique to this execution
@@ -92,17 +91,24 @@ def run(inputs, ctx):
 ```
 backend/
   app/
-    main.py                # FastAPI server & per-request headers middleware
+    main.py                # FastAPI server & per-request headers middleware (incl. MCP_SERVERS)
     db.py models.py schemas.py
-    api/                   # Teams, agents, handoffs, executions, settings, orchestrator, auth
+    api/                   # Teams, agents, handoffs, executions, settings, orchestrator, auth, mcp
     auth/                  # Subscription-OAuth (Codex/ChatGPT, xAI) PKCE flows, loopback HTTP server,
-                           #   per-provider token storage & refresh, Codex Responses-API translator
+                           #   per-provider token storage & refresh, Codex Responses-API translator,
+                           #   plus mcp_oauth.py for remote MCP server OAuth (discovery, DCR, PKCE, refresh)
     runner/
-      runner.py            # Parent: Spawns the isolated runner process, publishes events
-      child.py             # Child: Subprocess boundary executing topological sort & skip rules
+      runner.py            # Parent: Spawns the isolated runner process, publishes events,
+                           #   resolves fresh OAuth bearers for MCP servers at spawn time
+      child.py             # Child: Subprocess boundary executing topological sort & skip rules,
+                           #   connects to configured MCP servers at startup
       service.py           # Team run lifecycle, process spawning, and persistence
-      ctx.py               # Injected agent context (call_llm, direct tools, logging)
-      tools.py             # Tool registry & LLM function schemas
+      ctx.py               # Injected agent context (call_llm, direct tools, logging,
+                           #   dotted-by-server MCP tool access)
+      tools.py             # Tool registry, LLM function schemas, and MCP namespace map
+      mcp.py               # MCP client: stdio + streamable-HTTP transports, single shared
+                           #   asyncio loop, tool discovery + schema normalization, OAuth token
+                           #   storage bridge, runtime registry registration
       llm.py               # OpenAI-compatible LLM caller (provider-agnostic; agent loop with tool calling)
       events.py            # In-memory execution pub/sub feeding WebSockets
     orchestrator/
@@ -111,13 +117,14 @@ backend/
         llm_stream.py      #   SSE token streaming & parsing
         persistence.py     #   Session messages mapping
         session.py         #   Orchestrator cancel-turn registry
-      tools.py             # Orchestrator topology-mutation tools
-      prompt.py            # Orchestrator system instructions & state injectors
+      tools.py             # Orchestrator topology-mutation tools + get_mcp_tool_schema
+      prompt.py            # Orchestrator system instructions, graph-state + MCP-directory injectors
     services/
       graph.py             # Shared team topology helpers (cascade deletes, forks)
   tests/
     test_runner.py
     test_orchestrator.py
+    test_mcp.py
 frontend/
   src/
     App.tsx
@@ -141,6 +148,7 @@ frontend/
       SnapshotBanner.tsx   # Visual indicator for historical snapshots
       SnapshotRunPanel.tsx # Pinned controls for snapshot historical views
       ModelInput.tsx       # Autocomplete-equipped model picker
-      Settings.tsx         # Storage of API keys & default models
+      Settings.tsx         # API keys, default models, MCP server editor (autosaves)
+    mcpApi.ts              # MCP status probe, tool discovery, and OAuth login client
       ValueViewer.tsx JsonView.tsx Markdown.tsx
 ```

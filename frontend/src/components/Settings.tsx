@@ -575,11 +575,17 @@ interface McpRow {
   // orchestrator and the runtime registry.
   disabledTools: string[];
   // Remote servers are OAuth-capable by default (opencode's `oauth !== false`).
-  // We don't expose client-id/secret/scope in the UI — dynamic client
-  // registration covers ~every real server. `oauthOn` is derived from the JSON
-  // (false only when `"oauth": false` is set by hand) and gates the login row.
+  // `oauthOn` is false only when the JSON sets `"oauth": false` to opt out.
   oauthOn: boolean;
-  rest: Record<string, unknown>; // keys we don't surface, preserved verbatim (incl. any `oauth` block)
+  // Pre-registered OAuth client. Empty strings = use Dynamic Client
+  // Registration (RFC 7591). Set these for servers that don't support DCR
+  // (Slack et al.). `oauthRedirectUri` overrides the loopback callback when a
+  // provider rejects the default `http://127.0.0.1:19876/mcp/oauth/callback`.
+  oauthClientId: string;
+  oauthClientSecret: string;
+  oauthScope: string;
+  oauthRedirectUri: string;
+  rest: Record<string, unknown>; // any other keys we don't surface, preserved verbatim
 }
 
 let _mcpUid = 0;
@@ -623,16 +629,18 @@ function parseServers(raw: string): McpRow[] {
   const rows: McpRow[] = [];
   for (const [name, cfgRaw] of Object.entries(map as Record<string, unknown>)) {
     const cfg = (cfgRaw && typeof cfgRaw === 'object' ? cfgRaw : {}) as Record<string, unknown>;
-    // `timeout` and any `oauth` block are intentionally left in `rest` so they
-    // round-trip untouched — neither is surfaced in the UI, but a hand-edited
-    // pre-registered `oauth` client keeps working on the backend.
-    const { type, command, url, headers, environment, enabled, disabled_tools, ...rest } = cfg;
+    // `timeout` rides along in `rest` (not surfaced in the UI but preserved).
+    // `oauth` is split: `false` flips oauthOn off; a dict is unpacked into
+    // first-class fields so the user can edit pre-registered creds in the UI.
+    const { type, command, url, headers, environment, enabled, disabled_tools, oauth, ...rest } =
+      cfg;
     const t: McpType = type === 'remote' ? 'remote' : 'local';
     const cmd = Array.isArray(command)
       ? command.map(asStr).filter(Boolean).join(' ')
       : asStr(command);
     // Remote = OAuth-capable unless the JSON explicitly opts out.
-    const oauthOn = t === 'remote' && cfg.oauth !== false;
+    const oauthOn = t === 'remote' && oauth !== false;
+    const oauthObj = oauth && typeof oauth === 'object' ? (oauth as Record<string, unknown>) : {};
     const disabledTools = Array.isArray(disabled_tools)
       ? (disabled_tools.filter((t) => typeof t === 'string') as string[])
       : [];
@@ -647,6 +655,10 @@ function parseServers(raw: string): McpRow[] {
       enabled: enabled !== false,
       disabledTools,
       oauthOn,
+      oauthClientId: asStr(oauthObj.clientId ?? oauthObj.client_id),
+      oauthClientSecret: asStr(oauthObj.clientSecret ?? oauthObj.client_secret),
+      oauthScope: asStr(oauthObj.scope),
+      oauthRedirectUri: asStr(oauthObj.redirectUri ?? oauthObj.redirect_uri),
       rest,
     });
   }
@@ -668,8 +680,19 @@ function serializeServers(rows: McpRow[]): string {
       entry.url = r.url.trim();
       const headers = rowsToKv(r.headers);
       if (Object.keys(headers).length) entry.headers = headers;
-      // OAuth-capable by default; any `oauth` block (incl. an explicit `false`
-      // opt-out) round-trips via `rest`, so nothing to emit here.
+      // `oauth: false` opts out entirely; otherwise emit a dict only when the
+      // user filled in at least one pre-reg field, so DCR-capable servers
+      // (the default) stay terse in the JSON.
+      if (!r.oauthOn) {
+        entry.oauth = false;
+      } else {
+        const oauth: Record<string, unknown> = {};
+        if (r.oauthClientId.trim()) oauth.clientId = r.oauthClientId.trim();
+        if (r.oauthClientSecret.trim()) oauth.clientSecret = r.oauthClientSecret.trim();
+        if (r.oauthScope.trim()) oauth.scope = r.oauthScope.trim();
+        if (r.oauthRedirectUri.trim()) oauth.redirectUri = r.oauthRedirectUri.trim();
+        if (Object.keys(oauth).length) entry.oauth = oauth;
+      }
     }
     if (r.disabledTools.length) entry.disabled_tools = r.disabledTools;
     out[name] = entry;
@@ -689,6 +712,10 @@ function newRow(): McpRow {
     enabled: true,
     disabledTools: [],
     oauthOn: true,
+    oauthClientId: '',
+    oauthClientSecret: '',
+    oauthScope: '',
+    oauthRedirectUri: '',
     rest: {},
   };
 }
@@ -1277,6 +1304,93 @@ function KeyValueRows({
   );
 }
 
+function McpOAuthClientFields({
+  row,
+  onPatch,
+}: {
+  row: McpRow;
+  onPatch: (fields: Partial<McpRow>) => void;
+}) {
+  const [open, setOpen] = useState(
+    !!(row.oauthClientId || row.oauthClientSecret || row.oauthScope || row.oauthRedirectUri),
+  );
+  return (
+    <div
+      style={{
+        border: '1px dashed var(--rule)',
+        borderRadius: 4,
+        padding: '8px 10px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: open ? 10 : 0,
+      }}
+    >
+      <button
+        type="button"
+        className="text-btn"
+        onClick={() => setOpen((v) => !v)}
+        style={{ alignSelf: 'flex-start', fontSize: 11 }}
+        title="set a pre-registered OAuth client for servers that don't support dynamic client registration"
+      >
+        {open ? '▾' : '▸'} oauth client (optional — required for servers without dynamic client registration)
+      </button>
+      {open && (
+        <>
+          <SubField label="client id">
+            <input
+              className="mono"
+              value={row.oauthClientId}
+              placeholder="from your registered OAuth app"
+              onChange={(e) => onPatch({ oauthClientId: e.target.value })}
+              autoComplete="off"
+              spellCheck={false}
+              style={mcpInputStyle}
+              aria-label="oauth client id"
+            />
+          </SubField>
+          <SubField label="client secret">
+            <input
+              className="mono"
+              type="password"
+              value={row.oauthClientSecret}
+              placeholder="leave empty for public clients (PKCE only)"
+              onChange={(e) => onPatch({ oauthClientSecret: e.target.value })}
+              autoComplete="off"
+              spellCheck={false}
+              style={mcpInputStyle}
+              aria-label="oauth client secret"
+            />
+          </SubField>
+          <SubField label="scope">
+            <input
+              className="mono"
+              value={row.oauthScope}
+              placeholder="space-separated, e.g. read:org write:messages"
+              onChange={(e) => onPatch({ oauthScope: e.target.value })}
+              autoComplete="off"
+              spellCheck={false}
+              style={mcpInputStyle}
+              aria-label="oauth scope"
+            />
+          </SubField>
+          <SubField label="redirect uri (override)">
+            <input
+              className="mono"
+              value={row.oauthRedirectUri}
+              placeholder="http://127.0.0.1:19876/mcp/oauth/callback (default)"
+              onChange={(e) => onPatch({ oauthRedirectUri: e.target.value })}
+              autoComplete="off"
+              spellCheck={false}
+              style={mcpInputStyle}
+              aria-label="oauth redirect uri"
+            />
+          </SubField>
+        </>
+      )}
+    </div>
+  );
+}
+
 function McpOAuthControl({
   row,
   probe,
@@ -1312,12 +1426,16 @@ function McpOAuthControl({
     };
   }, [name]);
 
-  // Pre-registered client (clientId/secret/scope) isn't editable in the UI —
-  // dynamic registration handles ~every server. But if one was set by hand in
-  // the JSON it lives in `rest.oauth`, so forward it to the login flow.
+  // Pre-registered OAuth client (Slack et al. that don't implement RFC 7591).
+  // The row carries these as first-class fields edited under "oauth client" in
+  // the card; forward the populated ones to the login flow as the oauth dict.
   const oauthArgs = () => {
-    const o = row.rest.oauth;
-    return o && typeof o === 'object' ? (o as Record<string, unknown>) : null;
+    const o: Record<string, unknown> = {};
+    if (row.oauthClientId.trim()) o.clientId = row.oauthClientId.trim();
+    if (row.oauthClientSecret.trim()) o.clientSecret = row.oauthClientSecret.trim();
+    if (row.oauthScope.trim()) o.scope = row.oauthScope.trim();
+    if (row.oauthRedirectUri.trim()) o.redirectUri = row.oauthRedirectUri.trim();
+    return Object.keys(o).length ? o : null;
   };
 
   const onSignIn = async () => {
@@ -1552,6 +1670,7 @@ function McpServerCard({
               addLabel="+ add header"
             />
           </SubField>
+          {row.oauthOn && <McpOAuthClientFields row={row} onPatch={onPatch} />}
           {!draft && row.oauthOn && <McpOAuthControl row={row} probe={probe} onReprobe={onReprobe} />}
         </>
       )}
