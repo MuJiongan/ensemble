@@ -71,7 +71,13 @@ def _lower(messages: list[dict]) -> tuple[dict | None, list[dict]]:
                     args = {}
                 if tc.get("id"):
                     id_to_name[tc["id"]] = fn.get("name") or ""
-                parts.append({"functionCall": {"name": fn.get("name") or "", "args": args}})
+                fc_part: dict = {"functionCall": {"name": fn.get("name") or "", "args": args}}
+                # Gemini attaches a thoughtSignature to the functionCall part
+                # (not the thought part); it must be echoed back or the model
+                # rejects the turn / loses reasoning continuity.
+                if tc.get("thoughtSignature"):
+                    fc_part["thoughtSignature"] = tc["thoughtSignature"]
+                parts.append(fc_part)
             contents.append({"role": "model", "parts": parts or [{"text": ""}]})
             continue
 
@@ -162,11 +168,16 @@ def stream_round(
                     fc = part.get("functionCall")
                     if fc:
                         args_json = json.dumps(fc.get("args") or {})
-                        tool_calls.append({
+                        tc: dict = {
                             "id": f"tool_{tc_index}",
                             "type": "function",
                             "function": {"name": fc.get("name") or "", "arguments": args_json},
-                        })
+                        }
+                        # Carry the per-call thoughtSignature so it round-trips
+                        # back to Gemini on the next turn (see _lower).
+                        if part.get("thoughtSignature"):
+                            tc["thoughtSignature"] = part["thoughtSignature"]
+                        tool_calls.append(tc)
                         yield ("tool_args", tc_index, fc.get("name") or "", args_json)
                         tc_index += 1
 

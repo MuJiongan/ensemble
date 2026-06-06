@@ -73,7 +73,10 @@ def _parse_stream(chunks: Iterator[dict]) -> Iterator[tuple]:
             if t:
                 yield ("thinking", t)
         if not rds:
-            flat = delta.get("reasoning")
+            # ``reasoning`` is OpenRouter's flat field; ``reasoning_content`` is
+            # what native OpenAI-compatible upstreams (DeepSeek, Qwen, Groq,
+            # Zhipu, …) emit. A chunk carries at most one.
+            flat = delta.get("reasoning") or delta.get("reasoning_content")
             if flat:
                 _merge_reasoning_delta(reasoning_blocks, {"type": "reasoning.text", "text": flat})
                 yield ("thinking", flat)

@@ -11,6 +11,7 @@ from typing import Callable
 
 from app.catalog import models_dev as md
 from app.catalog import providers as prov
+from app.catalog.variants import base_options, merge_options
 from app.llm import anthropic_messages, gemini, openai_chat
 
 _ANTHROPIC_NPM = {"@ai-sdk/anthropic", "@ai-sdk/google-vertex/anthropic"}
@@ -46,9 +47,12 @@ def plan(provider_id: str, model_id: str, variant: str | None, base_url: str = "
     provider_id = (provider_id or "").strip()
     sr, proto, default_base = _select(provider_id, model_id)
     model = md.get_model(provider_id, model_id) if provider_id else None
-    variant_opts: dict = {}
+    # Always-on provider defaults (turns reasoning on, sets quirks), with the
+    # selected variant deep-merged over the top — mirrors opencode's
+    # mergeOptions(base_options, …, variant).
+    variant_opts: dict = base_options(model) if model is not None else {}
     if model is not None and variant and variant in model.variants:
-        variant_opts = model.variants[variant]
+        variant_opts = merge_options(variant_opts, model.variants[variant])
     return ExecPlan(
         stream_round=sr,
         protocol=proto,

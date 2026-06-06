@@ -425,6 +425,90 @@ def variants(model: "CatalogModel") -> dict[str, dict]:
     return {}
 
 
+def base_options(model: "CatalogModel") -> dict:
+    """Port of transform.ts ``options()`` (lines 1009-1151): the provider-option
+    defaults applied to every request *regardless of the selected variant*.
+
+    Variants tune reasoning strength; ``base_options`` turns reasoning on (and
+    sets provider quirks) so e.g. Google models stream thoughts and gpt-5
+    defaults to medium effort even when the user picks no variant. The selected
+    variant is deep-merged *over* this base (variant wins), mirroring opencode's
+    ``mergeOptions(base, …, variant)``.
+
+    Kept in opencode's native camelCase shape; ``to_openai_body`` filters to the
+    chat-completions-portable subset, and the gemini/anthropic adapters read
+    ``thinkingConfig`` / ``thinking`` directly. Session-scoped fields
+    (``promptCacheKey``) are omitted — the catalog layer has no session id.
+    """
+    result: dict = {}
+    npm = model.npm
+    pid = model.provider_id
+    api_id = model.api_id
+    cid = api_id.lower()
+
+    if npm in ("@openrouter/ai-sdk-provider", "@llmgateway/ai-sdk-provider"):
+        result["usage"] = {"include": True}
+        if "gemini-3" in cid:
+            result["reasoning"] = {"effort": "high"}
+
+    if pid == "baseten" or (pid == "opencode" and api_id in ("kimi-k2-thinking", "glm-4.6")):
+        result["chat_template_args"] = {"enable_thinking": True}
+
+    if any(x in pid for x in ("zai", "zhipuai")) and npm == "@ai-sdk/openai-compatible":
+        result["thinking"] = {"type": "enabled", "clear_thinking": False}
+
+    if npm in ("@ai-sdk/google", "@ai-sdk/google-vertex") and model.reasoning:
+        tc = {"includeThoughts": True}
+        if "gemini-3" in cid:
+            tc["thinkingLevel"] = "high"
+        result["thinkingConfig"] = tc
+
+    if npm in ("@ai-sdk/anthropic", "@ai-sdk/google-vertex/anthropic") and (
+        "k2p" in cid or "kimi-k2." in cid or "kimi-k2p" in cid
+    ):
+        result["thinking"] = {"type": "enabled", "budgetTokens": min(16_000, model.limit.output // 2 - 1)}
+
+    if (
+        pid == "alibaba-cn"
+        and model.reasoning
+        and npm == "@ai-sdk/openai-compatible"
+        and "kimi-k2-thinking" not in cid
+    ):
+        result["enable_thinking"] = True
+
+    # Azure gpt-5.5 returns early in opencode (skips the generic gpt-5 block).
+    if npm == "@ai-sdk/azure" and "gpt-5.5" in cid:
+        result["reasoningSummary"] = "auto"
+        return result
+
+    if "gpt-5" in cid and "gpt-5-chat" not in cid:
+        if "gpt-5-pro" not in cid:
+            result["reasoningEffort"] = "medium"
+            result["reasoningSummary"] = "auto"
+            if npm in ("@ai-sdk/openai", "@ai-sdk/amazon-bedrock/mantle"):
+                result["include"] = INCLUDE_ENCRYPTED_REASONING
+        if "gpt-5." in cid and "codex" not in cid and "-chat" not in cid and pid != "azure":
+            result["textVerbosity"] = "low"
+        if pid.startswith("opencode"):
+            result["include"] = INCLUDE_ENCRYPTED_REASONING
+            result["reasoningSummary"] = "auto"
+
+    return result
+
+
+def merge_options(base: dict, override: dict) -> dict:
+    """Deep-merge ``override`` over ``base`` (override wins on scalars; dicts
+    merge recursively). Mirrors opencode's ``mergeOptions``/``mergeDeep`` used to
+    layer the selected variant on top of ``base_options``."""
+    out = dict(base or {})
+    for k, v in (override or {}).items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = merge_options(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # Execution helpers (OpenAI-compatible wire translation)
 # --------------------------------------------------------------------------- #
@@ -438,8 +522,12 @@ def to_openai_body(variant_opts: dict) -> dict:
       * ``{"reasoningEffort": e}``       -> ``{"reasoning_effort": e}``
       * ``{"reasoning": {"effort": e}}`` -> kept verbatim (OpenRouter shape)
       * ``{"reasoning_effort": e}``      -> kept verbatim (SAP shape)
-    Native non-OAI dicts (``thinking``/``thinkingConfig``/``reasoningConfig``/
-    ``modelParams``/``effort``/``output_config``) are dropped.
+      * ``enable_thinking`` / ``thinking`` / ``chat_template_args`` -> kept
+        verbatim (alibaba-cn / zai / baseten body fields from base_options)
+    Responses-API/SDK-only fields (``reasoningSummary``/``include``/
+    ``textVerbosity``/``store``/``usage``) and native non-OAI dicts
+    (``thinkingConfig``/``reasoningConfig``/``modelParams``/``effort``/
+    ``output_config``) are dropped — chat-completions rejects them.
     """
     if not variant_opts:
         return {}
@@ -450,6 +538,15 @@ def to_openai_body(variant_opts: dict) -> dict:
         body["reasoning_effort"] = variant_opts["reasoning_effort"]
     if "reasoning" in variant_opts and isinstance(variant_opts["reasoning"], dict):
         body["reasoning"] = variant_opts["reasoning"]
+    for k in ("enable_thinking", "chat_template_args"):
+        if k in variant_opts:
+            body[k] = variant_opts[k]
+    # zai/zhipuai pass a `thinking` *enable flag* on the OAI-compatible wire.
+    # Anthropic's native `thinking` (a token-budget dict) is consumed by the
+    # anthropic adapter, never this path — drop it so it can't leak onto the wire.
+    t = variant_opts.get("thinking")
+    if isinstance(t, dict) and "budgetTokens" not in t and "budget_tokens" not in t:
+        body["thinking"] = t
     return body
 
 
