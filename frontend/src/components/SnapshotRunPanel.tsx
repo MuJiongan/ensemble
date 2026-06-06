@@ -213,7 +213,7 @@ export function SnapshotRunPanel({
               <div
                 key={nr.id}
                 style={{
-                  background: 'rgba(180, 60, 60, 0.06)',
+                  background: 'var(--err-bg)',
                   borderLeft: '2px solid var(--state-err)',
                   padding: '6px 10px',
                   marginBottom: 6,

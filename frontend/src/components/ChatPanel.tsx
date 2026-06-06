@@ -39,7 +39,7 @@ const MD_COMPONENTS: Components = {
       style={{
         fontFamily: 'var(--mono)',
         fontSize: '0.86em',
-        background: 'rgba(26, 23, 20, 0.06)',
+        background: 'var(--muted-fill-2)',
         padding: '0.1em 0.4em',
         borderRadius: 2,
         overflowWrap: 'anywhere',
@@ -599,7 +599,7 @@ function RunWorkflowCard({
         <div
           key={e.node_id}
           style={{
-            background: 'rgba(180, 60, 60, 0.06)',
+            background: 'var(--err-bg)',
             borderLeft: '2px solid var(--state-err)',
             padding: '5px 8px',
             fontSize: 11,
@@ -618,7 +618,7 @@ function RunWorkflowCard({
       {r.error && !(r.node_errors ?? []).length && (
         <div
           style={{
-            background: 'rgba(180, 60, 60, 0.06)',
+            background: 'var(--err-bg)',
             borderLeft: '2px solid var(--state-err)',
             padding: '5px 8px',
             fontSize: 11,

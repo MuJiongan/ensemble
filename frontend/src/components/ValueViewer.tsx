@@ -149,7 +149,7 @@ export function ViewerOverlay({ title, subtitle, value, onClose }: ViewerOverlay
       style={{
         position: 'fixed',
         inset: 0,
-        background: 'rgba(26, 23, 20, 0.45)',
+        background: 'var(--overlay)',
         backdropFilter: 'blur(2px)',
         display: 'flex',
         alignItems: 'stretch',
