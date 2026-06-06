@@ -119,7 +119,22 @@ def parse_sse_lines(lines: Iterator[str], cancel_event=None) -> Iterator[tuple]:
     return _parse_stream(iter_sse_json(lines, cancel_event))
 
 
+def _strip_reasoning_details(messages: list[dict]) -> list[dict]:
+    """``reasoning_details`` is OpenRouter's input convention for echoing prior
+    reasoning blocks back. Native OpenAI-compatible upstreams (Fireworks, Groq,
+    DeepSeek, …) reject unknown fields with a 400, so drop it for everyone else.
+    """
+    out = []
+    for m in messages:
+        if "reasoning_details" in m:
+            m = {k: v for k, v in m.items() if k != "reasoning_details"}
+        out.append(m)
+    return out
+
+
 def _build_payload(model, messages, tool_schemas, base_url, variant_opts, streaming, extra_body):
+    if not _is_openrouter(base_url):
+        messages = _strip_reasoning_details(messages)
     payload: dict[str, Any] = {"model": model, "messages": messages}
     if _is_openrouter(base_url):
         payload["usage"] = {"include": True}
