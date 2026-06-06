@@ -78,7 +78,7 @@ function Modal({
             gap: 10,
             padding: '14px 18px',
             borderBottom: '1px solid var(--rule)',
-            background: 'var(--paper-2)',
+            background: 'var(--paper)',
           }}
         >
           <span className="smallcaps">{title}</span>
@@ -160,11 +160,11 @@ export function DialogSelectProvider({
     <Modal title="connect a provider" onClose={onClose}>
       <input
         ref={ref}
-        className="field"
+        className="field field--mono"
         placeholder="search providers…"
         value={q}
         onChange={(e) => setQ(e.target.value)}
-        style={{ fontFamily: 'var(--mono)', marginBottom: 12 }}
+        style={{ marginBottom: 12 }}
       />
       {filtered.popular.length > 0 && (
         <>
@@ -330,13 +330,13 @@ export function DialogConnectProvider({
                 base url
               </label>
               <input
-                className="field"
+                className="field field--mono"
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
                 placeholder="https://your-endpoint.example.com/v1"
                 autoComplete="off"
                 spellCheck={false}
-                style={{ fontFamily: 'var(--mono)', marginBottom: 14 }}
+                style={{ marginBottom: 14 }}
               />
             </>
           )}
@@ -344,7 +344,7 @@ export function DialogConnectProvider({
             {provider.name.toLowerCase()} api key
           </label>
           <input
-            className="field"
+            className="field field--mono"
             type="password"
             autoFocus
             value={apiKey}
@@ -353,7 +353,7 @@ export function DialogConnectProvider({
             placeholder="paste your bearer token"
             autoComplete="off"
             spellCheck={false}
-            style={{ fontFamily: 'var(--mono)', marginBottom: 6 }}
+            style={{ marginBottom: 6 }}
           />
           {provider.base_url && (
             <div
@@ -456,7 +456,7 @@ export function DialogSelectModel({
       </div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <input
-          className="field"
+          className="field field--mono"
           placeholder="model id (e.g. my-model)"
           value={customModel}
           onChange={(e) => setCustomModel(e.target.value)}
@@ -465,7 +465,7 @@ export function DialogSelectModel({
             customModel.trim() &&
             onPick({ providerID: CUSTOM_PROVIDER_ID, modelID: customModel.trim(), variant: null })
           }
-          style={{ fontFamily: 'var(--mono)', flex: 1 }}
+          style={{ flex: 1 }}
         />
         <button
           className="text-btn"
@@ -490,11 +490,11 @@ export function DialogSelectModel({
         <>
           <input
             ref={ref}
-            className="field"
+            className="field field--mono"
             placeholder="search models…"
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            style={{ fontFamily: 'var(--mono)', marginBottom: 12 }}
+            style={{ marginBottom: 12 }}
           />
           {customRow}
           {groups.map((g) => (
@@ -544,20 +544,12 @@ export function VariantPill({
   if (variants.length === 0) return null;
   return (
     <button
-      className="mono"
+      className={`pill${selected ? ' pill--active' : ' pill--ghost'}`}
       title="cycle reasoning effort"
       onClick={() => onChange(cycleVariant(variants, selected))}
-      style={{
-        fontSize: 11,
-        padding: '2px 8px',
-        borderRadius: 999,
-        border: '1px solid var(--rule)',
-        background: selected ? 'var(--paper-2)' : 'transparent',
-        color: selected ? 'var(--ink)' : 'var(--ink-4)',
-        cursor: 'pointer',
-      }}
     >
-      reasoning: {variantLabel(selected)}
+      <span className="pill__key">reasoning</span>
+      <span className="pill__val">{variantLabel(selected)}</span>
     </button>
   );
 }

@@ -493,7 +493,7 @@ export default function App() {
                   <div
                     style={{
                       borderBottom: '1px solid var(--rule)',
-                      background: 'var(--paper-2)',
+                      background: 'var(--paper)',
                       padding: '10px 12px',
                       display: 'flex',
                       justifyContent: 'flex-end',
@@ -796,7 +796,7 @@ function RightPanelTabs({
         gap: 0,
         padding: '0 12px',
         borderBottom: '1px solid var(--rule)',
-        background: 'var(--paper-2)',
+        background: 'var(--paper)',
         flexShrink: 0,
       }}
     >

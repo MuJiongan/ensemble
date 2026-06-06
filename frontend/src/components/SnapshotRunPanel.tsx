@@ -289,7 +289,7 @@ export function SnapshotRunPanel({
         <div
           style={{
             border: '1px solid var(--rule)',
-            background: 'var(--paper-2)',
+            background: 'var(--surface-hover)',
             padding: '12px 14px',
             display: 'flex',
             flexDirection: 'column',
@@ -347,14 +347,8 @@ export function SnapshotRunPanel({
                   setFormValues((prev) => ({ ...prev, [p.name]: e.target.value }))
                 }
                 rows={1}
-                className="field"
-                style={{
-                  fontSize: 12,
-                  fontFamily: 'var(--mono)',
-                  padding: '6px 10px',
-                  resize: 'vertical',
-                  minHeight: 32,
-                }}
+                className="field field--mono field--compact"
+                style={{ resize: 'vertical', minHeight: 32 }}
                 disabled={submitting}
               />
             </label>
@@ -483,7 +477,7 @@ export function SnapshotRunPanel({
                       background: color,
                       boxShadow:
                         status === 'running'
-                          ? '0 0 0 3px oklch(0.72 0.13 75 / 0.18)'
+                          ? '0 0 0 3px var(--state-run-ring)'
                           : 'none',
                       opacity: status === 'pending' ? 0.5 : 1,
                     }}

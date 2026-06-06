@@ -317,7 +317,7 @@ function WorkflowRow({
         padding: '7px 10px',
         borderRadius: 3,
         cursor: isEditing ? 'default' : 'pointer',
-        background: isActive ? 'var(--paper-2)' : 'transparent',
+        background: isActive ? 'var(--surface-hover)' : 'transparent',
       }}
     >
       {isEditing ? (

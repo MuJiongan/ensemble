@@ -305,7 +305,7 @@ export function RunPanel({
 
       <div
         style={{
-          background: 'var(--paper-2)',
+          background: 'var(--surface-hover)',
           borderTop: '1px solid var(--rule)',
           display: 'flex',
           flexDirection: 'column',
@@ -388,19 +388,11 @@ export function RunPanel({
                 </div>
                 <textarea
                   rows={1}
-                  className="field"
+                  className="field field--mono field--compact"
                   value={values[p.name] ?? ''}
                   onChange={(e) => setValues({ ...values, [p.name]: e.target.value })}
                   placeholder={p.type_hint === 'path' ? '/users/you/recordings' : 'plain text or json'}
-                  style={{
-                    fontFamily: 'var(--mono)',
-                    fontStyle: 'normal',
-                    fontSize: 12.5,
-                    padding: '6px 10px',
-                    minHeight: 32,
-                    resize: 'vertical',
-                    lineHeight: 1.5,
-                  }}
+                  style={{ minHeight: 32, resize: 'vertical' }}
                 />
               </div>
             ))}

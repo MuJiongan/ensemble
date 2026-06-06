@@ -53,7 +53,7 @@ const MD_COMPONENTS: Components = {
       style={{
         margin: '8px 0 12px',
         padding: 10,
-        background: 'var(--paper-2)',
+        background: 'var(--surface-chip)',
         border: '1px solid var(--rule)',
         borderRadius: 3,
         overflow: 'auto',
@@ -1024,11 +1024,11 @@ export function ChatPanel({
         style={{
           padding: '14px 22px 16px',
           borderTop: '1px solid var(--rule)',
-          background: 'var(--paper-2)',
+          background: 'var(--paper)',
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div className="chat-composer">
+          <div className="chat-composer field-shell">
             <span className="chat-composer__mark" aria-hidden="true">✽</span>
             <input
               value={draft}

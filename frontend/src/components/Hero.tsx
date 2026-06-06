@@ -74,7 +74,7 @@ export function Hero({
 
         {hasApiKey ? (
           <div
-            className="hero-input"
+            className="hero-input field-shell"
             style={{
               marginTop: 8,
               padding: '14px 16px 12px',
@@ -86,7 +86,7 @@ export function Hero({
             <textarea
               ref={taRef}
               rows={3}
-              className="field"
+              className="field field--plain field--prose"
               placeholder="e.g. take a company name, search recent news, and produce a sentiment-labeled briefing"
               value={text}
               onChange={(e) => setText(e.target.value)}
@@ -98,15 +98,9 @@ export function Hero({
               }}
               style={{
                 resize: 'none',
-                fontFamily: 'var(--serif)',
                 fontStyle: 'italic',
                 fontSize: 16,
-                lineHeight: 1.5,
-                background: 'transparent',
-                border: 0,
-                outline: 'none',
                 padding: '2px 4px',
-                color: 'var(--ink)',
               }}
               disabled={disabled}
             />

@@ -268,22 +268,13 @@ function ProvidersSection({
             return (
               <button
                 key={id}
-                className="mono"
+                className="pill"
                 onClick={() => p && onManage(p)}
                 disabled={!p}
                 title="manage"
-                style={{
-                  fontSize: 12,
-                  padding: '4px 10px',
-                  borderRadius: 999,
-                  border: '1px solid var(--rule)',
-                  background: 'var(--paper-2)',
-                  color: 'var(--ink)',
-                  cursor: p ? 'pointer' : 'default',
-                }}
               >
-                {p?.name ?? id}
-                <span style={{ color: 'var(--ink-4)' }}> · {conn?.method}</span>
+                <span className="pill__lead">{p?.name ?? id}</span>
+                <span className="pill__meta">{conn?.method}</span>
               </button>
             );
           })}
@@ -390,17 +381,13 @@ function TextAreaField({
         {label}
       </label>
       <textarea
-        className="field"
+        className="field field--prose"
         value={value}
         placeholder={placeholder}
         rows={rows}
         onChange={(e) => onChange(e.target.value)}
         spellCheck
-        style={{
-          fontFamily: 'var(--serif)',
-          resize: 'vertical',
-          minHeight: 72,
-        }}
+        style={{ minHeight: 72 }}
       />
       {hint && (
         <div
@@ -431,15 +418,12 @@ function Field({
       </label>
       <input
         type={secret ? 'password' : 'text'}
-        className="field"
+        className="field field--mono"
         value={value}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
         autoComplete="off"
         spellCheck={false}
-        style={{
-          fontFamily: 'var(--mono)',
-        }}
       />
       {hint && (
         <div
@@ -967,7 +951,7 @@ function McpModal({
             gap: 10,
             padding: '14px 18px',
             borderBottom: '1px solid var(--rule)',
-            background: 'var(--paper-2)',
+            background: 'var(--paper)',
           }}
         >
           <span className="smallcaps">{title}</span>
@@ -1146,14 +1130,6 @@ function McpStatusRow({
   );
 }
 
-const mcpInputStyle: React.CSSProperties = {
-  width: '100%',
-  padding: '5px 8px',
-  fontSize: '12px',
-  boxSizing: 'border-box',
-  fontFamily: 'var(--mono)',
-};
-
 function KeyValueRows({
   rows,
   onChange,
@@ -1176,23 +1152,23 @@ function KeyValueRows({
       {rows.map((h) => (
         <div key={h.uid} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <input
-            className="field"
+            className="field field--mono field--compact"
             value={h.key}
             placeholder={keyPlaceholder}
             onChange={(e) => patch(h.uid, { key: e.target.value })}
             autoComplete="off"
             spellCheck={false}
-            style={{ ...mcpInputStyle, flex: 1 }}
+            style={{ flex: 1 }}
             aria-label="key"
           />
           <input
-            className="field"
+            className="field field--mono field--compact"
             value={h.value}
             placeholder={valuePlaceholder}
             onChange={(e) => patch(h.uid, { value: e.target.value })}
             autoComplete="off"
             spellCheck={false}
-            style={{ ...mcpInputStyle, flex: 1 }}
+            style={{ flex: 1 }}
             aria-label="value"
           />
           <button className="text-btn" type="button" onClick={() => remove(h.uid)} title="remove">
@@ -1241,50 +1217,46 @@ function McpOAuthClientFields({
         <>
           <SubField label="client id">
             <input
-              className="field"
+              className="field field--mono field--compact"
               value={row.oauthClientId}
               placeholder="from your registered OAuth app"
               onChange={(e) => onPatch({ oauthClientId: e.target.value })}
               autoComplete="off"
               spellCheck={false}
-              style={mcpInputStyle}
               aria-label="oauth client id"
             />
           </SubField>
           <SubField label="client secret">
             <input
-              className="field"
+              className="field field--mono field--compact"
               type="password"
               value={row.oauthClientSecret}
               placeholder="leave empty for public clients (PKCE only)"
               onChange={(e) => onPatch({ oauthClientSecret: e.target.value })}
               autoComplete="off"
               spellCheck={false}
-              style={mcpInputStyle}
               aria-label="oauth client secret"
             />
           </SubField>
           <SubField label="scope">
             <input
-              className="field"
+              className="field field--mono field--compact"
               value={row.oauthScope}
               placeholder="space-separated, e.g. read:org write:messages"
               onChange={(e) => onPatch({ oauthScope: e.target.value })}
               autoComplete="off"
               spellCheck={false}
-              style={mcpInputStyle}
               aria-label="oauth scope"
             />
           </SubField>
           <SubField label="redirect uri (override)">
             <input
-              className="field"
+              className="field field--mono field--compact"
               value={row.oauthRedirectUri}
               placeholder="http://127.0.0.1:19876/mcp/oauth/callback (default)"
               onChange={(e) => onPatch({ oauthRedirectUri: e.target.value })}
               autoComplete="off"
               spellCheck={false}
-              style={mcpInputStyle}
               aria-label="oauth redirect uri"
             />
           </SubField>
@@ -1502,13 +1474,13 @@ function McpServerCard({
       )}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
         <input
-          className="field"
+          className="field field--mono field--compact"
           value={row.name}
           placeholder="server name"
           onChange={(e) => onPatch({ name: e.target.value })}
           autoComplete="off"
           spellCheck={false}
-          style={{ ...mcpInputStyle, flex: 1 }}
+          style={{ flex: 1 }}
           aria-label="mcp server name"
         />
         <TypeToggle value={row.type} onChange={(type) => onPatch({ type })} />
@@ -1530,13 +1502,12 @@ function McpServerCard({
         <>
           <SubField label="command">
             <input
-              className="field"
+              className="field field--mono field--compact"
               value={row.command}
               placeholder="npx -y @playwright/mcp@latest"
               onChange={(e) => onPatch({ command: e.target.value })}
               autoComplete="off"
               spellCheck={false}
-              style={mcpInputStyle}
               aria-label="mcp command"
             />
           </SubField>
@@ -1554,13 +1525,12 @@ function McpServerCard({
         <>
           <SubField label="url">
             <input
-              className="field"
+              className="field field--mono field--compact"
               value={row.url}
               placeholder="https://example.com/mcp"
               onChange={(e) => onPatch({ url: e.target.value })}
               autoComplete="off"
               spellCheck={false}
-              style={mcpInputStyle}
               aria-label="mcp url"
             />
           </SubField>

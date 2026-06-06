@@ -180,7 +180,7 @@ export function ViewerOverlay({ title, subtitle, value, onClose }: ViewerOverlay
             gap: 10,
             padding: '14px 18px',
             borderBottom: '1px solid var(--rule)',
-            background: 'var(--paper-2)',
+            background: 'var(--surface-chip)',
           }}
         >
           <span className="smallcaps">{title}</span>
@@ -211,7 +211,7 @@ export function ViewerOverlay({ title, subtitle, value, onClose }: ViewerOverlay
           style={{
             padding: '8px 18px',
             borderTop: '1px solid var(--rule)',
-            background: 'var(--paper-2)',
+            background: 'var(--surface-chip)',
             color: 'var(--ink-4)',
           }}
           className="serif"

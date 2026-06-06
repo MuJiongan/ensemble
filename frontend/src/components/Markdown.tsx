@@ -123,7 +123,7 @@ export function Markdown({ children, large = false }: { children: string; large?
                 <code
                   className="mono"
                   style={{
-                    background: 'var(--paper-2)',
+                    background: 'var(--surface-chip)',
                     padding: '0 4px',
                     borderRadius: 2,
                     fontSize: '0.92em',
@@ -144,7 +144,7 @@ export function Markdown({ children, large = false }: { children: string; large?
             <pre
               className="scroll"
               style={{
-                background: 'var(--paper-2)',
+                background: 'var(--surface-chip)',
                 border: '1px solid var(--rule-2)',
                 borderRadius: 3,
                 padding: 10,
