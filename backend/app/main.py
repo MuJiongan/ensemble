@@ -1,4 +1,5 @@
 from __future__ import annotations
+import base64
 import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
@@ -52,6 +53,8 @@ _HEADER_TO_ENV = {
 # request, so set/clear here can't race a concurrent poll.
 _MCP_SERVERS_HEADER = "x-mcp-servers"
 _MCP_SERVERS_ENV = "MCP_SERVERS"
+_CUSTOM_INSTRUCTIONS_HEADER = "x-custom-instructions"
+_CUSTOM_INSTRUCTIONS_ENV = "ORCHESTRATOR_CUSTOM_INSTRUCTIONS"
 
 
 @asynccontextmanager
@@ -105,6 +108,18 @@ async def apply_settings_headers(request: Request, call_next):
             os.environ[_MCP_SERVERS_ENV] = mcp_servers
         else:
             os.environ.pop(_MCP_SERVERS_ENV, None)
+    custom_instructions = request.headers.get(_CUSTOM_INSTRUCTIONS_HEADER)
+    if custom_instructions is not None:
+        # Sent base64-encoded so multi-line / non-Latin1 free-text survives as
+        # a header value (see localSettings.encodeHeaderText).
+        try:
+            decoded = base64.b64decode(custom_instructions).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            decoded = ""
+        if decoded.strip():
+            os.environ[_CUSTOM_INSTRUCTIONS_ENV] = decoded.strip()
+        else:
+            os.environ.pop(_CUSTOM_INSTRUCTIONS_ENV, None)
     return await call_next(request)
 
 

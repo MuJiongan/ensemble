@@ -22,6 +22,7 @@ const EMPTY: Settings = {
   orchestrator: null,
   node: null,
   mcp_servers: '',
+  custom_instructions: '',
 };
 
 /** Collapse a JSON string to one line (header values can't hold newlines).
@@ -84,6 +85,12 @@ export function loadSettings(): Settings {
       orchestrator: asSelection(parsed.orchestrator),
       node: asSelection(parsed.node),
       mcp_servers: typeof parsed.mcp_servers === 'string' ? parsed.mcp_servers : '',
+      custom_instructions:
+        typeof parsed.custom_instructions === 'string'
+          ? parsed.custom_instructions
+          : typeof parsed.orchestrator_preferences === 'string'
+            ? parsed.orchestrator_preferences
+            : '',
     };
   } catch {
     return { ...EMPTY, connections: {} };
@@ -147,6 +154,7 @@ function migrateLegacy(parsed: Record<string, unknown>): Settings {
     orchestrator: toSel(orchModels),
     node: toSel(nodeModels),
     mcp_servers: typeof parsed.mcp_servers === 'string' ? parsed.mcp_servers : '',
+    custom_instructions: '',
   };
 }
 
@@ -223,6 +231,15 @@ function applyTarget(
   }
 }
 
+/** UTF-8-safe base64 for header transport. Empty in → empty out. */
+function encodeHeaderText(value: string): string {
+  if (!value) return '';
+  const bytes = new TextEncoder().encode(value);
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
 /** Headers to include on every request that may end up calling an LLM. Carries
  * both the orchestrator and node selections (the `target` arg is no longer
  * needed but kept for call-site compatibility). */
@@ -234,6 +251,11 @@ export function settingsHeaders(_target: LlmTarget = 'base'): Record<string, str
   // MCP config travels as a single JSON header. Always send it (even empty) so
   // clearing all servers actually clears the backend env.
   h['X-Mcp-Servers'] = minifyJson(s.mcp_servers);
+  // Custom instructions: always send (even empty) so clearing them clears
+  // the backend env. Base64-encoded because the raw text is multi-line
+  // free-form and HTTP header values reject newlines / non-Latin1 chars —
+  // sending it raw would throw when the request headers are constructed.
+  h['X-Custom-Instructions'] = encodeHeaderText(s.custom_instructions.trim());
 
   applyTarget(h, s, s.orchestrator, ORCH_HEADERS);
   applyTarget(h, s, s.node, NODE_HEADERS);

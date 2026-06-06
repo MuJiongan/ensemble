@@ -992,17 +992,15 @@ export function ChatPanel({
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <span className="asterisk" style={{ fontSize: 18 }}>
-            ✽
-          </span>
-          <input
-            className="field"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder={disabled ? 'ensemble is working…' : 'refine, add a node, or ask anything'}
-            disabled={disabled}
-            style={{ flex: 1, fontStyle: 'italic' }}
-          />
+          <div className="chat-composer">
+            <span className="chat-composer__mark" aria-hidden="true">✽</span>
+            <input
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              placeholder={disabled ? 'ensemble is working…' : 'refine, add a node, or ask anything'}
+              disabled={disabled}
+            />
+          </div>
           {disabled && onCancel ? (
             <button
               type="button"

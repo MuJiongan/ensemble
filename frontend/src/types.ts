@@ -133,6 +133,11 @@ export interface Settings {
    * their tools to node code. Empty string means "no MCP servers".
    */
   mcp_servers: string;
+  /**
+   * Custom instructions injected into the orchestrator system prompt each
+   * turn. The orchestrator decides which parts to propagate into node code.
+   */
+  custom_instructions: string;
 }
 
 // --- streaming run events --------------------------------------------------

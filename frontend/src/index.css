@@ -366,19 +366,96 @@ html, body, #root {
 
 .field {
   width: 100%;
-  background: transparent;
-  border: 0;
-  border-bottom: 1px solid var(--rule);
-  padding: 8px 0;
-  font-size: 14px;
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-size: 13.5px;
   color: var(--ink);
+  font-family: var(--sans);
+  font-style: normal;
+  outline: none;
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.field:focus {
+  background: #faf8f5;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2.5px var(--accent-soft);
+}
+.field:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+.field::placeholder {
+  color: var(--ink-4);
   font-family: var(--serif);
   font-style: italic;
-  outline: none;
-  transition: border-color .15s;
+  font-size: 13px;
 }
-.field:focus { border-color: var(--ink); }
-.field::placeholder { color: var(--ink-4); font-style: italic; }
+
+/* Chat composer: a field-box wrapping a leading ✽ motif + a borderless
+   input, so the asterisk reads as part of the field instead of floating
+   beside it. Focus affordance lives on the box via :focus-within. */
+.chat-composer {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 0 12px;
+  transition: background .15s ease, border-color .15s ease, box-shadow .15s ease;
+}
+.chat-composer:focus-within {
+  background: #faf8f5;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2.5px var(--accent-soft);
+}
+.chat-composer__mark {
+  flex: none;
+  color: var(--ink-4);
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 15px;
+  line-height: 1;
+}
+.chat-composer input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: none;
+  padding: 9px 0;
+  font-family: var(--sans);
+  font-size: 13.5px;
+  font-style: italic;
+  color: var(--ink);
+}
+.chat-composer input:disabled { cursor: not-allowed; }
+.chat-composer input::placeholder {
+  color: var(--ink-4);
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 13px;
+}
+
+/* Hero composer: the whole card is the input surface, so the focus
+   affordance lives on the card (focus-within), not on the borderless
+   textarea inside it. */
+.hero-input {
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  box-shadow: 0 1px 0 rgba(26, 23, 20, 0.04), 0 12px 32px -16px rgba(26, 23, 20, 0.18);
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.hero-input:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 1px 0 rgba(26, 23, 20, 0.04), 0 12px 32px -16px rgba(26, 23, 20, 0.18), 0 0 0 2.5px var(--accent-soft);
+}
+.hero-input textarea:focus { box-shadow: none; }
 
 /* scroll */
 .scroll::-webkit-scrollbar { width: 8px; height: 8px; }

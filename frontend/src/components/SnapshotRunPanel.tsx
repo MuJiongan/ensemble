@@ -347,16 +347,13 @@ export function SnapshotRunPanel({
                   setFormValues((prev) => ({ ...prev, [p.name]: e.target.value }))
                 }
                 rows={1}
-                className="mono"
+                className="field"
                 style={{
-                  fontSize: 11.5,
+                  fontSize: 12,
                   fontFamily: 'var(--mono)',
-                  background: 'var(--paper)',
-                  border: '1px solid var(--rule)',
-                  padding: '6px 8px',
+                  padding: '6px 10px',
                   resize: 'vertical',
-                  minHeight: 28,
-                  color: 'var(--ink)',
+                  minHeight: 32,
                 }}
                 disabled={submitting}
               />

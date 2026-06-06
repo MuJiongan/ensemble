@@ -16,6 +16,7 @@ from app.orchestrator import tools as orch_tools
 from app.orchestrator import agent as orch_agent
 from app.orchestrator.prompt import (
     SYSTEM_PROMPT,
+    build_system_prompt,
     graph_state_message,
 )
 from app.runner import events as runner_events
@@ -198,6 +199,27 @@ def test_execute_returns_error_for_bad_workflow(db):
     res = orch_tools.execute(db, "nope-wid", "add_node", {"name": "x"})
     assert "error" in res
     assert "not found" in res["error"]
+
+
+def test_build_system_prompt_without_custom_instructions(monkeypatch):
+    monkeypatch.delenv("ORCHESTRATOR_CUSTOM_INSTRUCTIONS", raising=False)
+    assert build_system_prompt() == SYSTEM_PROMPT
+
+
+def test_build_system_prompt_empty_custom_instructions(monkeypatch):
+    monkeypatch.setenv("ORCHESTRATOR_CUSTOM_INSTRUCTIONS", "   ")
+    assert build_system_prompt() == SYSTEM_PROMPT
+
+
+def test_build_system_prompt_appends_custom_instructions_section(monkeypatch):
+    monkeypatch.setenv(
+        "ORCHESTRATOR_CUSTOM_INSTRUCTIONS",
+        "always parallelize independent steps",
+    )
+    prompt = build_system_prompt()
+    assert prompt.startswith(SYSTEM_PROMPT)
+    assert "# custom instructions" in prompt
+    assert prompt.endswith("always parallelize independent steps")
 
 
 def test_graph_state_message_contains_current_state(db, workflow):

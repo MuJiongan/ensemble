@@ -96,18 +96,6 @@ function Modal({
   );
 }
 
-const searchInputStyle: React.CSSProperties = {
-  width: '100%',
-  background: 'transparent',
-  border: 0,
-  borderBottom: '1px solid var(--rule)',
-  padding: '8px 0',
-  fontSize: 13,
-  color: 'var(--ink)',
-  outline: 'none',
-  marginBottom: 12,
-};
-
 const rowStyle: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
@@ -172,11 +160,11 @@ export function DialogSelectProvider({
     <Modal title="connect a provider" onClose={onClose}>
       <input
         ref={ref}
-        className="mono"
+        className="field"
         placeholder="search providers…"
         value={q}
         onChange={(e) => setQ(e.target.value)}
-        style={searchInputStyle}
+        style={{ fontFamily: 'var(--mono)', marginBottom: 12 }}
       />
       {filtered.popular.length > 0 && (
         <>
@@ -342,13 +330,13 @@ export function DialogConnectProvider({
                 base url
               </label>
               <input
-                className="mono"
+                className="field"
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
                 placeholder="https://your-endpoint.example.com/v1"
                 autoComplete="off"
                 spellCheck={false}
-                style={{ ...searchInputStyle, marginBottom: 14 }}
+                style={{ fontFamily: 'var(--mono)', marginBottom: 14 }}
               />
             </>
           )}
@@ -356,7 +344,7 @@ export function DialogConnectProvider({
             {provider.name.toLowerCase()} api key
           </label>
           <input
-            className="mono"
+            className="field"
             type="password"
             autoFocus
             value={apiKey}
@@ -365,7 +353,7 @@ export function DialogConnectProvider({
             placeholder="paste your bearer token"
             autoComplete="off"
             spellCheck={false}
-            style={{ ...searchInputStyle, marginBottom: 6 }}
+            style={{ fontFamily: 'var(--mono)', marginBottom: 6 }}
           />
           {provider.base_url && (
             <div
@@ -468,7 +456,7 @@ export function DialogSelectModel({
       </div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <input
-          className="mono"
+          className="field"
           placeholder="model id (e.g. my-model)"
           value={customModel}
           onChange={(e) => setCustomModel(e.target.value)}
@@ -477,7 +465,7 @@ export function DialogSelectModel({
             customModel.trim() &&
             onPick({ providerID: CUSTOM_PROVIDER_ID, modelID: customModel.trim(), variant: null })
           }
-          style={{ ...searchInputStyle, marginBottom: 0, flex: 1 }}
+          style={{ fontFamily: 'var(--mono)', flex: 1 }}
         />
         <button
           className="text-btn"
@@ -502,11 +490,11 @@ export function DialogSelectModel({
         <>
           <input
             ref={ref}
-            className="mono"
+            className="field"
             placeholder="search models…"
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            style={searchInputStyle}
+            style={{ fontFamily: 'var(--mono)', marginBottom: 12 }}
           />
           {customRow}
           {groups.map((g) => (
