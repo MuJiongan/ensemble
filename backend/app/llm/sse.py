@@ -25,7 +25,7 @@ def iter_sse_json(lines: Iterator[str], cancel_event=None) -> Iterator[dict]:
 
 
 # Keys gemini/anthropic-native JSON-schema tool params don't accept; strip them.
-_SCHEMA_DROP = {"additionalProperties", "$schema", "$ref", "$defs", "definitions", "default", "title"}
+_SCHEMA_DROP = {"additionalProperties", "$schema", "$ref", "$defs", "definitions", "default", "title", "uniqueItems"}
 
 
 def sanitize_json_schema(schema: Any) -> Any:
