@@ -396,8 +396,8 @@ export function RunPanel({
                     fontFamily: 'var(--mono)',
                     fontStyle: 'normal',
                     fontSize: 12.5,
-                    padding: '5px 0',
-                    minHeight: 26,
+                    padding: '6px 10px',
+                    minHeight: 32,
                     resize: 'vertical',
                     lineHeight: 1.5,
                   }}

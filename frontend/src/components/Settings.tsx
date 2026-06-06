@@ -39,6 +39,7 @@ const EMPTY: Settings = {
   orchestrator: null,
   node: null,
   mcp_servers: '',
+  custom_instructions: '',
 };
 
 type DialogState =
@@ -156,6 +157,14 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             selection={s.node}
             onChange={(sel) => setSelection('node', sel)}
             onChangeModel={() => setDialog({ kind: 'select-model', target: 'node' })}
+          />
+
+          <TextAreaField
+            label="custom instructions"
+            value={s.custom_instructions}
+            onChange={(v) => setS({ ...s, custom_instructions: v })}
+            placeholder="e.g. always parallelize independent steps; don't auto-run workflows"
+            rows={4}
           />
 
           <Field
@@ -365,6 +374,46 @@ function Chevron({ open }: { open: boolean }) {
   );
 }
 
+function TextAreaField({
+  label, value, onChange, hint, placeholder, rows = 3,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  hint?: string;
+  placeholder?: string;
+  rows?: number;
+}) {
+  return (
+    <div>
+      <label className="smallcaps" style={{ display: 'block', marginBottom: 6 }}>
+        {label}
+      </label>
+      <textarea
+        className="field"
+        value={value}
+        placeholder={placeholder}
+        rows={rows}
+        onChange={(e) => onChange(e.target.value)}
+        spellCheck
+        style={{
+          fontFamily: 'var(--serif)',
+          resize: 'vertical',
+          minHeight: 72,
+        }}
+      />
+      {hint && (
+        <div
+          className="serif"
+          style={{ fontStyle: 'italic', fontSize: 12, color: 'var(--ink-4)', marginTop: 6 }}
+        >
+          {hint}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Field({
   label, value, onChange, hint, secret, placeholder,
 }: {
@@ -382,21 +431,14 @@ function Field({
       </label>
       <input
         type={secret ? 'password' : 'text'}
-        className="mono"
+        className="field"
         value={value}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
         autoComplete="off"
         spellCheck={false}
         style={{
-          width: '100%',
-          background: 'transparent',
-          border: 0,
-          borderBottom: '1px solid var(--rule)',
-          padding: '8px 0',
-          fontSize: 13,
-          color: 'var(--ink)',
-          outline: 'none',
+          fontFamily: 'var(--mono)',
         }}
       />
       {hint && (
@@ -1106,14 +1148,10 @@ function McpStatusRow({
 
 const mcpInputStyle: React.CSSProperties = {
   width: '100%',
-  background: 'transparent',
-  border: 0,
-  borderBottom: '1px solid var(--rule)',
-  padding: '6px 0',
-  fontSize: 13,
-  color: 'var(--ink)',
-  outline: 'none',
+  padding: '5px 8px',
+  fontSize: '12px',
   boxSizing: 'border-box',
+  fontFamily: 'var(--mono)',
 };
 
 function KeyValueRows({
@@ -1138,7 +1176,7 @@ function KeyValueRows({
       {rows.map((h) => (
         <div key={h.uid} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <input
-            className="mono"
+            className="field"
             value={h.key}
             placeholder={keyPlaceholder}
             onChange={(e) => patch(h.uid, { key: e.target.value })}
@@ -1148,7 +1186,7 @@ function KeyValueRows({
             aria-label="key"
           />
           <input
-            className="mono"
+            className="field"
             value={h.value}
             placeholder={valuePlaceholder}
             onChange={(e) => patch(h.uid, { value: e.target.value })}
@@ -1203,7 +1241,7 @@ function McpOAuthClientFields({
         <>
           <SubField label="client id">
             <input
-              className="mono"
+              className="field"
               value={row.oauthClientId}
               placeholder="from your registered OAuth app"
               onChange={(e) => onPatch({ oauthClientId: e.target.value })}
@@ -1215,7 +1253,7 @@ function McpOAuthClientFields({
           </SubField>
           <SubField label="client secret">
             <input
-              className="mono"
+              className="field"
               type="password"
               value={row.oauthClientSecret}
               placeholder="leave empty for public clients (PKCE only)"
@@ -1228,7 +1266,7 @@ function McpOAuthClientFields({
           </SubField>
           <SubField label="scope">
             <input
-              className="mono"
+              className="field"
               value={row.oauthScope}
               placeholder="space-separated, e.g. read:org write:messages"
               onChange={(e) => onPatch({ oauthScope: e.target.value })}
@@ -1240,7 +1278,7 @@ function McpOAuthClientFields({
           </SubField>
           <SubField label="redirect uri (override)">
             <input
-              className="mono"
+              className="field"
               value={row.oauthRedirectUri}
               placeholder="http://127.0.0.1:19876/mcp/oauth/callback (default)"
               onChange={(e) => onPatch({ oauthRedirectUri: e.target.value })}
@@ -1464,7 +1502,7 @@ function McpServerCard({
       )}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
         <input
-          className="mono"
+          className="field"
           value={row.name}
           placeholder="server name"
           onChange={(e) => onPatch({ name: e.target.value })}
@@ -1492,7 +1530,7 @@ function McpServerCard({
         <>
           <SubField label="command">
             <input
-              className="mono"
+              className="field"
               value={row.command}
               placeholder="npx -y @playwright/mcp@latest"
               onChange={(e) => onPatch({ command: e.target.value })}
@@ -1516,7 +1554,7 @@ function McpServerCard({
         <>
           <SubField label="url">
             <input
-              className="mono"
+              className="field"
               value={row.url}
               placeholder="https://example.com/mcp"
               onChange={(e) => onPatch({ url: e.target.value })}

@@ -315,6 +315,14 @@ SYSTEM_PROMPT = SYSTEM_PROMPT.replace(
 )
 
 
+def build_system_prompt() -> str:
+    """Return ``SYSTEM_PROMPT``, optionally with a custom-instructions section."""
+    raw = os.getenv("ORCHESTRATOR_CUSTOM_INSTRUCTIONS", "").strip()
+    if not raw:
+        return SYSTEM_PROMPT
+    return f"{SYSTEM_PROMPT}\n\n# custom instructions\n\n{raw}"
+
+
 def graph_state_message(db: DbSession, workflow_id: str) -> dict:
     """A system message describing the current workflow's *structure* — node
     ids, names, descriptions, ports, models, and the user_edited flag.

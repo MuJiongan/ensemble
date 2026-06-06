@@ -26,7 +26,11 @@ from sqlalchemy.orm import Session as DbSession
 
 from app import models
 from app.orchestrator import tools as orch_tools
-from app.orchestrator.prompt import SYSTEM_PROMPT, graph_state_message, mcp_tools_message
+from app.orchestrator.prompt import (
+    build_system_prompt,
+    graph_state_message,
+    mcp_tools_message,
+)
 
 from .session import (
     _TURN_CANCEL_EVENTS,
@@ -209,7 +213,7 @@ def run_turn(db: DbSession, session_id: str, user_text: str) -> Iterator[dict]:
             history = _history_messages(db, session_id)
             mcp_msg = mcp_tools_message()
             messages = (
-                [{"role": "system", "content": SYSTEM_PROMPT}]
+                [{"role": "system", "content": build_system_prompt()}]
                 + [graph_state_message(db, workflow_id)]
                 + ([mcp_msg] if mcp_msg else [])
                 + history

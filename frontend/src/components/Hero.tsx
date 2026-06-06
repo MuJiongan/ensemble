@@ -74,16 +74,13 @@ export function Hero({
 
         {hasApiKey ? (
           <div
+            className="hero-input"
             style={{
               marginTop: 8,
-              background: 'var(--paper)',
-              border: '1px solid var(--rule)',
-              borderRadius: 6,
               padding: '14px 16px 12px',
               display: 'flex',
               flexDirection: 'column',
               gap: 10,
-              boxShadow: '0 1px 0 rgba(26, 23, 20, 0.04), 0 12px 32px -16px rgba(26, 23, 20, 0.18)',
             }}
           >
             <textarea
@@ -108,7 +105,7 @@ export function Hero({
                 background: 'transparent',
                 border: 0,
                 outline: 'none',
-                padding: 0,
+                padding: '2px 4px',
                 color: 'var(--ink)',
               }}
               disabled={disabled}
