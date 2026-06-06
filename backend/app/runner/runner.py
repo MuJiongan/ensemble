@@ -78,10 +78,17 @@ def run_workflow_streaming(
     """
     workdir = tempfile.mkdtemp(prefix="wfrun-")
     try:
+        # Node calls use the NODE_* credentials (independent of the orchestrator's
+        # LLM_* creds), so a run the orchestrator spawns uses the *node's*
+        # provider/model — not whatever the orchestrator chat is signed into.
         env_for_child: dict[str, str] = {
-            "LLM_API_KEY": os.getenv("LLM_API_KEY", ""),
-            "LLM_BASE_URL": os.getenv("LLM_BASE_URL", ""),
+            "LLM_API_KEY": os.getenv("NODE_API_KEY", ""),
+            "LLM_BASE_URL": os.getenv("NODE_BASE_URL", ""),
             "PARALLEL_API_KEY": os.getenv("PARALLEL_API_KEY", ""),
+            # Provider id + node reasoning variant so the child can apply the
+            # catalog-computed reasoning options to each ``ctx.call_llm`` body.
+            "LLM_PROVIDER_ID": (os.getenv("NODE_PROVIDER_ID") or "").strip(),
+            "DEFAULT_NODE_VARIANT": os.getenv("DEFAULT_NODE_VARIANT", ""),
             # MCP server config (opencode-style JSON); the child connects to
             # these and registers their tools into its runtime registry. Remote
             # OAuth servers get a fresh bearer injected here (the child has no
@@ -93,7 +100,7 @@ def run_workflow_streaming(
         # subprocess never touches the credentials DB itself; that keeps the
         # subprocess decoupled from the auth layer and matches how the
         # subprocess already consumes API-key settings (env-only).
-        pid = (os.getenv("LLM_PROVIDER_ID") or "").strip()
+        pid = (os.getenv("NODE_PROVIDER_ID") or "").strip()
         if pid in ("codex", "xai"):
             from app.auth.resolve import resolve
             creds = resolve(pid)

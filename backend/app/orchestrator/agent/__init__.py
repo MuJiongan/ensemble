@@ -46,7 +46,6 @@ from .llm_stream import _call_llm_stream, _parse_sse_chunks
 
 
 __all__ = [
-    "DEFAULT_MODEL_FALLBACK",
     "render_history",
     "run_turn",
     # Re-exported for callers (api/orchestrator.py) and tests:
@@ -60,9 +59,6 @@ __all__ = [
     "_signal_cancel",
     "_was_superseded",
 ]
-
-
-DEFAULT_MODEL_FALLBACK = "anthropic/claude-opus-4.7"
 
 
 def _format_args_summary(args: dict) -> str:
@@ -118,8 +114,13 @@ def _resolve_llm_stream(
         if creds is None:
             raise RuntimeError("Codex/ChatGPT sign-in required (no active credential)")
         from app.auth.codex_api import call_codex_stream
+        from app.llm import router as llm_router
+        effort = llm_router.plan(
+            "codex", model, os.getenv("DEFAULT_ORCHESTRATOR_VARIANT") or None
+        ).variant_opts.get("reasoningEffort")
         codex_stream = call_codex_stream(
-            model, messages, tool_specs, creds.access_token, creds.account_id, cancel_event
+            model, messages, tool_specs, creds.access_token, creds.account_id, cancel_event,
+            reasoning_effort=effort,
         )
         # The Codex SSE parser also emits ("tool_args", idx, name, delta)
         # 4-tuples so the node-runtime UI can render streaming tool-arg
@@ -142,13 +143,15 @@ def _resolve_llm_stream(
 def _resolve_model(db: DbSession) -> str:
     # localStorage (forwarded as a header by the frontend, applied to env in
     # main.middleware) wins; the DB row is only a backwards-compat fallback.
+    # No hardcoded default — an unset model returns "" and the caller surfaces a
+    # "configure it in Settings" error rather than guessing one.
     env_val = os.getenv("DEFAULT_ORCHESTRATOR_MODEL", "")
     if env_val:
         return env_val
     s = db.query(models.Setting).filter_by(key="default_orchestrator_model").first()
     if s and s.value:
         return s.value
-    return DEFAULT_MODEL_FALLBACK
+    return ""
 
 
 def run_turn(db: DbSession, session_id: str, user_text: str) -> Iterator[dict]:
@@ -177,6 +180,13 @@ def run_turn(db: DbSession, session_id: str, user_text: str) -> Iterator[dict]:
     cancel_event = _claim_turn(session_id)
 
     model = _resolve_model(db)
+    if not model:
+        yield {
+            "kind": "error",
+            "message": "No orchestrator model configured. Set a default orchestrator model in Settings.",
+        }
+        yield {"kind": "done"}
+        return
     tool_specs = orch_tools.llm_tool_specs()
 
     def _cancellation_events():

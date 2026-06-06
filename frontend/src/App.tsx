@@ -10,14 +10,10 @@ import { SnapshotBanner } from './components/SnapshotBanner';
 import { SnapshotRunPanel } from './components/SnapshotRunPanel';
 import { api } from './api';
 import {
-  activeLlmApiKey,
-  activeOrchestratorModel,
-  activePreset,
   loadSettings,
+  isConnected,
   SETTINGS_CHANGED_EVENT,
 } from './localSettings';
-import { isCachedSignedIn } from './auth';
-import { isOAuthPreset } from './llmProviders';
 import {
   DEFAULT_WORKFLOW_NAME,
   deriveWorkflowName,
@@ -32,13 +28,11 @@ import type {
 
 type View = 'workflow' | 'settings';
 
-/** True when the active provider preset has working credentials configured —
- * a pasted API key for api-key presets, or a recent ``signed_in`` for OAuth
- * presets (cached in localStorage; truth lives server-side). */
+/** True when the orchestrator has a usable config — a selected model whose
+ * provider is connected (api key pasted, or oauth signed in). */
 function hasCredsForPreset(s: ReturnType<typeof loadSettings>): boolean {
-  const preset = activePreset(s);
-  if (isOAuthPreset(preset)) return isCachedSignedIn(preset.authProviderId);
-  return !!activeLlmApiKey(s);
+  const sel = s.orchestrator;
+  return !!sel && isConnected(s, sel.providerID);
 }
 
 export default function App() {
@@ -173,13 +167,13 @@ export default function App() {
   // what's actually being sent over the wire. Refreshed on save (custom event)
   // and on cross-tab edits (`storage`).
   const [orchestratorModel, setOrchestratorModel] = useState<string>(
-    () => activeOrchestratorModel(loadSettings()),
+    () => loadSettings().orchestrator?.modelID ?? '',
   );
   const [hasApiKey, setHasApiKey] = useState<boolean>(() => hasCredsForPreset(loadSettings()));
   useEffect(() => {
     const sync = () => {
       const s = loadSettings();
-      setOrchestratorModel(activeOrchestratorModel(s));
+      setOrchestratorModel(s.orchestrator?.modelID ?? '');
       setHasApiKey(hasCredsForPreset(s));
     };
     window.addEventListener(SETTINGS_CHANGED_EVENT, sync);
