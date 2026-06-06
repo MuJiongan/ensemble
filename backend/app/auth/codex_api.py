@@ -18,12 +18,16 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+import os
 import sys
 import threading
 import traceback
 from typing import Any, Callable, Iterator, Optional
 
 import httpx
+
+from app import compaction
+from app.catalog import models_dev as md
 
 
 CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
@@ -360,12 +364,61 @@ def call_codex_chat(
     total_usage = {"prompt_tokens": 0, "completion_tokens": 0}
     streaming = on_event is not None
 
+    # Compaction limits. The synthetic "codex" catalog entry carries the context
+    # window; an unknown model leaves limits at zero and is_overflow() never
+    # fires, so the loop runs unchanged.
+    provider_id = (os.getenv("LLM_PROVIDER_ID") or "").strip()
+    model_obj = md.get_model(provider_id, model) if provider_id else None
+    ctx_limit = model_obj.limit.context if model_obj else 0
+    out_limit = model_obj.limit.output if model_obj else 0
+    in_limit = model_obj.limit.input if model_obj else None
+
     def _emit(ev: dict) -> None:
         if on_event is None:
             return
         if call_id is not None and "call_id" not in ev:
             ev = {**ev, "call_id": call_id}
         on_event(ev)
+
+    def _summarize(head: list[dict], prompt: str) -> str:
+        """Run one non-tool Responses-API round to summarize ``head``."""
+        parts: list[str] = []
+        for item in call_codex_stream(
+            model, [*head, {"role": "user", "content": prompt}], [],
+            access_token, account_id, reasoning_effort=reasoning_effort,
+        ):
+            if item[0] == "done":
+                return (item[1]["message"].get("content") or "").strip()
+            if item[0] == "text":
+                parts.append(item[1])
+        return "".join(parts).strip()
+
+    def _maybe_compact(msgs: list[dict], last_usage: dict) -> None:
+        """Prune stale tool outputs, then compact older turns once the live
+        token count reaches the model's usable budget. Mutates ``msgs``."""
+        if ctx_limit == 0:
+            return
+        compaction.prune_messages(msgs)
+        token_count = (last_usage.get("prompt_tokens") or 0) + (
+            last_usage.get("completion_tokens") or 0
+        )
+        if not compaction.is_overflow(
+            token_count=token_count,
+            context=ctx_limit,
+            output_limit=out_limit,
+            input_limit=in_limit,
+        ):
+            return
+        result = compaction.compact_messages(
+            msgs,
+            summarize=_summarize,
+            context=ctx_limit,
+            output_limit=out_limit,
+            input_limit=in_limit,
+        )
+        if result is not None:
+            msgs[:] = result["messages"]
+            _emit({"type": "context_compacted", "summarized": result["summarized"]})
 
     for round_idx in itertools.count():
         if streaming:
@@ -476,3 +529,7 @@ def call_codex_chat(
                 "tc_index": tc_idx,
                 "round": round_idx,
             })
+
+        # Another round follows (tool calls were made) — keep its input within
+        # the context window before we get there.
+        _maybe_compact(messages, round_usage)

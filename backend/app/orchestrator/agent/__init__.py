@@ -24,7 +24,7 @@ from typing import Iterator
 
 from sqlalchemy.orm import Session as DbSession
 
-from app import models
+from app import compaction, models
 from app.orchestrator import tools as orch_tools
 from app.orchestrator.prompt import (
     build_system_prompt,
@@ -41,10 +41,14 @@ from .session import (
     _was_superseded,
 )
 from .persistence import (
+    _active_rows,
     _history_messages,
+    _ordered_rows,
     _persist_assistant,
+    _persist_compaction,
     _persist_tool_result,
     _persist_user,
+    _row_to_message,
 )
 from .llm_stream import _call_llm_stream, _parse_sse_chunks
 
@@ -156,6 +160,84 @@ def _resolve_model(db: DbSession) -> str:
     if s and s.value:
         return s.value
     return ""
+
+
+def _summarize_orch(
+    db: DbSession, model: str, head: list[dict], prompt: str, cancel_event=None
+) -> str:
+    """Run one non-tool model round to summarize ``head`` into an anchor."""
+    parts: list[str] = []
+    for kind, payload in _resolve_llm_stream(
+        db, model, [*head, {"role": "user", "content": prompt}], [], cancel_event
+    ):
+        if kind == "text":
+            parts.append(payload)
+        elif kind == "done":
+            content = (payload.get("message") or {}).get("content") or ""
+            return content.strip() or "".join(parts).strip()
+    return "".join(parts).strip()
+
+
+def _compact_session(
+    db: DbSession, session_id: str, model: str, model_obj, cancel_event=None
+) -> bool:
+    """Summarize the older turns of this session and persist a compaction
+    anchor so future turns replay less history. Returns True if compaction
+    actually happened (head large enough + non-empty summary)."""
+    active, prev_summary = _active_rows(_ordered_rows(db, session_id))
+    view: list[dict] = []
+    view_rows: list = []
+    for r in active:
+        msg = _row_to_message(r)
+        if msg is None:
+            continue
+        view.append(msg)
+        view_rows.append(r)
+
+    tail_start = compaction.select_tail(
+        view,
+        context=model_obj.limit.context,
+        output_limit=model_obj.limit.output,
+        input_limit=model_obj.limit.input,
+    )
+    head = view[:tail_start]
+    if len(head) < 2:
+        return False
+
+    head_msgs = ([compaction.summary_message(prev_summary)] if prev_summary else []) + head
+    prompt = compaction.build_prompt(previous_summary=prev_summary)
+    summary = _summarize_orch(db, model, head_msgs, prompt, cancel_event)
+    if not summary:
+        return False
+
+    tail_start_id = view_rows[tail_start].id if tail_start < len(view_rows) else None
+    _persist_compaction(db, session_id, summary, tail_start_id)
+    return True
+
+
+def _maybe_compact(
+    db: DbSession, session_id: str, model: str, usage: dict, cancel_event=None
+) -> bool:
+    """Compact the session when the last round's token count has reached the
+    model's usable context budget. No-op for models with an unknown context
+    window (catalog miss)."""
+    import os
+
+    from app.catalog import models_dev as md
+
+    provider_id = (os.getenv("LLM_PROVIDER_ID") or "").strip()
+    model_obj = md.get_model(provider_id, model) if provider_id else None
+    if not model_obj or model_obj.limit.context == 0:
+        return False
+    token_count = (usage.get("prompt_tokens") or 0) + (usage.get("completion_tokens") or 0)
+    if not compaction.is_overflow(
+        token_count=token_count,
+        context=model_obj.limit.context,
+        output_limit=model_obj.limit.output,
+        input_limit=model_obj.limit.input,
+    ):
+        return False
+    return _compact_session(db, session_id, model, model_obj, cancel_event)
 
 
 def run_turn(db: DbSession, session_id: str, user_text: str) -> Iterator[dict]:
@@ -362,6 +444,12 @@ def run_turn(db: DbSession, session_id: str, user_text: str) -> Iterator[dict]:
             if cancelled_mid_turn:
                 yield from _cancellation_events()
                 return
+
+            # The loop will run another round (tool calls were made) — keep its
+            # input within the context window before we get there. Emit an event
+            # so the chat panel can show that history was compacted.
+            if _maybe_compact(db, session_id, model, round_usage, cancel_event):
+                yield {"kind": "context_compacted"}
     except Exception as e:  # pragma: no cover — defensive
         # The chat panel only sees the brief error string; surface the full
         # traceback to stderr so server logs retain it for diagnostics.

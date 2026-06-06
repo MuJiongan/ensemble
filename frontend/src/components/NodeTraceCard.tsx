@@ -66,6 +66,9 @@ export interface NodeTrace {
   llmCallById: Map<string, LiveLLMCall>;
   directToolCalls: DirectToolCall[];
   directToolCallById: Map<string, DirectToolCall>;
+  // One entry per time the node's call_llm loop summarized older history to
+  // fit the context window; `summarized` is the message count folded in.
+  compactions: { summarized: number }[];
   error?: string | null;
   duration_ms?: number;
   cost?: number;
@@ -117,6 +120,7 @@ export function aggregateEvents(events: RunEvent[]): NodeTrace[] {
         llmCallById: new Map(),
         directToolCalls: [],
         directToolCallById: new Map(),
+        compactions: [],
       };
       byId.set(id, t);
       order.push(id);
@@ -264,6 +268,8 @@ export function aggregateEvents(events: RunEvent[]): NodeTrace[] {
         dtc.error = ev.error;
         dtc.status = ev.error ? 'err' : 'ok';
       }
+    } else if (ev.type === 'context_compacted') {
+      ensureNode(ev.node_id).compactions.push({ summarized: ev.summarized });
     } else if (ev.type === 'node_finished') {
       const t = ensureNode(ev.node_id);
       t.status = ev.status;
@@ -392,6 +398,8 @@ export function nodeRunToTrace(nr: NodeRun): NodeTrace {
     llmCallById,
     directToolCalls,
     directToolCallById,
+    // Snapshot NodeRun rows don't persist compaction markers — live-only.
+    compactions: [],
     error: nr.error,
     duration_ms: nr.duration_ms,
     cost: nr.cost,
@@ -503,6 +511,26 @@ export function NodeTraceCard({
       {trace.llmCalls.map((c, idx) => (
         <LLMCallCard key={c.call_id} call={c} index={idx} />
       ))}
+
+      {trace.compactions.length > 0 && (
+        <div
+          className="fade-in"
+          style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 0 0', color: 'var(--ink-4)' }}
+          title="Older turns were summarized to keep this node's call_llm loop within the model's context window."
+        >
+          <span style={{ flex: 1, height: 1, background: 'var(--rule)' }} />
+          <span
+            className="smallcaps"
+            style={{ fontSize: 9, whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 5 }}
+          >
+            <span aria-hidden style={{ fontSize: 10 }}>⤵</span>
+            context compacted
+            {trace.compactions.length > 1 ? ` ×${trace.compactions.length}` : ''}
+            {` · ${trace.compactions.reduce((n, c) => n + c.summarized, 0)} msgs`}
+          </span>
+          <span style={{ flex: 1, height: 1, background: 'var(--rule)' }} />
+        </div>
+      )}
 
       {trace.directToolCalls.length > 0 && (
         <details style={{ margin: '10px 0 0' }} open={trace.directToolCalls.length <= 5}>

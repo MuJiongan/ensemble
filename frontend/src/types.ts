@@ -224,6 +224,15 @@ export type RunEvent =
       outputs: Record<string, unknown>;
       error: string | null;
       total_cost: number;
+    }
+  // Emitted by a node's ctx.call_llm loop when it summarized older history to
+  // stay within the model's context window. `summarized` is the number of
+  // messages folded into the anchor. Rendered as a marker in the node trace.
+  | {
+      type: 'context_compacted';
+      node_id: string;
+      call_id?: string;
+      summarized: number;
     };
 
 export interface CurrentRun {
@@ -324,5 +333,9 @@ export type OrchestratorEvent =
   // (same code path the manual Run button uses), so the user sees live
   // progress while the orchestrator awaits the result.
   | { kind: 'run_started'; run_id: string; workflow_id: string }
+  // Emitted once per turn when the agent loop summarized older history to
+  // stay within the model's context window. Purely informational — the chat
+  // shows a divider so the user knows context was compacted mid-turn.
+  | { kind: 'context_compacted' }
   | { kind: 'error'; message: string }
   | { kind: 'done' };
