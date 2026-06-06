@@ -215,7 +215,7 @@ export function NodePanel({
               options={{
                 minimap: { enabled: false },
                 fontSize: 12,
-                fontFamily: "'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace",
+                fontFamily: "'Fragment Mono', ui-monospace, 'SF Mono', Menlo, monospace",
                 scrollBeyondLastLine: false,
                 lineNumbers: 'off',
                 readOnly: !!readOnly,

@@ -67,9 +67,9 @@
   --state-warn:    oklch(0.68 0.09 68);
   --state-skip:    #a8a092;
 
-  --serif:  'Newsreader', 'Iowan Old Style', 'Apple Garamond', Georgia, serif;
-  --sans:   'Inter Tight', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  --mono:   'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --serif:  'Spectral', 'Iowan Old Style', 'Apple Garamond', Georgia, serif;
+  --sans:   'Bricolage Grotesque', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --mono:   'Fragment Mono', ui-monospace, 'SF Mono', Menlo, monospace;
 }
 
 [data-theme="dark"] {
