@@ -9,28 +9,41 @@ from app.api import workflows, nodes, edges, runs, orchestrator
 from app.api import settings as settings_api
 from app.api import auth as auth_api
 from app.api import mcp as mcp_api
+from app.api import catalog as catalog_api
+from app.catalog import models_dev
 
 
-# Map of inbound request header → process env var. Settings live client-side
-# in localStorage; the frontend forwards them on every request and we apply
-# them to the process env so existing call_llm / runner code keeps working.
-_HEADER_TO_ENV = {
+# Settings live client-side in localStorage; the frontend forwards them on every
+# LLM-bound request and we apply them to the process env so call_llm / the runner
+# / the orchestrator keep working.
+#
+# Two independent credential groups ride on every request:
+#   * X-Llm-* / X-Orchestrator-*  → LLM_* / DEFAULT_ORCHESTRATOR_*  — used by the
+#     orchestrator's own in-process model calls.
+#   * X-Node-*                    → NODE_* / DEFAULT_NODE_*          — used by the
+#     runner for workflow node calls (incl. runs the orchestrator spawns, which
+#     must use the *node's* provider/model, not the orchestrator's).
+#
+# Semantics: header *present* → set (non-empty) or clear (empty). Header *absent*
+# → leave the env alone. Auth-status polls (raw fetch, no settings headers) thus
+# never clobber a streaming orchestrator turn's env.
+_LLM_HEADER_TO_ENV = {
+    "x-llm-provider-id": "LLM_PROVIDER_ID",
     "x-llm-api-key": "LLM_API_KEY",
     "x-llm-base-url": "LLM_BASE_URL",
-    "x-parallel-key": "PARALLEL_API_KEY",
     "x-orchestrator-model": "DEFAULT_ORCHESTRATOR_MODEL",
+    "x-orchestrator-variant": "DEFAULT_ORCHESTRATOR_VARIANT",
+    "x-node-provider-id": "NODE_PROVIDER_ID",
+    "x-node-api-key": "NODE_API_KEY",
+    "x-node-base-url": "NODE_BASE_URL",
     "x-node-model": "DEFAULT_NODE_MODEL",
+    "x-node-variant": "DEFAULT_NODE_VARIANT",
 }
 
-# X-Llm-Provider-Id is handled separately from the additive map above. The
-# frontend sends it on every LLM-bound request (a non-empty string for OAuth
-# presets like ``codex``/``xai``; empty string when on an API-key preset).
-# *Other* requests — notably the auth-status polls running concurrently with
-# a streaming orchestrator response — must NOT touch the env, or they'll race
-# with the orchestrator's in-flight rounds and drop us back to the API-key
-# dispatch mid-turn.
-_PROVIDER_ID_HEADER = "x-llm-provider-id"
-_PROVIDER_ID_ENV = "LLM_PROVIDER_ID"
+# Parallel.ai key: additive (only set when present + non-empty).
+_HEADER_TO_ENV = {
+    "x-parallel-key": "PARALLEL_API_KEY",
+}
 
 # MCP server config travels as a single JSON header. Unlike the additive map
 # above, an explicitly-present-but-empty value must *clear* the env — otherwise
@@ -52,6 +65,8 @@ async def lifespan(app: FastAPI):
         settings_api.apply_settings_to_env(db)
     finally:
         db.close()
+    # Prime + keep the models.dev catalog fresh in the background.
+    models_dev.start_background_refresh()
     yield
 
 
@@ -71,16 +86,15 @@ async def apply_settings_headers(request: Request, call_next):
     """Copy localStorage-sourced settings headers into process env for the
     duration of this request. Single-user local app — no concurrent-user
     cross-contamination concerns."""
-    # Provider-id semantics: header *present* (any value) is authoritative;
-    # header *absent* means "this request isn't an LLM call — leave env
-    # alone." That keeps concurrent auth-status polls from clearing the
-    # provider mid-turn for a streaming orchestrator response.
-    provider_id = request.headers.get(_PROVIDER_ID_HEADER)
-    if provider_id is not None:
-        if provider_id:
-            os.environ[_PROVIDER_ID_ENV] = provider_id
-        else:
-            os.environ.pop(_PROVIDER_ID_ENV, None)
+    # Per-request LLM credentials: present → set/clear; absent → leave alone
+    # (so concurrent auth-status polls don't clobber a streaming turn's env).
+    for header, env in _LLM_HEADER_TO_ENV.items():
+        value = request.headers.get(header)
+        if value is not None:
+            if value:
+                os.environ[env] = value
+            else:
+                os.environ.pop(env, None)
     for header, env in _HEADER_TO_ENV.items():
         value = request.headers.get(header)
         if value:
@@ -107,3 +121,4 @@ app.include_router(orchestrator.router)
 app.include_router(settings_api.router)
 app.include_router(auth_api.router)
 app.include_router(mcp_api.router)
+app.include_router(catalog_api.router)

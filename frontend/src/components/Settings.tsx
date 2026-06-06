@@ -1,17 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import type { Settings } from '../types';
-import { loadSettings, saveSettings } from '../localSettings';
+import type { ModelSelection, ProviderConnection, Settings } from '../types';
+import { loadSettings, saveSettings, isConnected } from '../localSettings';
 import {
-  CUSTOM_PRESET_ID,
-  PROVIDER_PRESETS,
-  isOAuthPreset,
-  isApiKeyPreset,
-  presetById,
-  presetIdForUrl,
-} from '../llmProviders';
-import { ModelInput } from './ModelInput';
-import { OAuthLoginField } from './OAuthLoginField';
+  getCatalog,
+  refreshCatalog,
+  findProvider,
+  findModel,
+  CATALOG_CHANGED_EVENT,
+  CUSTOM_PROVIDER,
+  CUSTOM_PROVIDER_ID,
+  type Catalog,
+  type CatalogProvider,
+} from '../providerCatalog';
+import {
+  DialogSelectProvider,
+  DialogConnectProvider,
+  DialogSelectModel,
+  VariantPill,
+} from './ProviderDialogs';
 import {
   cancelMcpLogin,
   listMcpTools,
@@ -27,59 +34,63 @@ import {
 } from '../mcpApi';
 
 const EMPTY: Settings = {
-  llm_api_keys: {},
-  llm_provider_preset_id: '',
-  llm_base_url: '',
+  connections: {},
   parallel_api_key: '',
-  default_orchestrator_models: {},
-  default_node_models: {},
+  orchestrator: null,
+  node: null,
   mcp_servers: '',
 };
+
+type DialogState =
+  | { kind: 'none' }
+  | { kind: 'select-provider' }
+  | { kind: 'connect-provider'; provider: CatalogProvider }
+  | { kind: 'select-model'; target: 'orchestrator' | 'node' };
 
 export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const [s, setS] = useState<Settings>(EMPTY);
   const [revealKeys, setRevealKeys] = useState(false);
-  // Tracks which preset is selected. Derived from the stored base URL on
-  // load; kept in component state so the user can switch to "custom" and
-  // type a new URL even before they've finished editing it.
-  const [presetId, setPresetId] = useState<string>(PROVIDER_PRESETS[0].id);
+  const [catalog, setCatalog] = useState<Catalog | null>(null);
+  const [dialog, setDialog] = useState<DialogState>({ kind: 'none' });
   // Autosave is gated on `loaded` *state* (not a ref) so the save effect
   // re-runs after `s` is updated to the loaded value — otherwise it would
   // fire once with the pre-load EMPTY closure and wipe stored settings.
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    const settings = loadSettings();
-    setS(settings);
-    setPresetId(settings.llm_provider_preset_id || presetIdForUrl(settings.llm_base_url));
+    setS(loadSettings());
     setLoaded(true);
+    getCatalog().then(setCatalog).catch(() => {});
+    const onCat = () => getCatalog().then(setCatalog).catch(() => {});
+    window.addEventListener(CATALOG_CHANGED_EVENT, onCat);
+    return () => window.removeEventListener(CATALOG_CHANGED_EVENT, onCat);
   }, []);
 
   useEffect(() => {
     if (loaded) saveSettings(s);
   }, [s, loaded]);
 
-  const onPresetChange = (id: string) => {
-    setPresetId(id);
-    setS((prev) => ({ ...prev, llm_provider_preset_id: id }));
-    if (id === CUSTOM_PRESET_ID) {
-      // Leave llm_base_url as-is — the input becomes editable so the user
-      // can paste their endpoint.
-      return;
-    }
-    const preset = presetById(id);
-    if (isApiKeyPreset(preset)) {
-      // Snap llm_base_url to the chosen api-key preset's endpoint.
-      setS((prev) => ({ ...prev, llm_base_url: preset.baseUrl }));
-    }
-    // OAuth presets leave llm_base_url alone — the backend ignores it when
-    // X-Llm-Provider-Id is set.
-  };
+  // All connected provider ids (includes the custom endpoint, which isn't in
+  // the catalog).
+  const connectedIds = Object.keys(s.connections).filter((id) => isConnected(s, id));
 
-  const currentPreset =
-    presetId === CUSTOM_PRESET_ID ? undefined : presetById(presetId);
-  const currentApiKeyPreset = isApiKeyPreset(currentPreset) ? currentPreset : null;
-  const currentOAuthPreset = isOAuthPreset(currentPreset) ? currentPreset : null;
+  const providerById = (id: string): CatalogProvider | undefined =>
+    id === CUSTOM_PROVIDER_ID ? CUSTOM_PROVIDER : catalog ? findProvider(catalog, id) : undefined;
+
+  const onConnect = (providerID: string, conn: ProviderConnection) => {
+    setS((prev) => ({ ...prev, connections: { ...prev.connections, [providerID]: conn } }));
+    void refreshCatalog();
+  };
+  const onDisconnect = (providerID: string) => {
+    setS((prev) => {
+      const next = { ...prev.connections };
+      delete next[providerID];
+      return { ...prev, connections: next };
+    });
+    void refreshCatalog();
+  };
+  const setSelection = (target: 'orchestrator' | 'node', sel: ModelSelection | null) =>
+    setS((prev) => ({ ...prev, [target]: sel }));
 
   return (
     <div style={{ width: '100%', height: '100%', overflow: 'auto', background: 'var(--paper)' }}>
@@ -98,7 +109,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               color: 'var(--ink)',
             }}
           >
-            keys & defaults.
+            providers & models.
           </h2>
           <button className="text-btn" onClick={onClose} title="close settings">
             close
@@ -115,38 +126,38 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             lineHeight: 1.55,
           }}
         >
-          your keys live in this browser's <span className="mono" style={{ fontStyle: 'normal' }}>localStorage</span>{' '}
-          — the backend never persists them. they're sent as headers on each request.
+          connect a provider, then pick a model + reasoning effort for the orchestrator and for
+          node calls. keys live in this browser's{' '}
+          <span className="mono" style={{ fontStyle: 'normal' }}>localStorage</span> — the backend
+          never persists them.
         </p>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
-          <ProviderField value={presetId} onChange={onPresetChange} />
-          {presetId === CUSTOM_PRESET_ID && (
-            <Field
-              label="llm base url"
-              value={s.llm_base_url}
-              onChange={(v) => setS({ ...s, llm_base_url: v })}
-              placeholder="https://your-endpoint.example.com/v1"
-              hint="we POST to {base}/chat/completions. any openai-compatible endpoint works — gateways, self-hosted vllm/llama.cpp, etc."
-            />
-          )}
-          {currentOAuthPreset ? (
-            <OAuthLoginField preset={currentOAuthPreset} />
-          ) : (
-            <Field
-              label={`${currentApiKeyPreset?.label.toLowerCase() ?? 'custom'} api key`}
-              value={s.llm_api_keys[presetId] ?? ''}
-              onChange={(v) =>
-                setS({ ...s, llm_api_keys: { ...s.llm_api_keys, [presetId]: v } })
-              }
-              secret={!revealKeys}
-              hint={
-                currentApiKeyPreset
-                  ? `bearer token for ${currentApiKeyPreset.label}. each provider keeps its own key — switch providers above to manage another.`
-                  : 'bearer token for the endpoint above. each provider (and the custom slot) keeps its own key.'
-              }
-            />
-          )}
+          <ProvidersSection
+            settings={s}
+            connectedIds={connectedIds}
+            providerById={providerById}
+            onConnectClick={() => setDialog({ kind: 'select-provider' })}
+            onManage={(p) => setDialog({ kind: 'connect-provider', provider: p })}
+          />
+
+          <ModelRow
+            label="orchestrator model"
+            hint="used by the orchestrator chat."
+            catalog={catalog}
+            selection={s.orchestrator}
+            onChange={(sel) => setSelection('orchestrator', sel)}
+            onChangeModel={() => setDialog({ kind: 'select-model', target: 'orchestrator' })}
+          />
+          <ModelRow
+            label="node model"
+            hint="default for ctx.call_llm inside nodes when a node doesn't specify one."
+            catalog={catalog}
+            selection={s.node}
+            onChange={(sel) => setSelection('node', sel)}
+            onChangeModel={() => setDialog({ kind: 'select-model', target: 'node' })}
+          />
+
           <Field
             label="parallel.ai api key"
             value={s.parallel_api_key}
@@ -154,7 +165,6 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             secret={!revealKeys}
             hint="used by the web_search tool."
           />
-
           <label
             className="serif"
             style={{
@@ -173,35 +183,8 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               checked={revealKeys}
               onChange={(e) => setRevealKeys(e.target.checked)}
             />
-            reveal keys
+            reveal key
           </label>
-
-          <ModelField
-            label="default orchestrator model"
-            value={s.default_orchestrator_models[presetId] ?? ''}
-            onChange={(v) =>
-              setS({
-                ...s,
-                default_orchestrator_models: { ...s.default_orchestrator_models, [presetId]: v },
-              })
-            }
-            hint={`used by the orchestrator when the ${
-              currentPreset?.label ?? 'active'
-            } provider is selected. each provider keeps its own default.`}
-            settings={s}
-          />
-          <ModelField
-            label="default node model"
-            value={s.default_node_models[presetId] ?? ''}
-            onChange={(v) =>
-              setS({
-                ...s,
-                default_node_models: { ...s.default_node_models, [presetId]: v },
-              })
-            }
-            hint="default for ctx.call_llm inside nodes when no model is specified."
-            settings={s}
-          />
 
           <McpServersEditor
             value={s.mcp_servers}
@@ -209,274 +192,156 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           />
         </div>
       </div>
+
+      {catalog && dialog.kind === 'select-provider' && (
+        <DialogSelectProvider
+          catalog={catalog}
+          settings={s}
+          onPick={(p) => setDialog({ kind: 'connect-provider', provider: p })}
+          onClose={() => setDialog({ kind: 'none' })}
+        />
+      )}
+      {dialog.kind === 'connect-provider' && (
+        <DialogConnectProvider
+          provider={dialog.provider}
+          settings={s}
+          onConnect={onConnect}
+          onDisconnect={onDisconnect}
+          onClose={() => setDialog({ kind: 'none' })}
+        />
+      )}
+      {catalog && dialog.kind === 'select-model' && (
+        <DialogSelectModel
+          catalog={catalog}
+          settings={s}
+          onPick={(sel) => {
+            setSelection(dialog.target, sel);
+            setDialog({ kind: 'none' });
+          }}
+          onClose={() => setDialog({ kind: 'none' })}
+        />
+      )}
     </div>
   );
 }
 
-interface ProviderOption {
-  id: string;
-  label: string;
-  /** What to show as the second line under the label.
-   *  ``url`` — a base URL (api-key presets).
-   *  ``info`` — a description string (OAuth presets + the Custom slot). */
-  secondaryKind: 'url' | 'info';
-  secondary: string;
-  /** External "get a key" link shown only when this option is selected and
-   *  the option is an api-key preset. */
-  keysUrl?: string;
-}
-
-function ProviderField({
-  value,
-  onChange,
+function ProvidersSection({
+  settings,
+  connectedIds,
+  providerById,
+  onConnectClick,
+  onManage,
 }: {
-  value: string;
-  onChange: (id: string) => void;
+  settings: Settings;
+  connectedIds: string[];
+  providerById: (id: string) => CatalogProvider | undefined;
+  onConnectClick: () => void;
+  onManage: (p: CatalogProvider) => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const [highlight, setHighlight] = useState(0);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const listRef = useRef<HTMLDivElement | null>(null);
-
-  const options: ProviderOption[] = [
-    ...PROVIDER_PRESETS.map((p): ProviderOption =>
-      p.auth === 'api_key'
-        ? {
-            id: p.id,
-            label: p.label,
-            secondaryKind: 'url',
-            secondary: p.baseUrl,
-            keysUrl: p.keysUrl,
-          }
-        : {
-            id: p.id,
-            label: p.label,
-            secondaryKind: 'info',
-            secondary: p.description,
-          },
-    ),
-    {
-      id: CUSTOM_PRESET_ID,
-      label: 'Custom',
-      secondaryKind: 'info',
-      secondary: 'bring your own openai-compatible base url',
-    },
-  ];
-  const selectedIdx = Math.max(options.findIndex((o) => o.id === value), 0);
-  const selected = options[selectedIdx];
-
-  // Outside-click closes the popup.
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
-  }, [open]);
-
-  // Keep highlight scrolled into view as user arrows through.
-  useEffect(() => {
-    if (!open || !listRef.current) return;
-    const el = listRef.current.querySelector<HTMLElement>(`[data-idx="${highlight}"]`);
-    el?.scrollIntoView({ block: 'nearest' });
-  }, [highlight, open]);
-
-  const commit = (id: string) => {
-    onChange(id);
-    setOpen(false);
-    triggerRef.current?.focus();
-  };
-
-  const toggle = () => {
-    if (!open) setHighlight(selectedIdx);
-    setOpen((v) => !v);
-  };
-
-  const onKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>) => {
-    if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      if (!open) {
-        setHighlight(selectedIdx);
-        setOpen(true);
-      } else {
-        setHighlight((h) => Math.min(h + 1, options.length - 1));
-      }
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      if (!open) {
-        setHighlight(selectedIdx);
-        setOpen(true);
-      } else {
-        setHighlight((h) => Math.max(h - 1, 0));
-      }
-    } else if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      if (open) commit(options[highlight].id);
-      else toggle();
-    } else if (e.key === 'Escape' && open) {
-      e.preventDefault();
-      setOpen(false);
-    }
-  };
-
   return (
-    <div ref={containerRef} style={{ position: 'relative' }}>
-      <label className="smallcaps" style={{ display: 'block', marginBottom: 6 }}>
-        provider
-      </label>
-      <button
-        ref={triggerRef}
-        type="button"
-        onClick={toggle}
-        onKeyDown={onKeyDown}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-label="provider preset"
-        style={{
-          width: '100%',
-          background: 'transparent',
-          border: 0,
-          borderBottom: '1px solid var(--rule)',
-          padding: '8px 0',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 12,
-          cursor: 'pointer',
-          color: 'var(--ink)',
-          textAlign: 'left',
-          outline: 'none',
-        }}
-      >
-        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, gap: 2 }}>
-          <span
-            className="serif"
-            style={{ fontStyle: 'italic', fontSize: 14, color: 'var(--ink)' }}
-          >
-            {selected.label}
-          </span>
-          <span
-            className={selected.secondaryKind === 'url' ? 'mono' : 'serif'}
-            style={{
-              fontSize: selected.secondaryKind === 'url' ? 11.5 : 12,
-              fontStyle: selected.secondaryKind === 'info' ? 'italic' : 'normal',
-              color: 'var(--ink-4)',
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-            }}
-          >
-            {selected.secondary}
-          </span>
+    <div>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 8 }}>
+        <label className="smallcaps">connected providers</label>
+        <span style={{ flex: 1 }} />
+        <button className="text-btn" onClick={onConnectClick}>
+          + connect
+        </button>
+      </div>
+      {connectedIds.length === 0 ? (
+        <div className="serif" style={{ fontStyle: 'italic', fontSize: 13, color: 'var(--ink-4)' }}>
+          no providers connected yet.
         </div>
-        <Chevron open={open} />
-      </button>
-
-      {selected.keysUrl && !open && (
-        <div
-          className="serif"
-          style={{ fontStyle: 'italic', fontSize: 12, color: 'var(--ink-4)', marginTop: 6 }}
-        >
-          <a
-            href={selected.keysUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{ color: 'var(--ink-3)', textDecoration: 'underline' }}
-          >
-            get an api key ↗
-          </a>
-        </div>
-      )}
-
-      {open && (
-        <div
-          ref={listRef}
-          role="listbox"
-          aria-label="select provider"
-          className="shadow-card fade-in"
-          style={{
-            position: 'absolute',
-            top: '100%',
-            left: 0,
-            right: 0,
-            marginTop: 4,
-            maxHeight: 320,
-            overflowY: 'auto',
-            background: 'var(--paper)',
-            border: '1px solid var(--rule)',
-            borderRadius: 4,
-            padding: 4,
-            zIndex: 100,
-          }}
-        >
-          {options.map((o, i) => {
-            const active = i === highlight;
-            const isSelected = o.id === value;
+      ) : (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          {connectedIds.map((id) => {
+            const p = providerById(id);
+            const conn = settings.connections[id];
             return (
-              <div
-                key={o.id}
-                role="option"
-                aria-selected={isSelected}
-                data-idx={i}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  commit(o.id);
-                }}
-                onMouseEnter={() => setHighlight(i)}
+              <button
+                key={id}
+                className="mono"
+                onClick={() => p && onManage(p)}
+                disabled={!p}
+                title="manage"
                 style={{
-                  padding: '8px 10px',
-                  borderRadius: 3,
-                  cursor: 'pointer',
-                  background: active ? 'var(--paper-2)' : 'transparent',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 10,
+                  fontSize: 12,
+                  padding: '4px 10px',
+                  borderRadius: 999,
+                  border: '1px solid var(--rule)',
+                  background: 'var(--paper-2)',
+                  color: 'var(--ink)',
+                  cursor: p ? 'pointer' : 'default',
                 }}
               >
-                <span
-                  aria-hidden
-                  style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: 6,
-                    background: isSelected ? 'var(--ink)' : 'transparent',
-                    flexShrink: 0,
-                  }}
-                />
-                <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, gap: 1 }}>
-                  <span
-                    className="serif"
-                    style={{
-                      fontStyle: 'italic',
-                      fontSize: 13.5,
-                      color: 'var(--ink)',
-                    }}
-                  >
-                    {o.label}
-                  </span>
-                  <span
-                    className={o.secondaryKind === 'url' ? 'mono' : 'serif'}
-                    style={{
-                      fontSize: o.secondaryKind === 'url' ? 11 : 11.5,
-                      fontStyle: o.secondaryKind === 'info' ? 'italic' : 'normal',
-                      color: 'var(--ink-4)',
-                      whiteSpace: o.secondaryKind === 'url' ? 'nowrap' : 'normal',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      lineHeight: 1.4,
-                    }}
-                  >
-                    {o.secondary}
-                  </span>
-                </div>
-              </div>
+                {p?.name ?? id}
+                <span style={{ color: 'var(--ink-4)' }}> · {conn?.method}</span>
+              </button>
             );
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+function ModelRow({
+  label,
+  hint,
+  catalog,
+  selection,
+  onChange,
+  onChangeModel,
+}: {
+  label: string;
+  hint: string;
+  catalog: Catalog | null;
+  selection: ModelSelection | null;
+  onChange: (sel: ModelSelection | null) => void;
+  onChangeModel: () => void;
+}) {
+  const model =
+    catalog && selection ? findModel(catalog, selection.providerID, selection.modelID) : undefined;
+  const provider =
+    catalog && selection ? findProvider(catalog, selection.providerID) : undefined;
+  const variants = model?.variants ?? [];
+
+  return (
+    <div>
+      <label className="smallcaps" style={{ display: 'block', marginBottom: 6 }}>
+        {label}
+      </label>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        {selection ? (
+          <span className="serif" style={{ fontSize: 14 }}>
+            {provider?.name ?? selection.providerID}
+            <span style={{ color: 'var(--ink-4)' }}> · </span>
+            <span className="mono" style={{ fontSize: 12 }}>
+              {model?.name ?? selection.modelID}
+            </span>
+          </span>
+        ) : (
+          <span className="serif" style={{ fontStyle: 'italic', color: 'var(--ink-4)', fontSize: 13 }}>
+            no model selected
+          </span>
+        )}
+        <span style={{ flex: 1 }} />
+        {selection && (
+          <VariantPill
+            variants={variants}
+            selected={selection.variant}
+            onChange={(variant) => onChange({ ...selection, variant })}
+          />
+        )}
+        <button className="text-btn" onClick={onChangeModel}>
+          {selection ? 'change' : 'select'}
+        </button>
+      </div>
+      <div
+        className="serif"
+        style={{ fontStyle: 'italic', fontSize: 12, color: 'var(--ink-4)', marginTop: 6 }}
+      >
+        {hint}
+      </div>
     </div>
   );
 }
@@ -1813,41 +1678,6 @@ function SubField({ label, children }: { label: string; children: React.ReactNod
         {label}
       </label>
       {children}
-    </div>
-  );
-}
-
-function ModelField({
-  label, value, onChange, hint, settings,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  hint?: string;
-  /** Settings snapshot forwarded to ModelInput so the autocomplete list
-   *  refreshes when the active provider changes in the panel — before the
-   *  user clicks Save. */
-  settings?: Settings;
-}) {
-  return (
-    <div>
-      <label className="smallcaps" style={{ display: 'block', marginBottom: 6 }}>
-        {label}
-      </label>
-      <ModelInput
-        value={value}
-        onChange={onChange}
-        ariaLabel={label}
-        settings={settings}
-      />
-      {hint && (
-        <div
-          className="serif"
-          style={{ fontStyle: 'italic', fontSize: 12, color: 'var(--ink-4)', marginTop: 6 }}
-        >
-          {hint}
-        </div>
-      )}
     </div>
   );
 }

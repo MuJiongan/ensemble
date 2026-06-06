@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 import sys
 import traceback
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
@@ -10,6 +11,22 @@ from app.runner import service as run_service
 from app.services import graph as graph_service
 
 router = APIRouter(prefix="/api", tags=["runs"])
+
+NODE_MODEL_UNSET = "No node model configured. Set a default node model in Settings before running."
+
+
+def _require_node_model(db: Session) -> str:
+    """The node default model from env (forwarded from Settings) or the DB
+    backwards-compat row. No hardcoded fallback — a run must use a model the
+    user actually chose, so we fail loudly and point at Settings instead of
+    guessing one (which silently routes to the wrong provider)."""
+    model = os.getenv("DEFAULT_NODE_MODEL", "")
+    if not model:
+        setting = db.query(models.Setting).filter_by(key="default_node_model").first()
+        model = setting.value if setting and setting.value else ""
+    if not model:
+        raise HTTPException(status_code=400, detail=NODE_MODEL_UNSET)
+    return model
 
 
 def _serialize_workflow(w: models.Workflow) -> dict:
@@ -81,7 +98,10 @@ def start_run(wid: str, body: schemas.RunStartIn, db: Session = Depends(get_db))
     if not w:
         raise HTTPException(404)
 
-    import os as _os
+    # Require a configured node model *before* writing the Run row, so a missing
+    # model doesn't leave an orphaned "running" run behind.
+    default_model = _require_node_model(db)
+
     # Snapshot the graph that's about to run *before* writing the Run row, so
     # the row carries a frozen copy of exactly what executed. The runner uses
     # `wf_data`, not a re-read of the DB, so they can't drift.
@@ -97,14 +117,6 @@ def start_run(wid: str, body: schemas.RunStartIn, db: Session = Depends(get_db))
     db.add(run)
     db.commit()
     db.refresh(run)
-    # localStorage (forwarded via header → env by middleware) wins; DB row is
-    # the backwards-compat fallback. Final fallback: a sane current default.
-    default_model = _os.getenv("DEFAULT_NODE_MODEL", "")
-    if not default_model:
-        setting = db.query(models.Setting).filter_by(key="default_node_model").first()
-        default_model = setting.value if setting and setting.value else ""
-    if not default_model:
-        default_model = "anthropic/claude-sonnet-4.6"
 
     run_service.start_run(run.id, wf_data, body.inputs, default_model)
 
@@ -130,13 +142,7 @@ def rerun_from_snapshot(rid: str, body: schemas.RunStartIn, db: Session = Depend
 
     wf_data = src.workflow_snapshot
 
-    import os as _os
-    default_model = _os.getenv("DEFAULT_NODE_MODEL", "")
-    if not default_model:
-        setting = db.query(models.Setting).filter_by(key="default_node_model").first()
-        default_model = setting.value if setting and setting.value else ""
-    if not default_model:
-        default_model = "anthropic/claude-sonnet-4.6"
+    default_model = _require_node_model(db)
 
     run = models.Run(
         workflow_id=src.workflow_id,

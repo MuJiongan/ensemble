@@ -1,194 +1,26 @@
-"""Streaming + SSE parsing for the orchestrator agent.
+"""Streaming entry point for the orchestrator agent.
 
-The provider is whatever OpenAI-compatible chat-completions endpoint the user
-configured in Settings (``llm_base_url`` + ``llm_api_key``). The default is
-OpenRouter; a couple of OpenRouter-only request extras (cost reporting,
-reasoning effort) are gated so stricter providers don't 400 on unknown fields.
-
-Pulled out of the agent loop so the chunk parser can be unit-tested without
-spinning up an HTTP server, and so the loop module isn't bogged down in
-protocol details.
+One round of the orchestrator's model call is routed through the native
+protocol layer (:mod:`app.llm`), which picks OpenAI-chat / Anthropic Messages /
+Gemini by provider and applies the reasoning variant. The OpenAI-compatible SSE
+parser lives in :mod:`app.llm.openai_chat`; it's re-exported here as
+``_parse_sse_chunks`` for the orchestrator unit tests.
 """
 from __future__ import annotations
-import json
 import os
 import threading
 from typing import Any, Iterator
 
-import httpx
+from app.llm.openai_chat import parse_sse_lines
 
 
-DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
-
-REASONING_EFFORT = "medium"
-
-
-def _base_url() -> str:
-    return (os.getenv("LLM_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
-
-
-def _is_openrouter(base_url: str) -> bool:
-    return "openrouter" in base_url.lower()
-
-
-def _merge_reasoning_delta(blocks: list[dict], rd: dict) -> str:
-    """Fold one streaming reasoning_details delta into ``blocks`` in place.
-
-    Multiple deltas may share an ``id`` (concatenated) or arrive without one
-    (matched by ``index``). Returns the text portion of this delta — caller
-    yields it as a ``thinking`` chunk if non-empty.
-    """
-    delta_text = rd.get("text") or ""
-    rd_id = rd.get("id")
-    rd_index = rd.get("index")
-    target = None
-    for b in blocks:
-        if rd_id and b.get("id") == rd_id:
-            target = b
-            break
-        if rd_index is not None and b.get("index") == rd_index and not rd_id:
-            target = b
-            break
-    if target is None:
-        target = {
-            "type": rd.get("type") or "reasoning.text",
-            "text": "",
-            "id": rd_id,
-            "format": rd.get("format"),
-            "index": rd_index,
-        }
-        # Drop None values to keep the block close to what the server sent.
-        target = {k: v for k, v in target.items() if v is not None}
-        blocks.append(target)
-    if delta_text:
-        target["text"] = (target.get("text") or "") + delta_text
-    # Carry through other metadata that may arrive on subsequent chunks.
-    for k in ("signature", "format", "type"):
-        v = rd.get(k)
-        if v is not None:
-            target[k] = v
-    return delta_text
-
-
-def _apply_tool_call_delta(by_index: dict[int, dict], tc_delta: dict) -> None:
-    """Fold one streaming tool_calls delta into ``by_index`` in place.
-
-    Tool calls arrive piece-by-piece, indexed by ``index``: id once, name
-    once, arguments incrementally.
-    """
-    idx = tc_delta.get("index", 0)
-    cur = by_index.setdefault(
-        idx,
-        {
-            "id": "",
-            "type": "function",
-            "function": {"name": "", "arguments": ""},
-        },
-    )
-    if tc_delta.get("id"):
-        cur["id"] = tc_delta["id"]
-    if tc_delta.get("type"):
-        cur["type"] = tc_delta["type"]
-    fn_delta = tc_delta.get("function") or {}
-    if fn_delta.get("name"):
-        cur["function"]["name"] = fn_delta["name"]
-    if fn_delta.get("arguments") is not None:
-        cur["function"]["arguments"] += fn_delta.get("arguments", "")
-
-
-def _assemble_message(
-    content: str,
-    tool_calls_by_index: dict[int, dict],
-    reasoning_blocks: list[dict],
-) -> dict:
-    """Build the final assistant message from the per-stream accumulators.
-
-    ``reasoning_details`` is preserved verbatim so callers can persist + echo
-    it back on subsequent turns — Anthropic enforces ordering of these blocks.
-    """
-    msg: dict = {"role": "assistant", "content": content}
-    if tool_calls_by_index:
-        msg["tool_calls"] = [
-            tool_calls_by_index[i] for i in sorted(tool_calls_by_index.keys())
-        ]
-    if reasoning_blocks:
-        msg["reasoning_details"] = reasoning_blocks
-    return msg
-
-
-def _parse_sse_chunks(lines: Iterator[str]) -> Iterator[tuple[str, Any]]:
-    """Parse OpenAI-compatible streaming SSE lines.
-
-    Yields:
-      ``("text", delta_str)`` for each visible text delta,
-      ``("thinking", delta_str)`` for each reasoning text delta,
-      ``("done", {"message": <full assistant msg>, "usage": <dict>})`` once
-      the stream terminates (with ``data: [DONE]`` or natural EOF).
-
-    Pulled out as a pure generator over lines so it can be unit-tested without
-    spinning up an HTTP server.
-    """
-    content_parts: list[str] = []
-    tool_calls_by_index: dict[int, dict] = {}
-    reasoning_blocks: list[dict] = []
-    usage: dict = {}
-
-    for line in lines:
-        # SSE frames may carry comments (`:` prefix) or `event:`/`id:` lines —
-        # we only care about `data:`.
-        if not line or not line.startswith("data:"):
-            continue
-        data_str = line[len("data:"):].strip()
-        if data_str == "[DONE]":
-            break
-        try:
-            chunk = json.loads(data_str)
-        except Exception:
-            continue
-
-        # OpenAI-compatible providers piggyback usage at the tail of the stream.
-        u = chunk.get("usage")
-        if u:
-            usage = u
-
-        choices = chunk.get("choices") or []
-        if not choices:
-            continue
-        delta = choices[0].get("delta") or {}
-
-        rds = delta.get("reasoning_details") or []
-        for rd in rds:
-            t = _merge_reasoning_delta(reasoning_blocks, rd)
-            if t:
-                yield ("thinking", t)
-        # Some providers also surface a flat `reasoning` text delta; treat it
-        # as a fallback when no structured details are provided.
-        if not rds:
-            flat_reasoning = delta.get("reasoning")
-            if flat_reasoning:
-                _merge_reasoning_delta(
-                    reasoning_blocks,
-                    {"type": "reasoning.text", "text": flat_reasoning},
-                )
-                yield ("thinking", flat_reasoning)
-
-        content_delta = delta.get("content")
-        if content_delta:
-            content_parts.append(content_delta)
-            yield ("text", content_delta)
-
-        for tc_delta in (delta.get("tool_calls") or []):
-            _apply_tool_call_delta(tool_calls_by_index, tc_delta)
-
-    yield (
-        "done",
-        {
-            "message": _assemble_message(
-                "".join(content_parts), tool_calls_by_index, reasoning_blocks
-            ),
-            "usage": usage,
-        },
-    )
+def _parse_sse_chunks(lines: Iterator[str], cancel_event=None) -> Iterator[tuple[str, Any]]:
+    """OpenAI-compatible SSE parser, restricted to the orchestrator's 2-tuple
+    contract (``text`` / ``thinking`` / ``done``). Tool calls are read from the
+    final ``done`` message, so per-arg ``tool_args`` deltas are dropped."""
+    for item in parse_sse_lines(lines, cancel_event):
+        if item[0] in ("text", "thinking", "done"):
+            yield item
 
 
 def _call_llm_stream(
@@ -197,42 +29,39 @@ def _call_llm_stream(
     tool_specs: list[dict],
     cancel_event: threading.Event | None = None,
 ) -> Iterator[tuple[str, Any]]:
-    """Open a streaming chat completion against the configured OpenAI-compatible
-    provider and yield parsed chunks via :func:`_parse_sse_chunks`.
+    """Stream one orchestrator round through the native protocol layer.
 
-    If ``cancel_event`` is provided and gets set during streaming, the SSE
-    read terminates between chunks and the parser emits a final ``done``
-    with whatever partial text was assembled — letting the agent loop bail
-    immediately instead of waiting for the LLM to finish."""
+    Picks the protocol (OpenAI-chat / Anthropic Messages / Gemini) for the
+    configured provider+model, applies the reasoning variant, and yields
+    ``("text"|"thinking"|"done", ...)`` chunks. ``tool_args`` deltas are
+    filtered out — the orchestrator loop reads tool calls from the final
+    ``done`` message. If ``cancel_event`` is set during streaming the read
+    terminates between chunks and the adapter emits a final ``done`` with the
+    partial text assembled."""
     api_key = os.getenv("LLM_API_KEY", "")
     if not api_key:
         raise RuntimeError("LLM_API_KEY not set")
-    base_url = _base_url()
-    chat_url = base_url + "/chat/completions"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload: dict = {
-        "model": model,
-        "messages": messages,
-        "tools": tool_specs,
-        "stream": True,
-    }
-    if _is_openrouter(base_url):
-        # OpenRouter-specific knobs: a configurable reasoning effort, and
-        # cost accounting (without `usage.include`, `usage.cost` is omitted
-        # and orchestrator cost is $0). Other providers don't understand
-        # these fields and may reject the request, so we gate them.
-        payload["reasoning"] = {"effort": REASONING_EFFORT}
-        payload["usage"] = {"include": True}
-    with httpx.Client(timeout=None) as client:
-        with client.stream("POST", chat_url, headers=headers, json=payload) as r:
-            if r.status_code >= 400:
-                body = r.read().decode(errors="replace")[:500]
-                raise RuntimeError(f"LLM {r.status_code}: {body}")
 
-            def cancellable_lines():
-                for line in r.iter_lines():
-                    if cancel_event is not None and cancel_event.is_set():
-                        return
-                    yield line
+    from app.llm import router as llm_router
 
-            yield from _parse_sse_chunks(cancellable_lines())
+    plan = llm_router.plan(
+        (os.getenv("LLM_PROVIDER_ID") or "").strip(),
+        model,
+        os.getenv("DEFAULT_ORCHESTRATOR_VARIANT") or None,
+        base_url=os.getenv("LLM_BASE_URL", ""),
+    )
+    for item in plan.stream_round(
+        model=model,
+        messages=messages,
+        tool_schemas=tool_specs,
+        base_url=plan.base_url,
+        api_key=api_key,
+        variant_opts=plan.variant_opts,
+        extra_headers=plan.extra_headers,
+        model_output_limit=plan.model_output_limit,
+        cost=plan.cost,
+        streaming=True,
+        cancel_event=cancel_event,
+    ):
+        if item[0] in ("text", "thinking", "done"):
+            yield item

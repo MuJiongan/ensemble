@@ -98,32 +98,33 @@ export interface Run {
   node_runs: NodeRun[];
 }
 
+/** How a provider was connected. ``api`` providers paste a bearer token (and
+ * carry the catalog base URL); ``oauth`` providers (codex, xai) sign in and the
+ * backend stores tokens server-side. */
+export interface ProviderConnection {
+  method: 'api' | 'oauth';
+  apiKey?: string;
+  baseURL?: string;
+}
+
+/** A chosen model + reasoning variant for a target (orchestrator or node).
+ * ``variant`` is the reasoning tier (low/medium/high/max/...) or null for off. */
+export interface ModelSelection {
+  providerID: string;
+  modelID: string;
+  variant: string | null;
+}
+
 export interface Settings {
-  /**
-   * Per-provider API keys, keyed by provider preset id (see `llmProviders.ts`)
-   * — `openrouter`, `openai`, ..., or `custom` for the bring-your-own-base-url
-   * option. Switching providers in the Settings UI swaps which entry is shown
-   * and which one is sent on the wire. OAuth presets (`codex`, `xai-oauth`)
-   * don't use this — they store tokens server-side.
-   */
-  llm_api_keys: Record<string, string>;
-  /**
-   * Explicit current-preset id. Required to disambiguate OAuth presets from
-   * api-key ones (api-key presets can also be derived from the base URL, but
-   * OAuth presets have no URL of their own). Empty string means "infer from
-   * `llm_base_url`" — used as the backwards-compat default.
-   */
-  llm_provider_preset_id: string;
-  llm_base_url: string;
+  /** Connected providers keyed by catalog provider id (openai, anthropic,
+   * openrouter, codex, ...). Holds the api key + base url, or just the oauth
+   * marker. */
+  connections: Record<string, ProviderConnection>;
   parallel_api_key: string;
-  /**
-   * Per-provider default orchestrator model, keyed by preset id. Model ids
-   * are provider-specific (``anthropic/claude-sonnet-4.5`` on OpenRouter vs
-   * ``gpt-5.4`` on Codex), so switching providers swaps which value is shown
-   * and which is sent on the wire.
-   */
-  default_orchestrator_models: Record<string, string>;
-  default_node_models: Record<string, string>;
+  /** Model + variant used by the orchestrator chat. */
+  orchestrator: ModelSelection | null;
+  /** Default model + variant for ctx.call_llm inside nodes. */
+  node: ModelSelection | null;
   /**
    * MCP (Model Context Protocol) server config as a raw JSON string, in
    * opencode's shape — a map of server name → `{type: "local", command: [...]}`

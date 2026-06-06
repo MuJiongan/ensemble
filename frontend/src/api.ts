@@ -1,11 +1,16 @@
 import type {
-  Workflow, WorkflowDetail, WFNode, WFEdge, Run, Settings, IOPort, NodeConfig,
+  Workflow, WorkflowDetail, WFNode, WFEdge, Run, IOPort, NodeConfig,
   OrchestratorSession, ChatHistory, OrchestratorEvent,
 } from './types';
-import { settingsHeaders } from './localSettings';
+import { settingsHeaders, type LlmTarget } from './localSettings';
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = { ...settingsHeaders() };
+async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  target: LlmTarget = 'base',
+): Promise<T> {
+  const headers: Record<string, string> = { ...settingsHeaders(target) };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   const r = await fetch(path, {
     method,
@@ -62,9 +67,9 @@ export const api = {
   deleteEdge: (id: string) => request<{ ok: true }>('DELETE', `/api/edges/${id}`),
 
   startRun: (wid: string, inputs: Record<string, unknown>) =>
-    request<Run>('POST', `/api/workflows/${wid}/runs`, { inputs, kind: 'user' }),
+    request<Run>('POST', `/api/workflows/${wid}/runs`, { inputs, kind: 'user' }, 'node'),
   rerunFromSnapshot: (rid: string, inputs: Record<string, unknown>) =>
-    request<Run>('POST', `/api/runs/${rid}/rerun`, { inputs, kind: 'user' }),
+    request<Run>('POST', `/api/runs/${rid}/rerun`, { inputs, kind: 'user' }, 'node'),
   forkRunSnapshot: (rid: string, name?: string) =>
     request<Workflow>('POST', `/api/runs/${rid}/fork`, { name }),
   cancelRun: (rid: string) =>
@@ -76,9 +81,6 @@ export const api = {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     return `${proto}//${window.location.host}/api/runs/${rid}/events`;
   },
-
-  getSettings: () => request<Settings>('GET', '/api/settings'),
-  putSettings: (body: Settings) => request<Settings>('PUT', '/api/settings', body),
 
   // --- orchestrator sessions ----------------------------------------------
   createSession: (wid: string) =>
@@ -105,7 +107,7 @@ export const api = {
   ): Promise<void> => {
     const res = await fetch(`/api/sessions/${sid}/messages`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...settingsHeaders() },
+      headers: { 'Content-Type': 'application/json', ...settingsHeaders('orchestrator') },
       body: JSON.stringify({ text }),
       signal,
     });

@@ -294,6 +294,13 @@ def _request_headers(access_token: str, account_id: Optional[str]) -> dict:
     return h
 
 
+def _reasoning_extra(reasoning_effort: Optional[str]) -> dict:
+    """Responses-API reasoning control derived from the selected variant."""
+    if not reasoning_effort:
+        return {}
+    return {"reasoning": {"effort": reasoning_effort, "summary": "auto"}}
+
+
 def call_codex_stream(
     model: str,
     messages: list[dict],
@@ -301,13 +308,14 @@ def call_codex_stream(
     access_token: str,
     account_id: Optional[str],
     cancel_event: Optional[threading.Event] = None,
+    reasoning_effort: Optional[str] = None,
 ) -> Iterator[tuple[str, Any]]:
     """Streaming entry point for the orchestrator agent loop.
 
     Same signature shape as :func:`app.orchestrator.agent.llm_stream._call_llm_stream`,
     just routed through the Codex Responses API.
     """
-    payload = _request_payload(model, messages, tool_specs, {"stream": True})
+    payload = _request_payload(model, messages, tool_specs, {"stream": True, **_reasoning_extra(reasoning_effort)})
     headers = _request_headers(access_token, account_id)
     with httpx.Client(timeout=None) as client:
         with client.stream("POST", CODEX_API_ENDPOINT, headers=headers, json=payload) as r:
@@ -334,6 +342,7 @@ def call_codex_chat(
     call_id: Optional[str],
     access_token: str,
     account_id: Optional[str],
+    reasoning_effort: Optional[str] = None,
     **opts,
 ) -> dict:
     """Node-runtime entry point — mirrors ``runner.llm.call_llm``. Runs the
@@ -366,7 +375,8 @@ def call_codex_chat(
 
         if streaming:
             for item in call_codex_stream(
-                model, messages, tool_schemas, access_token, account_id
+                model, messages, tool_schemas, access_token, account_id,
+                reasoning_effort=reasoning_effort,
             ):
                 kind = item[0]
                 if kind == "text":
@@ -401,7 +411,8 @@ def call_codex_chat(
         else:
             # Non-streaming fallback: drain the stream with no callbacks.
             for item in call_codex_stream(
-                model, messages, tool_schemas, access_token, account_id
+                model, messages, tool_schemas, access_token, account_id,
+                reasoning_effort=reasoning_effort,
             ):
                 if item[0] == "done":
                     assembled_msg = item[1]["message"]

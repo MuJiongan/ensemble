@@ -895,6 +895,8 @@ def test_run_workflow_tags_run_as_orchestrator_kind(db, workflow, monkeypatch):
     user kicked off directly (which stay `kind="user"`)."""
     from app.runner import service as run_service
 
+    # A node model must be configured (no hardcoded default anymore).
+    monkeypatch.setenv("DEFAULT_NODE_MODEL", "test/model")
     # The orchestrator's run_workflow shells out to start_run for actual
     # execution — stub it out so this stays a unit test.
     monkeypatch.setattr(run_service, "start_run", lambda *a, **kw: None)
@@ -1223,6 +1225,7 @@ def test_run_turn_streams_chunks_executes_tools_and_persists(db, workflow, monke
     DB, (c) the assistant message + tool result are persisted in OpenRouter
     shape, and (d) the run_turn generator terminates with `done`.
     """
+    monkeypatch.setenv("DEFAULT_ORCHESTRATOR_MODEL", "test/model")
     sess = models.Session(workflow_id=workflow.id)
     db.add(sess)
     db.commit()
@@ -1313,6 +1316,7 @@ def test_run_turn_user_cancel_mid_stream_does_not_persist_partial(db, workflow, 
     """When the user clicks cancel while text is streaming, no assistant
     message gets persisted (so half-formed tool_calls can't corrupt history)
     and the stream terminates cleanly with `done` — no scary error banner."""
+    monkeypatch.setenv("DEFAULT_ORCHESTRATOR_MODEL", "test/model")
     sess = models.Session(workflow_id=workflow.id)
     db.add(sess); db.commit(); db.refresh(sess)
 
@@ -1345,6 +1349,7 @@ def test_run_turn_supersede_emits_error_banner(db, workflow, monkeypatch):
     """If a NEW user message arrives while the prior turn is mid-stream,
     we emit `superseded by a newer message` (so the prior bubble shows the
     interruption) followed by `done`."""
+    monkeypatch.setenv("DEFAULT_ORCHESTRATOR_MODEL", "test/model")
     sess = models.Session(workflow_id=workflow.id)
     db.add(sess); db.commit(); db.refresh(sess)
 

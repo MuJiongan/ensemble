@@ -412,15 +412,16 @@ def run_workflow(
     if extra:
         return {"error": f"unknown inputs for {input_node.name!r}: {extra} (declared: {sorted(declared_names)})"}
 
-    # Resolve the default node model, mirroring the API's lookup so behaviour
-    # is identical whether a run is triggered via REST or via the orchestrator.
+    # Resolve the node model, mirroring the API's lookup. No hardcoded default —
+    # if the user hasn't configured one, tell them to set it in Settings rather
+    # than guessing a model that may not match the connected provider.
     import os as _os
     default_model = _os.getenv("DEFAULT_NODE_MODEL", "")
     if not default_model:
         setting = db.query(models.Setting).filter_by(key="default_node_model").first()
         default_model = setting.value if setting and setting.value else ""
     if not default_model:
-        default_model = "anthropic/claude-sonnet-4.6"
+        return {"error": "No node model configured. Ask the user to set a default node model in Settings before running."}
 
     wf_data = _serialize_workflow(w)
 
