@@ -47,7 +47,7 @@ function Modal({
       style={{
         position: 'fixed',
         inset: 0,
-        background: 'rgba(26, 23, 20, 0.45)',
+        background: 'var(--overlay)',
         backdropFilter: 'blur(2px)',
         display: 'flex',
         alignItems: 'stretch',
@@ -366,7 +366,7 @@ export function DialogConnectProvider({
           {!provider.executable && (
             <div
               className="serif"
-              style={{ fontStyle: 'italic', fontSize: 12, color: '#b5651d', marginBottom: 14 }}
+              style={{ fontStyle: 'italic', fontSize: 12, color: 'var(--state-warn)', marginBottom: 14 }}
             >
               note: {provider.name} isn't reachable over an OpenAI-compatible endpoint yet — use it
               via OpenRouter for now.
@@ -402,7 +402,7 @@ export function DialogConnectProvider({
       )}
 
       {error && (
-        <div className="serif" style={{ color: '#b00', fontSize: 12, marginTop: 12 }}>
+        <div className="serif" style={{ color: 'var(--state-err)', fontSize: 12, marginTop: 12 }}>
           {error}
         </div>
       )}

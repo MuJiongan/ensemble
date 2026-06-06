@@ -1,0 +1,66 @@
+/* React Flow — editorial theme (must load after @xyflow/react/dist/style.css) */
+
+.react-flow {
+  --xy-controls-button-background-color-default: var(--paper);
+  --xy-controls-button-background-color-hover-default: var(--paper-2);
+  --xy-controls-button-color-default: var(--ink-2);
+  --xy-controls-button-color-hover-default: var(--ink);
+  --xy-controls-button-border-color-default: var(--rule);
+  --xy-controls-box-shadow-default: none;
+  --xy-edge-stroke-default: var(--ink-4);
+  --xy-background-color-default: transparent;
+}
+
+.react-flow__attribution { display: none; }
+.react-flow__pane { background: transparent; }
+
+.react-flow__controls {
+  box-shadow: 0 1px 0 var(--shadow-1), 0 12px 28px -16px var(--shadow-2);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--paper);
+}
+
+.react-flow__controls-button {
+  background: var(--paper);
+  border-bottom-color: var(--rule);
+  color: var(--ink-2);
+  width: 26px;
+  height: 26px;
+}
+
+.react-flow__controls-button:hover {
+  background: var(--paper-2);
+  color: var(--ink);
+}
+
+.react-flow__controls-button svg {
+  fill: currentColor;
+}
+
+.react-flow__handle {
+  width: 10px;
+  height: 10px;
+  background: var(--paper);
+  border: 1.5px solid var(--ink-3);
+  border-radius: 50%;
+  transition: background .15s, border-color .15s, transform .15s;
+}
+
+.react-flow__handle.connecting,
+.react-flow__handle:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.react-flow__edge-path {
+  stroke: var(--ink-4);
+  stroke-width: 1.25;
+}
+
+.react-flow__edge.selected .react-flow__edge-path,
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke: var(--accent);
+  stroke-width: 1.75;
+}

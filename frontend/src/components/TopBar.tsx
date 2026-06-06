@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Workflow } from '../types';
+import { loadTheme, saveTheme, THEME_CHANGED_EVENT, type Theme } from '../theme';
+import { ThemeToggle } from './ThemeToggle';
 
 interface Props {
   workflows: Workflow[];
@@ -28,11 +30,22 @@ export function TopBar({
   runDisabled,
   status = 'idle',
 }: Props) {
+  const [theme, setTheme] = useState<Theme>(() => loadTheme());
   const [pickerOpen, setPickerOpen] = useState(false);
   // id of the workflow row currently being renamed inline (null = none).
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
   const pickerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const sync = () => setTheme(loadTheme());
+    window.addEventListener(THEME_CHANGED_EVENT, sync);
+    window.addEventListener('storage', sync);
+    return () => {
+      window.removeEventListener(THEME_CHANGED_EVENT, sync);
+      window.removeEventListener('storage', sync);
+    };
+  }, []);
 
   // Close on outside-click. Listener only mounts while the picker is open so
   // we don't catch the very click that's about to open it.
@@ -230,6 +243,10 @@ export function TopBar({
         </span>
       )}
 
+      <ThemeToggle
+        theme={theme}
+        onChange={(next) => saveTheme(next)}
+      />
       <button className="topbar-btn" onClick={onOpenSettings}>
         settings
       </button>

@@ -240,7 +240,7 @@ export function RunPanel({
                     margin: '0 -8px',
                     alignItems: 'center',
                     gap: 8,
-                    background: rowRunning ? '#fbf7ec' : 'transparent',
+                    background: rowRunning ? 'var(--row-active)' : 'transparent',
                     borderBottom: '1px solid var(--rule-2)',
                     borderLeft: rowRunning
                       ? '2px solid var(--state-run)'
