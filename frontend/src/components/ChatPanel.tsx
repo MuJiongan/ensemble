@@ -219,7 +219,14 @@ export interface ChatThinking {
   text: string;
 }
 
-export type ChatBlock = ChatParagraph | ChatToolCall | ChatThinking;
+/** Inline divider noting that the agent loop compacted older history mid-turn
+ * to stay within the model's context window. Informational only. */
+export interface ChatNotice {
+  t: 'notice';
+  text: string;
+}
+
+export type ChatBlock = ChatParagraph | ChatToolCall | ChatThinking | ChatNotice;
 
 export interface UserMessage {
   role: 'user';
@@ -321,6 +328,32 @@ function ThinkingBlock({ text, live }: { text: string; live: boolean }) {
           {text}
         </div>
       )}
+    </div>
+  );
+}
+
+function CompactionNotice({ text }: { text: string }) {
+  return (
+    <div
+      className="fade-in"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        margin: '10px 0',
+        color: 'var(--ink-4)',
+      }}
+      title="Older turns were summarized to stay within the model's context window."
+    >
+      <span style={{ flex: 1, height: 1, background: 'var(--rule)' }} />
+      <span
+        className="smallcaps"
+        style={{ fontSize: 9, whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 5 }}
+      >
+        <span aria-hidden style={{ fontSize: 10 }}>⤵</span>
+        {text}
+      </span>
+      <span style={{ flex: 1, height: 1, background: 'var(--rule)' }} />
     </div>
   );
 }
@@ -803,6 +836,9 @@ function MessageBubble({
                 {c.text}
               </ReactMarkdown>
             );
+          }
+          if (c.t === 'notice') {
+            return <CompactionNotice key={i} text={c.text} />;
           }
           if (c.tool === 'run_workflow') {
             return <RunWorkflowCard key={i} {...c} onViewRun={onViewRun} />;

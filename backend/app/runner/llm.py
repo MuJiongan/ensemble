@@ -23,6 +23,8 @@ import traceback
 import os
 from typing import Callable
 
+from app import compaction
+from app.catalog import models_dev as md
 from app.runner.tools import REGISTRY, TOOL_SCHEMAS
 
 
@@ -101,6 +103,63 @@ def call_llm(
 
     tools = tools or []
     tool_schemas = [TOOL_SCHEMAS[t] for t in tools if t in TOOL_SCHEMAS]
+
+    # Model limits drive compaction. Unknown model (catalog miss) → limits stay
+    # zero and is_overflow() never fires, so a long node loop runs unchanged.
+    provider_id = (os.getenv("LLM_PROVIDER_ID") or "").strip()
+    model_obj = md.get_model(provider_id, model) if provider_id else None
+    ctx_limit = model_obj.limit.context if model_obj else 0
+    out_limit = model_obj.limit.output if model_obj else 0
+    in_limit = model_obj.limit.input if model_obj else None
+
+    def _summarize(head: list[dict], prompt: str) -> str:
+        """Run one non-tool model round to summarize ``head`` into an anchor."""
+        parts: list[str] = []
+        for item in exec_plan.stream_round(
+            model=model,
+            messages=[*head, {"role": "user", "content": prompt}],
+            tool_schemas=[],
+            base_url=exec_plan.base_url,
+            api_key=api_key,
+            variant_opts=exec_plan.variant_opts,
+            extra_headers=exec_plan.extra_headers,
+            model_output_limit=exec_plan.model_output_limit,
+            cost=exec_plan.cost,
+            streaming=False,
+        ):
+            if item[0] == "done":
+                return (item[1]["message"].get("content") or "").strip()
+            if item[0] == "text":
+                parts.append(item[1])
+        return "".join(parts).strip()
+
+    def _maybe_compact(msgs: list[dict], last_usage: dict) -> None:
+        """Prune stale tool outputs, then compact older turns if the live token
+        count has reached the model's usable budget. Mutates ``msgs`` in place.
+        """
+        if ctx_limit == 0:
+            return
+        compaction.prune_messages(msgs)
+        token_count = (last_usage.get("prompt_tokens") or 0) + (
+            last_usage.get("completion_tokens") or 0
+        )
+        if not compaction.is_overflow(
+            token_count=token_count,
+            context=ctx_limit,
+            output_limit=out_limit,
+            input_limit=in_limit,
+        ):
+            return
+        result = compaction.compact_messages(
+            msgs,
+            summarize=_summarize,
+            context=ctx_limit,
+            output_limit=out_limit,
+            input_limit=in_limit,
+        )
+        if result is not None:
+            msgs[:] = result["messages"]
+            _emit({"type": "context_compacted", "summarized": result["summarized"]})
 
     tool_calls_made: list[dict] = []
     total_cost = 0.0
@@ -220,3 +279,7 @@ def call_llm(
                     "round": round_idx,
                 }
             )
+
+        # The loop will continue with another round — keep its input within the
+        # context window before we get there.
+        _maybe_compact(messages, usage)

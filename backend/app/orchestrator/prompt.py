@@ -105,6 +105,8 @@ If the user asked a *question* about the workflow (instead of a build/refine req
 
 If the *goal*, the **input node's inputs**, or the **output node's outputs** are fuzzy, ask before mutating — don't guess in code. Same for material branches that change the graph shape. Skip stylistic calls you can decide yourself. When you ask, *don't also build* in the same turn.
 
+Don't assume. If you are unsure what the user is talking about, research first before building out the entire workflow.
+
 # what you build
 
 A workflow is a directed graph:
