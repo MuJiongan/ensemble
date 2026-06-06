@@ -9,6 +9,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
+from app.llm import openai_chat
 from app import models
 from app.api import workflows as workflow_api
 from app.orchestrator import tools as orch_tools
@@ -1726,6 +1727,38 @@ def test_history_messages_omits_reasoning_when_all_blocks_are_pointers(db, workf
     history = orch_agent._history_messages(db, sess.id)
     asst = next(m for m in history if m.get("role") == "assistant")
     assert "reasoning_details" not in asst
+
+
+def test_openai_payload_strips_reasoning_details_for_native_providers():
+    """Native OpenAI-compatible upstreams (Fireworks, Groq, …) reject the
+    ``reasoning_details`` input field with a 400 — it must be stripped from the
+    outgoing payload while leaving the rest of the message intact."""
+    messages = [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": "ok",
+            "reasoning_details": [{"type": "reasoning.text", "text": "Let me research"}],
+        },
+    ]
+    payload = openai_chat._build_payload(
+        "model", messages, None, "https://api.fireworks.ai/inference/v1", None, True, None
+    )
+    assert "reasoning_details" not in payload["messages"][1]
+    assert payload["messages"][1]["content"] == "ok"
+    # Original messages must not be mutated.
+    assert "reasoning_details" in messages[1]
+
+
+def test_openai_payload_keeps_reasoning_details_for_openrouter():
+    """OpenRouter requires prior reasoning blocks echoed back via
+    ``reasoning_details`` — they must survive for that base URL."""
+    rds = [{"type": "reasoning.text", "text": "thought"}]
+    messages = [{"role": "assistant", "content": "ok", "reasoning_details": rds}]
+    payload = openai_chat._build_payload(
+        "model", messages, None, "https://openrouter.ai/api/v1", None, True, None
+    )
+    assert payload["messages"][0]["reasoning_details"] == rds
 
 
 def test_render_history_surfaces_thinking_block(db, workflow):

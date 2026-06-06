@@ -4,7 +4,8 @@ Port of opencode's anthropic-messages.ts, scoped to gorchestra's needs:
 translates chat-completions-shaped messages to Anthropic's content-block body
 (system / text / thinking / tool_use / tool_result), streams ``/v1/messages``,
 and re-emits gorchestra's event tuples. Reasoning variants apply as the native
-``thinking: {type: enabled, budget_tokens}`` field.
+``thinking: {type: enabled, budget_tokens}`` field, or — for Opus 4.7+ class
+models — ``thinking: {type: adaptive}`` paired with ``output_config.effort``.
 """
 from __future__ import annotations
 
@@ -40,6 +41,28 @@ def _thinking_budget(variant_opts: dict | None) -> int | None:
     if eff in _EFFORT_BUDGET:
         return _EFFORT_BUDGET[eff]
     return None
+
+
+def _thinking_config(variant_opts: dict | None) -> tuple[dict | None, dict | None, int | None]:
+    """Resolve the reasoning fields for the request body.
+
+    Returns ``(thinking, output_config, budget)``. Opus 4.7+ / Sonnet 4.6-class
+    models only accept ``thinking.type == "adaptive"`` paired with
+    ``output_config.effort``; older models take ``thinking.type == "enabled"``
+    with an explicit token budget.
+    """
+    t = variant_opts.get("thinking") if variant_opts else None
+    if isinstance(t, dict) and t.get("type") == "adaptive":
+        thinking = {"type": "adaptive"}
+        if t.get("display"):
+            thinking["display"] = t["display"]
+        effort = variant_opts.get("effort") or t.get("effort")
+        output_config = {"effort": effort} if effort else None
+        return thinking, output_config, None
+    budget = _thinking_budget(variant_opts)
+    if budget:
+        return {"type": "enabled", "budget_tokens": budget}, None, budget
+    return None, None, None
 
 
 def _as_text(content: Any) -> str:
@@ -127,7 +150,7 @@ def stream_round(
     cancel_event=None,
 ) -> Iterator[tuple]:
     system, msgs = _lower_messages(messages)
-    budget = _thinking_budget(variant_opts)
+    thinking, output_config, budget = _thinking_config(variant_opts)
     max_tokens = model_output_limit or 8192
     if budget and max_tokens <= budget:
         max_tokens = budget + 4096
@@ -138,8 +161,10 @@ def stream_round(
     tools = _lower_tools(tool_schemas)
     if tools:
         body["tools"] = tools
-    if budget:
-        body["thinking"] = {"type": "enabled", "budget_tokens": budget}
+    if thinking:
+        body["thinking"] = thinking
+    if output_config:
+        body["output_config"] = output_config
 
     headers = {
         "x-api-key": api_key,
