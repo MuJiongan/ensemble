@@ -18,6 +18,13 @@ export function Hero({
     if (hasApiKey) taRef.current?.focus();
   }, [hasApiKey]);
 
+  useEffect(() => {
+    const ta = taRef.current;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = `${ta.scrollHeight}px`;
+  }, [text, hasApiKey]);
+
   const submit = () => {
     const t = text.trim();
     if (!t || disabled) return;
@@ -38,7 +45,8 @@ export function Hero({
         // the hero aligns with the viewport center, not the center of <main>.
         padding: '40px 24px 94px',
         boxSizing: 'border-box',
-        overflow: 'auto',
+        overflowY: 'auto',
+        overflowX: 'hidden',
       }}
     >
       <div style={{ width: '100%', maxWidth: 640, display: 'flex', flexDirection: 'column', gap: 18 }}>
