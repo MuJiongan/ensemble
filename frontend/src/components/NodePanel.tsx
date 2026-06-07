@@ -5,6 +5,7 @@ import { api } from '../api';
 import {
   NodeTraceCard, aggregateEvents, nodeRunToTrace, type NodeTrace,
 } from './NodeTraceCard';
+import { CloseButton } from './CloseButton';
 
 interface Props {
   node: WFNode;
@@ -124,13 +125,7 @@ export function NodePanel({
               save
             </button>
           )}
-          <button
-            className="text-btn"
-            onClick={onClose}
-            title="close node panel"
-          >
-            close
-          </button>
+          <CloseButton onClick={onClose} title="close node panel" />
         </div>
         <div
           className="serif mono"

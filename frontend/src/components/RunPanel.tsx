@@ -4,6 +4,8 @@ import type {
 } from '../types';
 import { api } from '../api';
 import { DEFAULT_WORKFLOW_NAME, summariseRun } from '../appHelpers';
+import { AlertDialog, ConfirmDialog } from './ConfirmDialog';
+import { CloseButton } from './CloseButton';
 
 function runStatusColor(status: RunStatus): string {
   switch (status) {
@@ -55,6 +57,12 @@ export function RunPanel({
   const inputPorts: IOPort[] = inputNode?.inputs ?? [];
   const [values, setValues] = useState<Record<string, string>>({});
   const [history, setHistory] = useState<Run[]>([]);
+  type DialogState =
+    | { kind: 'none' }
+    | { kind: 'alert'; message: string }
+    | { kind: 'confirm-no-output' }
+    | { kind: 'confirm-delete-run'; runId: string };
+  const [dialog, setDialog] = useState<DialogState>({ kind: 'none' });
 
   // Only consider currentRun ours if it belongs to the workflow we're showing.
   const ownRun = currentRun && currentRun.workflow_id === workflow.id ? currentRun : null;
@@ -88,14 +96,7 @@ export function RunPanel({
     return () => clearInterval(id);
   }, [anyHistoryRunning, workflow.id]);
 
-  const start = () => {
-    if (!workflow.input_node_id) {
-      alert('set an input node first (click a node, then "set as input").');
-      return;
-    }
-    if (!workflow.output_node_id) {
-      if (!confirm('no output node set. continue anyway?')) return;
-    }
+  const doStart = () => {
     const inputs: Record<string, unknown> = {};
     for (const p of inputPorts) {
       const raw = values[p.name];
@@ -108,6 +109,21 @@ export function RunPanel({
     onStart(inputs);
   };
 
+  const start = () => {
+    if (!workflow.input_node_id) {
+      setDialog({
+        kind: 'alert',
+        message: 'set an input node first (click a node, then "set as input").',
+      });
+      return;
+    }
+    if (!workflow.output_node_id) {
+      setDialog({ kind: 'confirm-no-output' });
+      return;
+    }
+    doStart();
+  };
+
   const running = ownRun?.status === 'running' || ownRun?.status === 'pending';
   const status = ownRun?.status;
 
@@ -118,13 +134,7 @@ export function RunPanel({
           <span className="smallcaps">run</span>
           <span style={{ flex: 1 }} />
           {onClose && (
-            <button
-              className="text-btn"
-              onClick={onClose}
-              title="close run panel"
-            >
-              close
-            </button>
+            <CloseButton onClick={onClose} title="close run panel" />
           )}
         </div>
         <div
@@ -186,7 +196,7 @@ export function RunPanel({
               </span>
             )}
           </div>
-          <div style={{ borderTop: '1px solid var(--rule)' }}>
+          <div className="run-list">
             {history.length === 0 ? (
               <div
                 className="serif"
@@ -207,19 +217,14 @@ export function RunPanel({
               const canView = !!onViewRunOnCanvas;
               const canDelete = !rowRunning;
               const onView = () => onViewRunOnCanvas?.(h.id);
-              const onDelete = async (e: React.MouseEvent) => {
+              const onDelete = (e: React.MouseEvent) => {
                 e.stopPropagation();
-                if (!confirm('delete this run? its trace and outputs will be lost.')) return;
-                try {
-                  await api.deleteRun(h.id);
-                  setHistory((prev) => prev.filter((r) => r.id !== h.id));
-                } catch (err) {
-                  alert(`couldn't delete run: ${err instanceof Error ? err.message : String(err)}`);
-                }
+                setDialog({ kind: 'confirm-delete-run', runId: h.id });
               };
               return (
                 <div
                   key={h.id}
+                  className={`run-row${rowRunning ? ' run-row--active' : ''}${canView ? ' run-row--clickable' : ''}`}
                   role={canView ? 'button' : undefined}
                   tabIndex={canView ? 0 : -1}
                   onClick={canView ? onView : undefined}
@@ -233,21 +238,6 @@ export function RunPanel({
                         ? h.id
                         : summary.text
                   }
-                  style={{
-                    display: 'flex',
-                    width: '100%',
-                    padding: '6px 8px',
-                    margin: '0 -8px',
-                    alignItems: 'center',
-                    gap: 8,
-                    background: rowRunning ? 'var(--row-active)' : 'transparent',
-                    borderBottom: '1px solid var(--rule-2)',
-                    borderLeft: rowRunning
-                      ? '2px solid var(--state-run)'
-                      : '2px solid transparent',
-                    cursor: canView ? 'pointer' : 'default',
-                    textAlign: 'left',
-                  }}
                 >
                   <span
                     className={isId ? 'mono' : 'serif'}
@@ -303,22 +293,21 @@ export function RunPanel({
 
       </div>
 
-      <div
-        style={{
-          background: 'var(--surface-hover)',
-          borderTop: '1px solid var(--rule)',
-          display: 'flex',
-          flexDirection: 'column',
-          flexShrink: 0,
-        }}
-      >
-        <div style={{ padding: '14px 18px 12px' }}>
-          <div
-            className="smallcaps"
-            style={{ color: 'var(--ink-3)', marginBottom: 12 }}
+      <div className="run-compose">
+        <div className="run-compose__head">
+          <span
+            className={`smallcaps run-compose__status run-compose__status--${
+              running || orchestrating ? 'running' :
+              status === 'error' ? 'error' :
+              status === 'success' ? 'success' :
+              'idle'
+            }`}
           >
-            input
-          </div>
+            new run
+          </span>
+        </div>
+        <div className="run-compose__body">
+          <div className="smallcaps run-compose__kicker">input</div>
           {!inputNode && (
             <div
               className="serif"
@@ -343,89 +332,53 @@ export function RunPanel({
               this node takes no declared inputs.
             </div>
           )}
-          <div
-            className="scroll"
-            style={{ maxHeight: 240, overflowY: 'auto' }}
-          >
-            {inputPorts.map((p, idx) => (
-              <div
-                key={p.name}
-                style={{ marginTop: idx === 0 ? 0 : 18 }}
-              >
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'baseline',
-                    gap: 8,
-                    marginBottom: 2,
-                  }}
-                >
-                  <span
-                    className="mono"
-                    style={{ fontSize: 11.5, color: 'var(--ink-2)' }}
-                  >
-                    {p.name}
-                  </span>
+          <div className="run-compose__fields scroll">
+            {inputPorts.map((p) => (
+              <label key={p.name} className="run-compose__field">
+                <span className="run-compose__field-label">
+                  {p.name}
                   {p.type_hint && p.type_hint !== 'any' && (
-                    <span
-                      className="serif"
-                      style={{ fontStyle: 'italic', color: 'var(--ink-4)', fontSize: 11 }}
-                    >
+                    <span className="run-compose__field-meta">
+                      {' · '}
                       {p.type_hint}
                     </span>
                   )}
-                  <span style={{ flex: 1 }} />
                   <span
-                    className="serif"
-                    style={{
-                      fontStyle: 'italic',
-                      fontSize: 11,
-                      color: p.required ? 'var(--accent-ink)' : 'var(--ink-4)',
-                    }}
+                    className={
+                      p.required
+                        ? 'run-compose__field-required'
+                        : 'run-compose__field-meta'
+                    }
                   >
+                    {' · '}
                     {p.required ? 'required' : 'optional'}
                   </span>
-                </div>
+                </span>
                 <textarea
                   rows={1}
-                  className="field field--mono field--compact"
+                  className="field field--mono field--compact field--underline"
                   value={values[p.name] ?? ''}
                   onChange={(e) => setValues({ ...values, [p.name]: e.target.value })}
                   placeholder={p.type_hint === 'path' ? '/users/you/recordings' : 'plain text or json'}
-                  style={{ minHeight: 32, resize: 'vertical' }}
+                  style={{ minHeight: 28 }}
                 />
-              </div>
+              </label>
             ))}
           </div>
         </div>
-        <div
-          style={{
-            padding: '12px 18px 14px',
-            borderTop: '1px solid var(--rule)',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-          }}
-        >
-          <span
-            className="smallcaps"
-            style={{
-              color:
-                running || orchestrating ? 'var(--state-run)' :
-                status === 'error' ? 'var(--state-err)' :
-                status === 'success' ? 'var(--state-ok)' :
-                'var(--ink-3)',
-            }}
-          >
-            new run
-          </span>
+        <div className="run-compose__actions">
           {running ? (
-            <button className="ed-btn ed-btn--danger" onClick={onCancel}>
-              cancel <span className="ed-btn__mark">×</span>
+            <button
+              type="button"
+              className="snapshot-action-btn snapshot-action-btn--secondary run-compose__go"
+              onClick={onCancel}
+            >
+              cancel
             </button>
           ) : (
             <button
-              className="ed-btn ed-btn--primary"
+              type="button"
+              className="snapshot-action-btn run-compose__go"
               onClick={start}
               disabled={!inputNode || !!orchestrating}
               title={
@@ -445,11 +398,52 @@ export function RunPanel({
                 : status === 'success'
                   ? 'rerun'
                   : 'execute'}{' '}
-              <span className="ed-btn__mark">→</span>
+              →
             </button>
           )}
         </div>
       </div>
+
+      {dialog.kind === 'alert' && (
+        <AlertDialog
+          message={dialog.message}
+          onClose={() => setDialog({ kind: 'none' })}
+        />
+      )}
+      {dialog.kind === 'confirm-no-output' && (
+        <ConfirmDialog
+          title="no output node"
+          message="no output node set. continue anyway?"
+          confirmLabel="run anyway"
+          onConfirm={() => {
+            setDialog({ kind: 'none' });
+            doStart();
+          }}
+          onCancel={() => setDialog({ kind: 'none' })}
+        />
+      )}
+      {dialog.kind === 'confirm-delete-run' && (
+        <ConfirmDialog
+          title="delete run"
+          message="delete this run? its trace and outputs will be lost."
+          confirmLabel="delete"
+          variant="danger"
+          onConfirm={async () => {
+            const runId = dialog.runId;
+            setDialog({ kind: 'none' });
+            try {
+              await api.deleteRun(runId);
+              setHistory((prev) => prev.filter((r) => r.id !== runId));
+            } catch (err) {
+              setDialog({
+                kind: 'alert',
+                message: `couldn't delete run: ${err instanceof Error ? err.message : String(err)}`,
+              });
+            }
+          }}
+          onCancel={() => setDialog({ kind: 'none' })}
+        />
+      )}
     </div>
   );
 }

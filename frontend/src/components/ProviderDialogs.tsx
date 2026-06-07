@@ -18,6 +18,8 @@ import { CUSTOM_PROVIDER, CUSTOM_PROVIDER_ID } from '../providerCatalog';
 import { isConnected } from '../localSettings';
 import { cycleVariant, variantLabel } from '../modelVariant';
 import { startLogin, pollUntilDone, logout as oauthLogout } from '../auth';
+import { CloseButton } from './CloseButton';
+import { SecretInput } from './SecretInput';
 
 // --- shared modal shell ----------------------------------------------------
 
@@ -83,9 +85,7 @@ function Modal({
         >
           <span className="smallcaps">{title}</span>
           <span style={{ flex: 1 }} />
-          <button className="text-btn" onClick={onClose} title="close">
-            close
-          </button>
+          <CloseButton onClick={onClose} title="close" />
         </div>
         <div className="scroll" style={{ flex: 1, overflow: 'auto', padding: 18 }}>
           {children}
@@ -343,16 +343,13 @@ export function DialogConnectProvider({
           <label className="smallcaps" style={{ display: 'block', marginBottom: 6 }}>
             {provider.name.toLowerCase()} api key
           </label>
-          <input
-            className="field field--mono"
-            type="password"
+          <SecretInput
+            masked
             autoFocus
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && doApiConnect()}
             placeholder="paste your bearer token"
-            autoComplete="off"
-            spellCheck={false}
             style={{ marginBottom: 6 }}
           />
           {provider.base_url && (

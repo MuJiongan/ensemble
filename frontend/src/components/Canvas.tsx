@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useMemo, useState } from 'react';
+import { Fragment, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow, ReactFlowProvider, Controls,
   Handle, Position,
@@ -35,6 +35,29 @@ function StateDot({ state = 'idle' }: { state?: string }) {
   return <span className={`node-state-dot ${state}`} aria-hidden="true" />;
 }
 
+function RunningContour({ width, height }: { width: number; height: number }) {
+  const inset = 1;
+  const rx = 4;
+  return (
+    <svg
+      className="node-contour-trace"
+      width={width}
+      height={height}
+      aria-hidden="true"
+    >
+      <rect
+        x={inset}
+        y={inset}
+        width={width - inset * 2}
+        height={height - inset * 2}
+        rx={rx}
+        ry={rx}
+        pathLength={100}
+      />
+    </svg>
+  );
+}
+
 const NODE_W = 240;
 
 // Port section — handles attach to the card's top/bottom edge. Labels are
@@ -65,7 +88,7 @@ function PortSection({
               onMouseEnter={() => setHovered(p.name)}
               onMouseLeave={() => setHovered((h) => (h === p.name ? null : h))}
               style={{
-                [isTop ? 'top' : 'bottom']: -5,
+                [isTop ? 'top' : 'bottom']: -4,
                 left: `${xPct}%`,
                 transform: 'translateX(-50%)',
                 position: 'absolute',
@@ -105,15 +128,44 @@ function NodeBlock({ data, selected }: NodeProps) {
   const role = d.isInput && d.isOutput
     ? null
     : d.isInput ? 'input' : d.isOutput ? 'output' : null;
+  const isRunning = d.state === 'running';
+  const isSelected = selected || d.selected;
+  const nodeRef = useRef<HTMLDivElement>(null);
+  const [contourSize, setContourSize] = useState<{ w: number; h: number } | null>(null);
+
+  // Measure once when a run starts — a live ResizeObserver was restarting the
+  // dash mid-lap; node height is stable for the duration of a run.
+  useLayoutEffect(() => {
+    if (!isRunning) {
+      setContourSize(null);
+      return;
+    }
+    const el = nodeRef.current;
+    if (!el) return;
+
+    let cancelled = false;
+    const measure = () => {
+      if (cancelled) return;
+      const h = el.offsetHeight;
+      if (h > 0) setContourSize({ w: el.offsetWidth, h });
+      else requestAnimationFrame(measure);
+    };
+    measure();
+    return () => { cancelled = true; };
+  }, [isRunning]);
 
   return (
     <div
-      className={`node ${selected || d.selected ? 'selected' : ''}`}
+      ref={nodeRef}
+      className={`node nopan ${isSelected ? 'selected' : ''}${isRunning ? ' running' : ''}`}
       style={{
         position: 'relative',
         width: NODE_W,
       }}
     >
+      {contourSize && !isSelected && (
+        <RunningContour width={contourSize.w} height={contourSize.h} />
+      )}
       {/* inputs — handles on the top edge, labels listed inside the card. */}
       <PortSection ports={ins} side="top" />
 

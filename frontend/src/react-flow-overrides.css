@@ -40,10 +40,10 @@
 }
 
 .react-flow__handle {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
   background: var(--paper);
-  border: 1.5px solid var(--ink-3);
+  border: 1.25px solid var(--ink-3);
   border-radius: 50%;
   transition: background .15s, border-color .15s, transform .15s;
 }

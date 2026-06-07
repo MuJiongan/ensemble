@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Workflow } from '../types';
 import { loadTheme, saveTheme, THEME_CHANGED_EVENT, type Theme } from '../theme';
 import { ThemeToggle } from './ThemeToggle';
+import { ConfirmDialog } from './ConfirmDialog';
 
 interface Props {
   workflows: Workflow[];
@@ -32,6 +33,7 @@ export function TopBar({
 }: Props) {
   const [theme, setTheme] = useState<Theme>(() => loadTheme());
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
   // id of the workflow row currently being renamed inline (null = none).
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
@@ -218,9 +220,7 @@ export function TopBar({
                     setEditingId(null);
                   }}
                   onStartRename={() => startRename(w)}
-                  onDelete={() => {
-                    if (confirm(`delete "${w.name}"?`)) onDelete(w.id);
-                  }}
+                  onDelete={() => setDeleteTarget({ id: w.id, name: w.name })}
                 />
               );
             })}
@@ -264,6 +264,22 @@ export function TopBar({
       <button className="topbar-btn topbar-btn--primary" onClick={onOpenRun} disabled={runDisabled}>
         runs
       </button>
+
+      {deleteTarget && (
+        <ConfirmDialog
+          title="delete project"
+          message={`delete "${deleteTarget.name}"? this cannot be undone.`}
+          confirmLabel="delete"
+          variant="danger"
+          onConfirm={() => {
+            onDelete(deleteTarget.id);
+            setDeleteTarget(null);
+            setPickerOpen(false);
+            setEditingId(null);
+          }}
+          onCancel={() => setDeleteTarget(null)}
+        />
+      )}
     </div>
   );
 }

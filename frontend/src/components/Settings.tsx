@@ -19,6 +19,8 @@ import {
   DialogSelectModel,
   VariantPill,
 } from './ProviderDialogs';
+import { CloseButton } from './CloseButton';
+import { SecretInput } from './SecretInput';
 import {
   cancelMcpLogin,
   listMcpTools,
@@ -53,6 +55,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const [revealKeys, setRevealKeys] = useState(false);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [dialog, setDialog] = useState<DialogState>({ kind: 'none' });
+  const [mcpOverlayOpen, setMcpOverlayOpen] = useState(false);
   // Autosave is gated on `loaded` *state* (not a ref) so the save effect
   // re-runs after `s` is updated to the loaded value — otherwise it would
   // fire once with the pre-load EMPTY closure and wipe stored settings.
@@ -70,6 +73,16 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     if (loaded) saveSettings(s);
   }, [s, loaded]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (dialog.kind !== 'none' || mcpOverlayOpen) return;
+      onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [dialog.kind, mcpOverlayOpen, onClose]);
 
   // All connected provider ids (includes the custom endpoint, which isn't in
   // the catalog).
@@ -95,27 +108,34 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
 
   return (
     <div style={{ width: '100%', height: '100%', overflow: 'auto', background: 'var(--paper)' }}>
-      <div style={{ maxWidth: 640, margin: '0 auto', padding: '40px 32px' }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 4 }}>
-          <span className="smallcaps">settings</span>
+      <div style={{ maxWidth: 640, margin: '0 auto', padding: '20px 32px 40px' }}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            marginBottom: 12,
+          }}
+        >
+          <span className="smallcaps settings-kicker">settings</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+            <span className="viewer-panel__hint">esc to close</span>
+            <CloseButton onClick={onClose} title="close settings (esc)" />
+          </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
-          <h2
-            className="serif"
-            style={{
-              margin: '4px 0 28px',
-              fontSize: 30,
-              fontWeight: 400,
-              letterSpacing: '-0.01em',
-              color: 'var(--ink)',
-            }}
-          >
-            providers & models.
-          </h2>
-          <button className="text-btn" onClick={onClose} title="close settings">
-            close
-          </button>
-        </div>
+        <h2
+          className="serif"
+          style={{
+            margin: '0 0 28px',
+            fontSize: 30,
+            fontWeight: 400,
+            letterSpacing: '-0.01em',
+            color: 'var(--ink)',
+          }}
+        >
+          providers & models.
+        </h2>
 
         <p
           className="serif"
@@ -198,6 +218,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           <McpServersEditor
             value={s.mcp_servers}
             onChange={(v) => setS({ ...s, mcp_servers: v })}
+            onOverlayOpenChange={setMcpOverlayOpen}
           />
         </div>
       </div>
@@ -250,9 +271,9 @@ function ProvidersSection({
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 8 }}>
-        <label className="smallcaps">connected providers</label>
+        <label className="smallcaps settings-section-label">connected providers</label>
         <span style={{ flex: 1 }} />
-        <button className="text-btn" onClick={onConnectClick}>
+        <button className="text-btn text-btn--accent" onClick={onConnectClick}>
           + connect
         </button>
       </div>
@@ -268,11 +289,12 @@ function ProvidersSection({
             return (
               <button
                 key={id}
-                className="pill"
+                className="pill pill--active"
                 onClick={() => p && onManage(p)}
                 disabled={!p}
                 title="manage"
               >
+                <span className="node-state-dot success" aria-hidden="true" />
                 <span className="pill__lead">{p?.name ?? id}</span>
                 <span className="pill__meta">{conn?.method}</span>
               </button>
@@ -307,7 +329,7 @@ function ModelRow({
 
   return (
     <div>
-      <label className="smallcaps" style={{ display: 'block', marginBottom: 6 }}>
+      <label className="smallcaps settings-section-label" style={{ display: 'block', marginBottom: 6 }}>
         {label}
       </label>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -332,7 +354,7 @@ function ModelRow({
             onChange={(variant) => onChange({ ...selection, variant })}
           />
         )}
-        <button className="text-btn" onClick={onChangeModel}>
+        <button className="text-btn text-btn--accent" onClick={onChangeModel}>
           {selection ? 'change' : 'select'}
         </button>
       </div>
@@ -377,7 +399,7 @@ function TextAreaField({
 }) {
   return (
     <div>
-      <label className="smallcaps" style={{ display: 'block', marginBottom: 6 }}>
+      <label className="smallcaps settings-section-label" style={{ display: 'block', marginBottom: 6 }}>
         {label}
       </label>
       <textarea
@@ -413,18 +435,27 @@ function Field({
 }) {
   return (
     <div>
-      <label className="smallcaps" style={{ display: 'block', marginBottom: 6 }}>
+      <label className="smallcaps settings-section-label" style={{ display: 'block', marginBottom: 6 }}>
         {label}
       </label>
-      <input
-        type={secret ? 'password' : 'text'}
-        className="field field--mono"
-        value={value}
-        placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
-        autoComplete="off"
-        spellCheck={false}
-      />
+      {secret ? (
+        <SecretInput
+          masked
+          value={value}
+          placeholder={placeholder}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      ) : (
+        <input
+          type="text"
+          className="field field--mono"
+          value={value}
+          placeholder={placeholder}
+          onChange={(e) => onChange(e.target.value)}
+          autoComplete="off"
+          spellCheck={false}
+        />
+      )}
       {hint && (
         <div
           className="serif"
@@ -614,9 +645,11 @@ function newRow(): McpRow {
 function McpServersEditor({
   value,
   onChange,
+  onOverlayOpenChange,
 }: {
   value: string;
   onChange: (v: string) => void;
+  onOverlayOpenChange?: (open: boolean) => void;
 }) {
   const [rows, setRows] = useState<McpRow[]>(() => parseServers(value));
   const [status, setStatus] = useState<McpProbeResult>({});
@@ -717,6 +750,10 @@ function McpServersEditor({
   const editingRow = editingUid === null ? null : rows.find((r) => r.uid === editingUid) ?? null;
   const configJson = serializeServers(rows);
 
+  useEffect(() => {
+    onOverlayOpenChange?.(!!draft || editingUid !== null || toolsFor !== null);
+  }, [draft, editingUid, toolsFor, onOverlayOpenChange]);
+
   return (
     <div>
       <div
@@ -727,9 +764,9 @@ function McpServersEditor({
           marginBottom: 6,
         }}
       >
-        <label className="smallcaps">mcp servers</label>
+        <label className="smallcaps settings-section-label">mcp servers</label>
         <button
-          className="text-btn"
+          className="text-btn text-btn--accent"
           type="button"
           onClick={() => setDraft(newRow())}
           title="add an MCP server"
@@ -828,8 +865,10 @@ function McpServerRow({
   onRemove: () => void;
 }) {
   const canViewTools = probe?.status === 'connected' && (probe?.tool_count ?? 0) > 0;
+  const isConnected = probe?.status === 'connected';
   return (
     <div
+      className={isConnected ? 'settings-row--connected' : undefined}
       style={{
         border: '1px solid var(--rule)',
         borderRadius: 4,
@@ -956,9 +995,7 @@ function McpModal({
         >
           <span className="smallcaps">{title}</span>
           <span style={{ flex: 1 }} />
-          <button className="text-btn" onClick={onClose} title="close">
-            close
-          </button>
+          <CloseButton onClick={onClose} title="close" />
         </div>
         <div className="scroll" style={{ flex: 1, overflow: 'auto', padding: 18 }}>
           {children}
@@ -1086,7 +1123,7 @@ function _oneLineSummary(text: string): string {
 }
 
 const STATUS_LABEL: Record<string, { text: string; color: string }> = {
-  connected: { text: 'connected', color: 'var(--state-ok, #3a7d44)' },
+  connected: { text: 'connected', color: 'var(--accent-ink)' },
   needs_auth: { text: 'needs authorization', color: 'var(--state-warn, #b5852a)' },
   failed: { text: 'failed', color: 'var(--state-err, #b04030)' },
   disabled: { text: 'disabled', color: 'var(--ink-4)' },
@@ -1104,7 +1141,10 @@ function McpStatusRow({
   const total = probe?.tool_count;
   const enabled = typeof total === 'number' ? Math.max(0, total - disabledCount) : null;
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      {probe?.status === 'connected' && (
+        <span className="node-state-dot success" aria-hidden="true" />
+      )}
       <span
         className="serif"
         style={{ fontSize: 12.5, color: meta ? meta.color : 'var(--ink-4)', fontStyle: meta ? 'normal' : 'italic' }}
@@ -1227,14 +1267,12 @@ function McpOAuthClientFields({
             />
           </SubField>
           <SubField label="client secret">
-            <input
-              className="field field--mono field--compact"
-              type="password"
+            <SecretInput
+              className="field--compact"
+              masked
               value={row.oauthClientSecret}
               placeholder="leave empty for public clients (PKCE only)"
               onChange={(e) => onPatch({ oauthClientSecret: e.target.value })}
-              autoComplete="off"
-              spellCheck={false}
               aria-label="oauth client secret"
             />
           </SubField>
@@ -1416,7 +1454,7 @@ function McpOAuthControl({
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
       <span className="serif" style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>
-        {status === 'signed_in' && <span style={{ color: 'var(--state-ok, #3a7d44)' }}>authorized.</span>}
+        {status === 'signed_in' && <span style={{ color: 'var(--accent-ink)' }}>authorized.</span>}
         {status === 'pending' && <span style={{ fontStyle: 'italic' }}>waiting for browser authorization…</span>}
         {status === 'error' && (
           <span style={{ fontStyle: 'italic', color: 'var(--state-err, #b04030)' }}>{error || 'authorization failed.'}</span>
@@ -1585,7 +1623,7 @@ function EnabledToggle({
   value: boolean;
   onChange: (v: boolean) => void;
 }) {
-  const trackOn = 'var(--state-ok, #3a7d44)';
+  const trackOn = 'var(--accent)';
   const trackOff = 'var(--ink-5, #b8b3a8)';
   return (
     <button

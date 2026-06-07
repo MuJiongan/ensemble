@@ -3,9 +3,6 @@ import { PortRow } from './ValueViewer';
 import type { Run, RunStatus } from '../types';
 import { summariseRun } from '../appHelpers';
 
-// Inputs/outputs are the focal sections — what this run did. Node outcomes
-// is supporting status detail, rendered as a quiet hairline list.
-
 export function SnapshotRunPanel({
   run,
   onExit,
@@ -23,8 +20,6 @@ export function SnapshotRunPanel({
   const errored = run.node_runs.filter((nr) => nr.status === 'error');
   const inputs = Object.entries(run.inputs ?? {});
   const outputs = Object.entries(run.outputs ?? {});
-  const nodeRunsById = new Map(run.node_runs.map((nr) => [nr.node_id, nr]));
-  const snapshotNodes = run.workflow_snapshot?.nodes ?? [];
 
   // Re-run form state. The snapshot's input node defines the port shape;
   // we pre-fill each field with the prior run's value (JSON-stringified)
@@ -241,6 +236,7 @@ export function SnapshotRunPanel({
         entries={inputs}
         runId={run.id}
         subtitle="input"
+        accent="input"
       />
       <PreviewSection
         title="outputs"
@@ -252,6 +248,7 @@ export function SnapshotRunPanel({
         entries={outputs}
         runId={run.id}
         subtitle="output"
+        accent="output"
       />
 
       {/* rerun affordance — visible whenever the snapshot is runnable
@@ -286,104 +283,68 @@ export function SnapshotRunPanel({
       )}
 
       {formOpen && (
-        <div
-          style={{
-            border: '1px solid var(--rule)',
-            background: 'var(--surface-hover)',
-            padding: '12px 14px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 10,
-          }}
-        >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'baseline',
-              gap: 8,
-            }}
-          >
-            <span className="smallcaps" style={{ color: 'var(--ink-3)' }}>
+        <section className="snapshot-rerun-form">
+          <div className="snapshot-rerun-form__head">
+            <span className="smallcaps snapshot-rerun-form__title">
               {inputPorts.length > 0 ? 'new inputs' : 'rerun'}
             </span>
-            <span
-              className="serif"
-              style={{ fontStyle: 'italic', color: 'var(--ink-4)', fontSize: 11.5 }}
-            >
-              · runs the snapshot, not the live graph
+            <span className="snapshot-rerun-form__hint">
+              runs the snapshot, not the live graph
             </span>
           </div>
-          {inputPorts.length === 0 && (
-            <div
-              className="serif"
-              style={{ fontStyle: 'italic', color: 'var(--ink-4)', fontSize: 12 }}
-            >
+
+          {inputPorts.length === 0 ? (
+            <div className="snapshot-rerun-form__empty">
               this project takes no inputs.
             </div>
-          )}
-          {inputPorts.map((p) => (
-            <label
-              key={p.name}
-              style={{ display: 'flex', flexDirection: 'column', gap: 4 }}
-            >
-              <span
-                className="mono"
-                style={{ fontSize: 10.5, color: 'var(--ink-3)' }}
-              >
-                {p.name}
-                {p.type_hint && p.type_hint !== 'any' && (
-                  <span style={{ color: 'var(--ink-4)' }}>
-                    {' · '}
-                    {p.type_hint}
+          ) : (
+            <div className="snapshot-rerun-form__fields">
+              {inputPorts.map((p) => (
+                <label key={p.name} className="snapshot-rerun-form__field">
+                  <span className="snapshot-rerun-form__label">
+                    {p.name}
+                    {p.type_hint && p.type_hint !== 'any' && (
+                      <span className="snapshot-rerun-form__label-meta">{p.type_hint}</span>
+                    )}
+                    {p.required && (
+                      <span className="snapshot-rerun-form__label-required" title="required">
+                        required
+                      </span>
+                    )}
                   </span>
-                )}
-                {p.required && (
-                  <span style={{ color: 'var(--accent-ink)', marginLeft: 6 }}>·</span>
-                )}
-              </span>
-              <textarea
-                value={formValues[p.name] ?? ''}
-                onChange={(e) =>
-                  setFormValues((prev) => ({ ...prev, [p.name]: e.target.value }))
-                }
-                rows={1}
-                className="field field--mono field--compact"
-                style={{ resize: 'vertical', minHeight: 32 }}
-                disabled={submitting}
-              />
-            </label>
-          ))}
-          {submitError && (
-            <div
-              className="serif"
-              style={{
-                fontStyle: 'italic',
-                color: 'var(--state-err)',
-                fontSize: 11.5,
-              }}
-            >
-              {submitError}
+                  <textarea
+                    value={formValues[p.name] ?? ''}
+                    onChange={(e) =>
+                      setFormValues((prev) => ({ ...prev, [p.name]: e.target.value }))
+                    }
+                    rows={1}
+                    className="field field--prose field--compact field--underline"
+                    placeholder={
+                      p.type_hint === 'path' ? '/users/you/recordings' : 'plain text or json'
+                    }
+                    style={{ minHeight: 28 }}
+                    disabled={submitting}
+                  />
+                </label>
+              ))}
             </div>
           )}
+
+          {submitError && (
+            <div className="snapshot-rerun-form__error">{submitError}</div>
+          )}
           {runInProgress && (
-            <div
-              className="serif"
-              style={{
-                fontStyle: 'italic',
-                color: 'var(--state-err)',
-                fontSize: 11.5,
-              }}
-            >
+            <div className="snapshot-rerun-form__error">
               another run is in flight on this project — wait for it to finish.
             </div>
           )}
-          <div style={{ display: 'flex', gap: 8 }}>
+
+          <div className="snapshot-rerun-form__actions">
             <button
               type="button"
               onClick={submitRerun}
               disabled={submitting || !!runInProgress}
-              className="ed-btn ed-btn--primary"
-              style={{ fontSize: 11 }}
+              className="ed-btn ed-btn--primary ed-btn--mini"
               title={
                 runInProgress
                   ? 'a run is already in progress on this project'
@@ -401,132 +362,13 @@ export function SnapshotRunPanel({
                 setSubmitError(null);
               }}
               disabled={submitting}
-              className="ed-btn"
-              style={{ fontSize: 11 }}
+              className="ed-btn ed-btn--mini"
             >
               cancel
             </button>
           </div>
-        </div>
+        </section>
       )}
-
-      <div>
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'baseline',
-            justifyContent: 'space-between',
-            gap: 8,
-            marginBottom: 6,
-          }}
-        >
-          <span className="smallcaps" style={{ color: 'var(--ink-3)' }}>
-            node outcomes
-          </span>
-          {snapshotNodes.length > 0 && (
-            <span
-              className="serif"
-              style={{
-                fontStyle: 'italic',
-                color: 'var(--ink-4)',
-                fontSize: 11.5,
-              }}
-            >
-              {snapshotNodes.length} {snapshotNodes.length === 1 ? 'step' : 'steps'}
-            </span>
-          )}
-        </div>
-        {snapshotNodes.length === 0 ? (
-          <div
-            className="serif"
-            style={{
-              fontStyle: 'italic',
-              color: 'var(--ink-4)',
-              fontSize: 12,
-              borderTop: '1px solid var(--rule)',
-              padding: '8px 0',
-            }}
-          >
-            no snapshot nodes recorded.
-          </div>
-        ) : (
-          <div style={{ borderTop: '1px solid var(--rule)' }}>
-            {snapshotNodes.map((node, idx) => {
-              const nr = nodeRunsById.get(node.id);
-              const status = nr?.status ?? 'pending';
-              const color = nodeStatusColor(status);
-              const isLast = idx === snapshotNodes.length - 1;
-              return (
-                <div
-                  key={node.id}
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'auto 1fr auto auto',
-                    alignItems: 'center',
-                    columnGap: 10,
-                    padding: '6px 0',
-                    borderBottom: isLast ? 0 : '1px solid var(--rule-2)',
-                  }}
-                >
-                  <span
-                    aria-hidden
-                    style={{
-                      width: 6,
-                      height: 6,
-                      borderRadius: '50%',
-                      background: color,
-                      boxShadow:
-                        status === 'running'
-                          ? '0 0 0 3px var(--state-run-ring)'
-                          : 'none',
-                      opacity: status === 'pending' ? 0.5 : 1,
-                    }}
-                  />
-                  <span
-                    className="mono"
-                    style={{
-                      fontSize: 11,
-                      color: 'var(--ink-2)',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {node.name}
-                  </span>
-                  <span
-                    className="mono"
-                    style={{
-                      color: 'var(--ink-4)',
-                      fontSize: 10.5,
-                      visibility:
-                        typeof nr?.cost === 'number' && nr.cost > 0
-                          ? 'visible'
-                          : 'hidden',
-                    }}
-                  >
-                    {typeof nr?.cost === 'number' && nr.cost > 0
-                      ? `$${nr.cost.toFixed(4)}`
-                      : '·'}
-                  </span>
-                  <span
-                    className="serif"
-                    style={{
-                      fontStyle: 'italic',
-                      fontSize: 11,
-                      color,
-                      justifySelf: 'end',
-                      letterSpacing: 0,
-                    }}
-                  >
-                    {status}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
 
       <span style={{ flex: 1 }} />
 
@@ -548,68 +390,43 @@ function PreviewSection({
   entries,
   runId,
   subtitle,
+  accent,
 }: {
   title: string;
   emptyText: string;
   entries: [string, unknown][];
   runId: string;
   subtitle: 'input' | 'output';
+  accent: 'input' | 'output';
 }) {
   return (
-    <div>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'baseline',
-          justifyContent: 'space-between',
-          gap: 8,
-          marginBottom: 6,
-        }}
-      >
-        <span className="smallcaps" style={{ color: 'var(--ink-3)' }}>
-          {title}
-        </span>
+    <section className="snapshot-io-section">
+      <div className="snapshot-io-section__head">
+        <span className="smallcaps snapshot-io-section__title">{title}</span>
         {entries.length > 0 && (
-          <span
-            className="serif"
-            style={{
-              fontStyle: 'italic',
-              color: 'var(--ink-4)',
-              fontSize: 11.5,
-            }}
-          >
+          <span className="snapshot-io-section__count">
             {entries.length} {entries.length === 1 ? 'field' : 'fields'}
           </span>
         )}
       </div>
-      <div style={{ borderTop: '1px solid var(--rule)' }}>
-        {entries.length === 0 ? (
-          <div
-            className="serif"
-            style={{
-              fontStyle: 'italic',
-              color: 'var(--ink-4)',
-              fontSize: 12,
-              padding: '8px 0',
-            }}
-          >
-            {emptyText}
-          </div>
-        ) : (
-          <div style={{ paddingTop: 2 }}>
-            {entries.map(([k, v]) => (
-              <PortRow
-                key={k}
-                name={k}
-                value={v}
-                viewerTitle={`run ${runId.slice(0, 8)} · ${k}`}
-                viewerSubtitle={subtitle}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
+      {entries.length === 0 ? (
+        <div className="snapshot-io-section__empty">{emptyText}</div>
+      ) : (
+        <div className="snapshot-io-fields">
+          {entries.map(([k, v]) => (
+            <PortRow
+              key={k}
+              name={k}
+              value={v}
+              viewerTitle={`run ${runId.slice(0, 8)} · ${k}`}
+              viewerSubtitle={subtitle}
+              variant="card"
+              cardAccent={accent}
+            />
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -640,14 +457,3 @@ function StatusDot({ status }: { status: RunStatus }) {
   );
 }
 
-function nodeStatusColor(
-  status: 'pending' | 'running' | 'success' | 'error' | 'skipped',
-): string {
-  switch (status) {
-    case 'success': return 'var(--state-ok)';
-    case 'error': return 'var(--state-err)';
-    case 'skipped': return 'var(--state-skip)';
-    case 'running': return 'var(--state-run)';
-    default: return 'var(--ink-4)';
-  }
-}

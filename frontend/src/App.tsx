@@ -8,6 +8,7 @@ import { SettingsPanel } from './components/Settings';
 import { Hero } from './components/Hero';
 import { SnapshotBanner } from './components/SnapshotBanner';
 import { SnapshotRunPanel } from './components/SnapshotRunPanel';
+import { AlertDialog, ConfirmDialog } from './components/ConfirmDialog';
 import { api } from './api';
 import {
   loadSettings,
@@ -59,6 +60,11 @@ export default function App() {
   const [chatByWorkflow, setChatByWorkflow] = useState<Record<string, ChatMessage[]>>({});
   // Workflows whose orchestrator is currently streaming.
   const [orchestratingIds, setOrchestratingIds] = useState<Set<string>>(new Set());
+  type AppDialog =
+    | { kind: 'none' }
+    | { kind: 'alert'; message: string; variant?: 'default' | 'error' }
+    | { kind: 'confirm-clear-context' };
+  const [dialog, setDialog] = useState<AppDialog>({ kind: 'none' });
 
   // When non-null, the canvas renders this run's frozen `workflow_snapshot`
   // instead of the live graph. NodePanel still works (read-only) so the user
@@ -335,14 +341,21 @@ export default function App() {
 
   const handleForkWorkflow = async (id: string) => {
     if (orchestratingIds.has(id)) {
-      alert('wait for the orchestrator to finish before forking this project.');
+      setDialog({
+        kind: 'alert',
+        message: 'wait for the orchestrator to finish before forking this project.',
+      });
       return;
     }
     try {
       const fork = await api.forkWorkflow(id);
       await activateFork(fork);
     } catch (e) {
-      alert(`couldn't fork project: ${e instanceof Error ? e.message : String(e)}`);
+      setDialog({
+        kind: 'alert',
+        message: `couldn't fork project: ${e instanceof Error ? e.message : String(e)}`,
+        variant: 'error',
+      });
     }
   };
 
@@ -352,7 +365,11 @@ export default function App() {
       const fork = await api.forkRunSnapshot(viewingRun.id);
       await activateFork(fork);
     } catch (e) {
-      alert(`couldn't fork snapshot: ${e instanceof Error ? e.message : String(e)}`);
+      setDialog({
+        kind: 'alert',
+        message: `couldn't fork snapshot: ${e instanceof Error ? e.message : String(e)}`,
+        variant: 'error',
+      });
     }
   };
 
@@ -385,19 +402,30 @@ export default function App() {
   const selectedNode = detail?.nodes.find((n) => n.id === selectedNodeId);
   const isOrchestrating = !!activeId && orchestratingIds.has(activeId);
 
-  const clearChatContext = async () => {
+  const clearChatContext = () => {
     if (!activeId || isOrchestrating) return;
     const sid = sessionByWorkflow[activeId];
     if (!sid) {
       setChatByWorkflow((prev) => ({ ...prev, [activeId]: [] }));
       return;
     }
-    if (!confirm('clear this chat context? the project graph and run history will stay.')) return;
+    setDialog({ kind: 'confirm-clear-context' });
+  };
+
+  const doClearChatContext = async () => {
+    if (!activeId) return;
+    const sid = sessionByWorkflow[activeId];
+    if (!sid) return;
+    setDialog({ kind: 'none' });
     try {
       await api.clearSessionMessages(sid);
       setChatByWorkflow((prev) => ({ ...prev, [activeId]: [] }));
     } catch (e) {
-      alert(`couldn't clear context: ${e instanceof Error ? e.message : String(e)}`);
+      setDialog({
+        kind: 'alert',
+        message: `couldn't clear context: ${e instanceof Error ? e.message : String(e)}`,
+        variant: 'error',
+      });
     }
   };
 
@@ -628,7 +656,6 @@ export default function App() {
                         onSend={handleSend}
                         onCancel={cancelOrchestrator}
                         disabled={isOrchestrating}
-                        workflowTitle={activeWorkflow?.name}
                         modelLabel={orchestratorModel}
                         onClearContext={clearChatContext}
                         onViewRun={(runId) => {
@@ -773,6 +800,24 @@ export default function App() {
           </>
         )}
       </main>
+
+      {dialog.kind === 'alert' && (
+        <AlertDialog
+          message={dialog.message}
+          variant={dialog.variant}
+          onClose={() => setDialog({ kind: 'none' })}
+        />
+      )}
+      {dialog.kind === 'confirm-clear-context' && (
+        <ConfirmDialog
+          title="clear chat context"
+          message="clear this chat context? the project graph and run history will stay."
+          confirmLabel="clear"
+          variant="danger"
+          onConfirm={doClearChatContext}
+          onCancel={() => setDialog({ kind: 'none' })}
+        />
+      )}
     </div>
   );
 }
