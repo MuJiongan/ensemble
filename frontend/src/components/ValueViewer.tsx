@@ -41,7 +41,19 @@ interface PreviewInfo {
   inline: boolean;
 }
 
-function describe(value: unknown): PreviewInfo {
+export type PortCardAccent =
+  | 'input'
+  | 'output'
+  | 'log'
+  | 'llm'
+  | 'thought'
+  | 'tool';
+
+export function portCardAccentClass(accent?: PortCardAccent): string {
+  return accent ? `port-card--${accent}` : '';
+}
+
+export function describe(value: unknown): PreviewInfo {
   if (value === null) return { text: 'null', size: null, inline: true };
   if (value === undefined) return { text: 'undefined', size: null, inline: true };
   if (typeof value === 'boolean') return { text: String(value), size: null, inline: true };
@@ -211,7 +223,11 @@ interface PortRowProps {
   /** `card` — raised field tiles for snapshot run details; `row` — dense trace list. */
   variant?: 'row' | 'card';
   /** Left-rail accent when variant is `card`. */
-  cardAccent?: 'input' | 'output';
+  cardAccent?: PortCardAccent;
+  /** Optional right-rail badge (e.g. streaming / done). */
+  statusBadge?: { label: string; color?: string };
+  /** Show live caret beside the badge. */
+  live?: boolean;
 }
 
 /**
@@ -227,30 +243,38 @@ export function PortRow({
   viewerSubtitle,
   variant = 'row',
   cardAccent,
+  statusBadge,
+  live,
 }: PortRowProps) {
   const [open, setOpen] = useState(false);
   const info = describe(value);
 
   if (variant === 'card') {
-    const accentClass =
-      cardAccent === 'input'
-        ? 'port-card--input'
-        : cardAccent === 'output'
-          ? 'port-card--output'
-          : '';
-    const cardClass = `port-card${accentClass ? ` ${accentClass}` : ''}`;
+    const cardClass = `port-card${portCardAccentClass(cardAccent) ? ` ${portCardAccentClass(cardAccent)}` : ''}`;
+    const showMeta = !info.inline || statusBadge || live;
     const head = (
       <div className="port-card__head">
         <div className="port-card__label">
           <span className="port-card__name">{name}</span>
           {typeHint && <span className="port-card__hint">{typeHint}</span>}
         </div>
-        {!info.inline && (
+        {showMeta && (
           <div className="port-card__meta">
             {info.size && <span className="port-card__size">{info.size}</span>}
-            <span className="port-card__open" aria-hidden>
-              open <span className="ed-btn__mark">⤢</span>
-            </span>
+            {statusBadge && (
+              <span
+                className="port-card__status"
+                style={statusBadge.color ? { color: statusBadge.color } : undefined}
+              >
+                {live && <span className="caret" style={{ marginRight: 4 }} />}
+                {statusBadge.label}
+              </span>
+            )}
+            {!info.inline && (
+              <span className="port-card__open" aria-hidden>
+                open <span className="ed-btn__mark">⤢</span>
+              </span>
+            )}
           </div>
         )}
       </div>

@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
-import { PortRow } from './ValueViewer';
-import type { Run, RunStatus } from '../types';
-import { summariseRun } from '../appHelpers';
+import { IOSection } from './IOSection';
+import type { CurrentRun, Run, RunStatus } from '../types';
+import { modelStatsForRun, summariseRun, toolCallCountForRun } from '../appHelpers';
+import { ExecutionStats } from './ExecutionStats';
 
 export function SnapshotRunPanel({
   run,
   onExit,
   onRerun,
   runInProgress,
+  currentRun,
 }: {
   run: Run;
   onExit: () => void;
@@ -16,6 +18,9 @@ export function SnapshotRunPanel({
    * blocks rerun in that case so we don't stack parallel runs against
    * one workflow. */
   runInProgress?: boolean;
+  /** When set and bound to this run, live llm_call_finished events are
+   * folded into model stats before node_runs are persisted. */
+  currentRun?: CurrentRun | null;
 }) {
   const errored = run.node_runs.filter((nr) => nr.status === 'error');
   const inputs = Object.entries(run.inputs ?? {});
@@ -94,6 +99,10 @@ export function SnapshotRunPanel({
         const summary = summariseRun(run);
         const okCount = run.node_runs.filter((n) => n.status === 'success').length;
         const totalNodes = run.workflow_snapshot?.nodes.length ?? 0;
+        const liveEvents =
+          currentRun && currentRun.id === run.id ? currentRun.events : undefined;
+        const modelStats = modelStatsForRun(run, liveEvents);
+        const toolCalls = toolCallCountForRun(run, liveEvents);
         return (
           <div>
             <div
@@ -184,6 +193,11 @@ export function SnapshotRunPanel({
                 </span>
               </span>
             </div>
+            <ExecutionStats
+              modelStats={modelStats}
+              toolCalls={toolCalls}
+              marginTop={8}
+            />
             <div
               style={{
                 marginTop: 14,
@@ -230,25 +244,31 @@ export function SnapshotRunPanel({
         </div>
       )}
 
-      <PreviewSection
+      <IOSection
         title="inputs"
         emptyText="this run used no inputs."
-        entries={inputs}
-        runId={run.id}
-        subtitle="input"
         accent="input"
+        entries={inputs.map(([k, v]) => ({
+          name: k,
+          value: v,
+          viewerTitle: `run ${run.id.slice(0, 8)} · ${k}`,
+          viewerSubtitle: 'input',
+        }))}
       />
-      <PreviewSection
+      <IOSection
         title="outputs"
         emptyText={
           run.status === 'success'
             ? 'this run produced no outputs.'
             : 'no outputs recorded.'
         }
-        entries={outputs}
-        runId={run.id}
-        subtitle="output"
         accent="output"
+        entries={outputs.map(([k, v]) => ({
+          name: k,
+          value: v,
+          viewerTitle: `run ${run.id.slice(0, 8)} · ${k}`,
+          viewerSubtitle: 'output',
+        }))}
       />
 
       {/* rerun affordance — visible whenever the snapshot is runnable
@@ -381,52 +401,6 @@ export function SnapshotRunPanel({
         ← back to live
       </button>
     </div>
-  );
-}
-
-function PreviewSection({
-  title,
-  emptyText,
-  entries,
-  runId,
-  subtitle,
-  accent,
-}: {
-  title: string;
-  emptyText: string;
-  entries: [string, unknown][];
-  runId: string;
-  subtitle: 'input' | 'output';
-  accent: 'input' | 'output';
-}) {
-  return (
-    <section className="snapshot-io-section">
-      <div className="snapshot-io-section__head">
-        <span className="smallcaps snapshot-io-section__title">{title}</span>
-        {entries.length > 0 && (
-          <span className="snapshot-io-section__count">
-            {entries.length} {entries.length === 1 ? 'field' : 'fields'}
-          </span>
-        )}
-      </div>
-      {entries.length === 0 ? (
-        <div className="snapshot-io-section__empty">{emptyText}</div>
-      ) : (
-        <div className="snapshot-io-fields">
-          {entries.map(([k, v]) => (
-            <PortRow
-              key={k}
-              name={k}
-              value={v}
-              viewerTitle={`run ${runId.slice(0, 8)} · ${k}`}
-              viewerSubtitle={subtitle}
-              variant="card"
-              cardAccent={accent}
-            />
-          ))}
-        </div>
-      )}
-    </section>
   );
 }
 

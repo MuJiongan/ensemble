@@ -261,7 +261,7 @@ export function TopBar({
       <button className="topbar-btn" onClick={onNew}>
         new project
       </button>
-      <button className="topbar-btn topbar-btn--primary" onClick={onOpenRun} disabled={runDisabled}>
+      <button className="topbar-btn" onClick={onOpenRun} disabled={runDisabled}>
         runs
       </button>
 

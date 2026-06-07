@@ -1,9 +1,11 @@
-import { useState } from 'react';
 import type {
   WorkflowDetail, NodeRun, NodeRunStatus, RunEvent,
 } from '../types';
+import { modelStatsFromCalls } from '../appHelpers';
 import { JsonView } from './JsonView';
-import { ValueRow, ViewerOverlay } from './ValueViewer';
+import { ExecutionStats } from './ExecutionStats';
+import { LogsView } from './LogsView';
+import { PortRow, ValueRow } from './ValueViewer';
 import { NodeIOBlock } from './NodeIOBlock';
 
 // --- types ----------------------------------------------------------------
@@ -437,6 +439,14 @@ export function NodeTraceCard({
 }: NodeTraceCardProps) {
   const nodeName =
     workflow.nodes.find((n) => n.id === trace.node_id)?.name ?? trace.node_id;
+  const modelStats = modelStatsFromCalls(
+    trace.llmCalls.map((c) => ({ model: c.model, usage: c.usage, cost: c.cost })),
+  );
+  const hasSecondary =
+    trace.logs.length > 0 ||
+    trace.llmCalls.length > 0 ||
+    trace.directToolCalls.length > 0 ||
+    trace.compactions.length > 0;
 
   return (
     <div className="fade-in" style={{ padding: 0 }}>
@@ -445,9 +455,13 @@ export function NodeTraceCard({
           display: 'flex',
           alignItems: 'baseline',
           gap: 8,
-          padding: '4px 0 10px',
-          borderBottom: '1px solid var(--rule-2)',
-          marginBottom: 10,
+          padding: '4px 0 6px',
+          // Border lives on ExecutionStats (or trace-content-start below) so we
+          // don't stack two rules when model stats are present.
+          ...(!modelStats ? {
+            borderBottom: '1px solid var(--rule-2)',
+            marginBottom: 10,
+          } : {}),
         }}
       >
         <span className={`node-state-dot ${STATE_CLASS[trace.status]}`} />
@@ -473,167 +487,197 @@ export function NodeTraceCard({
         </span>
       </div>
 
-      {trace.error && (
-        <>
-          <pre
-            className="mono"
-            style={{ fontSize: 11, color: 'var(--state-err)', whiteSpace: 'pre-wrap', margin: '0 0 8px' }}
-          >
-            {trace.error}
-          </pre>
-          {onSendErrorToOrchestrator && (
-            <button
-              type="button"
-              className="ed-btn ed-btn--mini"
-              onClick={() =>
-                onSendErrorToOrchestrator(
-                  buildErrorPrompt({ runId, nodeName, error: trace.error ?? '' }),
-                )
-              }
-              title="forward this error to the orchestrator"
-              style={{ marginBottom: 10 }}
+      <ExecutionStats modelStats={modelStats} marginTop={modelStats ? 4 : 0} />
+
+      <div
+        className={!modelStats ? 'trace-content-start' : undefined}
+        style={{ display: 'flex', flexDirection: 'column', gap: 14, marginTop: modelStats ? 12 : 0 }}
+      >
+        {trace.error && (
+          <>
+            <pre
+              className="mono"
+              style={{ fontSize: 11, color: 'var(--state-err)', whiteSpace: 'pre-wrap', margin: 0 }}
             >
-              send to orchestrator <span className="ed-btn__mark">→</span>
-            </button>
-          )}
-        </>
-      )}
+              {trace.error}
+            </pre>
+            {onSendErrorToOrchestrator && (
+              <button
+                type="button"
+                className="ed-btn ed-btn--mini"
+                onClick={() =>
+                  onSendErrorToOrchestrator(
+                    buildErrorPrompt({ runId, nodeName, error: trace.error ?? '' }),
+                  )
+                }
+                title="forward this error to the orchestrator"
+              >
+                send to orchestrator <span className="ed-btn__mark">→</span>
+              </button>
+            )}
+          </>
+        )}
 
-      <NodeIOBlock
-        workflow={workflow}
-        nodeId={trace.node_id}
-        nodeName={nodeName}
-        inputs={trace.inputs}
-        outputs={trace.outputs}
-        logs={trace.logs.length ? trace.logs : undefined}
-      />
+        <NodeIOBlock
+          workflow={workflow}
+          nodeId={trace.node_id}
+          nodeName={nodeName}
+          inputs={trace.inputs}
+          outputs={trace.outputs}
+        />
 
-      {trace.llmCalls.map((c, idx) => (
-        <LLMCallCard key={c.call_id} call={c} index={idx} />
-      ))}
+        {hasSecondary && (
+          <div className="trace-secondary">
+            {trace.logs.length > 0 && (
+              <section className="snapshot-io-section snapshot-io-section--detail">
+                <div className="snapshot-io-section__head">
+                  <span className="smallcaps snapshot-io-section__title">logs</span>
+                  <span className="snapshot-io-section__count">
+                    {trace.logs.length} {trace.logs.length === 1 ? 'entry' : 'entries'}
+                  </span>
+                </div>
+                <LogsView logs={trace.logs} viewerTitle={`${nodeName} · logs`} />
+              </section>
+            )}
 
-      {trace.compactions.length > 0 && (
-        <div
-          className="fade-in"
-          style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 0 0', color: 'var(--ink-4)' }}
-          title="Older turns were summarized to keep this node's call_llm loop within the model's context window."
-        >
-          <span style={{ flex: 1, height: 1, background: 'var(--rule)' }} />
-          <span
-            className="smallcaps"
-            style={{ fontSize: 9, whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 5 }}
-          >
-            <span aria-hidden style={{ fontSize: 10 }}>⤵</span>
-            context compacted
-            {trace.compactions.length > 1 ? ` ×${trace.compactions.length}` : ''}
-            {` · ${trace.compactions.reduce((n, c) => n + c.summarized, 0)} msgs`}
-          </span>
-          <span style={{ flex: 1, height: 1, background: 'var(--rule)' }} />
-        </div>
-      )}
+            {trace.llmCalls.length > 0 && (
+              <section className="snapshot-io-section snapshot-io-section--detail">
+                <div className="snapshot-io-section__head">
+                  <span className="smallcaps snapshot-io-section__title">llm calls</span>
+                  <span className="snapshot-io-section__count">
+                    {trace.llmCalls.length} {trace.llmCalls.length === 1 ? 'call' : 'calls'}
+                  </span>
+                </div>
+                <div className="trace-dense-list">
+                  {trace.llmCalls.map((c, idx) => (
+                    <LLMCallCard key={c.call_id} call={c} index={idx} />
+                  ))}
+                </div>
+              </section>
+            )}
 
-      {trace.directToolCalls.length > 0 && (
-        <details style={{ margin: '10px 0 0' }} open={trace.directToolCalls.length <= 5}>
-          <summary
-            className="smallcaps"
-            style={{ cursor: 'pointer', padding: '2px 0', marginBottom: 4 }}
-          >
-            tool calls — direct · {trace.directToolCalls.length}
-          </summary>
-          {trace.directToolCalls.map((dtc) => (
-            <DirectToolCard key={dtc.call_id} call={dtc} />
-          ))}
-        </details>
-      )}
+            {trace.directToolCalls.length > 0 && (
+              <section className="snapshot-io-section snapshot-io-section--detail">
+                <div className="snapshot-io-section__head">
+                  <span className="smallcaps snapshot-io-section__title">tool calls</span>
+                  <span className="snapshot-io-section__count">
+                    {trace.directToolCalls.length} direct
+                  </span>
+                </div>
+                <div className="trace-dense-list">
+                  {trace.directToolCalls.map((dtc) => (
+                    <ToolTraceCard
+                      key={dtc.call_id}
+                      tool={dtc.tool}
+                      args={dtc.args}
+                      status={dtc.status}
+                      result={dtc.result}
+                      error={dtc.error}
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {trace.compactions.length > 0 && (
+              <div
+                className="trace-compaction-note fade-in"
+                title="Older turns were summarized to keep this node's call_llm loop within the model's context window."
+              >
+                <span aria-hidden>⤵</span>
+                context compacted
+                {trace.compactions.length > 1 ? ` ×${trace.compactions.length}` : ''}
+                {` · ${trace.compactions.reduce((n, c) => n + c.summarized, 0)} msgs`}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
 // --- LLM call cards -------------------------------------------------------
 
+function llmStatusMeta(call: LiveLLMCall): {
+  label: string;
+  color: string;
+  live: boolean;
+} {
+  if (call.status === 'error') {
+    return { label: 'failed', color: 'var(--state-err)', live: false };
+  }
+  if (call.status === 'streaming') {
+    return { label: 'streaming', color: 'var(--ink-4)', live: true };
+  }
+  return { label: 'done', color: 'var(--state-ok)', live: false };
+}
+
 function LLMCallCard({ call, index }: { call: LiveLLMCall; index: number }) {
   const isStreaming = call.status === 'streaming';
-  const isError = call.status === 'error';
-  const statusColor = isError
-    ? 'var(--state-err)'
-    : isStreaming
-      ? 'var(--ink-4)'
-      : 'var(--state-ok)';
-  const statusLabel = isStreaming ? 'streaming' : isError ? 'failed' : 'done';
+  const status = llmStatusMeta(call);
   const lastRoundIdx = call.rounds.length - 1;
   const showWaiting =
     isStreaming &&
     call.rounds.every((r) => !r.content && !r.reasoning && r.toolCalls.length === 0);
+  const costHint =
+    !isStreaming && typeof call.cost === 'number' && call.cost > 0
+      ? `$${call.cost.toFixed(4)}`
+      : undefined;
+  const hintParts = [
+    call.model || '…',
+    call.tools.length > 0 ? call.tools.join(', ') : undefined,
+    costHint,
+  ].filter(Boolean);
 
   return (
-    <div
-      className="fade-in"
-      style={{
-        margin: '10px 0 0',
-        padding: '10px 12px',
-        background: 'var(--paper)',
-        border: '1px solid var(--rule)',
-        borderRadius: 3,
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
-        <span className="smallcaps">llm call {index + 1}</span>
-        <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>
-          {call.model || '…'}
-        </span>
-        {call.tools.length > 0 && (
-          <span
-            className="serif"
-            style={{ fontStyle: 'italic', fontSize: 12, color: 'var(--ink-4)' }}
-          >
-            tools=[{call.tools.join(', ')}]
+    <details className="trace-fold trace-fold--nested fade-in" open={isStreaming}>
+      <summary className="trace-fold__summary trace-fold__summary--nested">
+        <span className="trace-fold__lead">
+          <span className="trace-fold__chevron" aria-hidden>▸</span>
+          <span className="trace-fold__label">
+            <span className="mono" style={{ fontSize: 11 }}>call {index + 1}</span>
+            <span className="trace-fold__hint">{hintParts.join(' · ')}</span>
           </span>
-        )}
-        <span style={{ flex: 1 }} />
-        <span className="smallcaps" style={{ fontSize: 9, color: statusColor }}>
-          {isStreaming && <span className="caret" style={{ marginRight: 4 }} />}
-          {statusLabel}
-          {!isStreaming && typeof call.cost === 'number' && (
-            <span style={{ marginLeft: 6, color: 'var(--ink-4)' }}>
-              · ${call.cost.toFixed(4)}
-            </span>
-          )}
         </span>
+        <span className="port-card__status" style={{ color: status.color }}>
+          {status.live && <span className="caret" style={{ marginRight: 4 }} />}
+          {status.label}
+        </span>
+      </summary>
+      <div className="trace-fold__body trace-fold__body--nested">
+        {call.errorMsg && (
+          <pre
+            className="mono"
+            style={{
+              fontSize: 11,
+              color: 'var(--state-err)',
+              whiteSpace: 'pre-wrap',
+              margin: '0 0 4px',
+            }}
+          >
+            {call.errorMsg}
+          </pre>
+        )}
+        {call.rounds.map((r, i) => (
+          <CallRoundView
+            key={r.round}
+            round={r}
+            showRoundBadge={call.rounds.length > 1}
+            isLastRound={i === lastRoundIdx}
+            callStreaming={isStreaming}
+          />
+        ))}
+        {showWaiting && (
+          <div
+            className="serif"
+            style={{ fontStyle: 'italic', fontSize: 11.5, color: 'var(--ink-4)' }}
+          >
+            waiting for first token…
+          </div>
+        )}
       </div>
-
-      {call.errorMsg && (
-        <pre
-          className="mono"
-          style={{
-            fontSize: 11,
-            color: 'var(--state-err)',
-            whiteSpace: 'pre-wrap',
-            margin: '0 0 6px',
-          }}
-        >
-          {call.errorMsg}
-        </pre>
-      )}
-
-      {call.rounds.map((r, i) => (
-        <CallRoundView
-          key={r.round}
-          round={r}
-          showRoundBadge={call.rounds.length > 1}
-          isLastRound={i === lastRoundIdx}
-          callStreaming={isStreaming}
-        />
-      ))}
-
-      {showWaiting && (
-        <div
-          className="serif"
-          style={{ fontStyle: 'italic', fontSize: 12.5, color: 'var(--ink-4)', marginTop: 4 }}
-        >
-          waiting for first token…
-        </div>
-      )}
-    </div>
+    </details>
   );
 }
 
@@ -651,197 +695,131 @@ function CallRoundView({
   const roundTitle = `round ${round.round + 1}`;
 
   return (
-    <div style={{ marginTop: showRoundBadge ? 10 : 6 }}>
+    <div className="trace-round">
       {showRoundBadge && (
-        <div
-          className="smallcaps"
-          style={{ fontSize: 9, color: 'var(--ink-4)', marginBottom: 4 }}
-        >
-          round {round.round + 1}
-        </div>
+        <div className="trace-llm-card__round-label">round {round.round + 1}</div>
       )}
       {round.reasoning && (
-        <TraceRow
-          kind="reasoning"
-          text={round.reasoning}
-          live={reasoningLive}
+        <PortRow
+          name={reasoningLive ? 'thinking' : 'thought'}
+          value={round.reasoning}
           viewerTitle={`${roundTitle} · thinking`}
+          viewerSubtitle="llm"
+          variant="row"
         />
       )}
       {round.content && (
-        <TraceRow
-          kind="content"
-          text={round.content}
-          live={contentLive}
+        <PortRow
+          name={contentLive ? 'streaming' : 'output'}
+          value={round.content}
           viewerTitle={`${roundTitle} · output`}
+          viewerSubtitle="llm"
+          variant="row"
         />
       )}
-      {round.toolCalls.length > 0 && (
-        <details style={{ marginTop: 8 }} open={round.toolCalls.length <= 5}>
-          <summary
-            className="smallcaps"
-            style={{ cursor: 'pointer', padding: '2px 0', marginBottom: 4, fontSize: 9 }}
-          >
-            tool calls · {round.toolCalls.length}
-          </summary>
-          {round.toolCalls.map((tc) => (
-            <NestedToolCard key={`${tc.round}-${tc.tc_index}`} tc={tc} />
-          ))}
-        </details>
-      )}
+      {round.toolCalls.map((tc) => (
+        <ToolTraceCard
+          key={`${tc.round}-${tc.tc_index}`}
+          tool={tc.tool}
+          args={tc.args}
+          argsStr={tc.args_str}
+          status={tc.status}
+          result={tc.result}
+          error={tc.error}
+        />
+      ))}
     </div>
   );
 }
 
-function TraceRow({
-  kind, text, live, viewerTitle,
-}: {
-  kind: 'reasoning' | 'content';
-  text: string;
+function toolStatusMeta(status: ToolCallStatus | DirectCallStatus): {
+  label: string;
+  color: string;
   live: boolean;
-  viewerTitle: string;
+} {
+  switch (status) {
+    case 'ok':
+      return { label: 'done', color: 'var(--state-ok)', live: false };
+    case 'err':
+      return { label: 'failed', color: 'var(--state-err)', live: false };
+    case 'pending':
+      return { label: 'running', color: 'var(--ink-4)', live: true };
+    case 'streaming':
+      return { label: 'streaming', color: 'var(--ink-4)', live: true };
+  }
+}
+
+function ToolTraceCard({
+  tool,
+  args,
+  argsStr,
+  status,
+  result,
+  error,
+}: {
+  tool: string;
+  args?: Record<string, unknown>;
+  argsStr?: string;
+  status: ToolCallStatus | DirectCallStatus;
+  result?: unknown;
+  error?: string;
 }) {
-  const [open, setOpen] = useState(false);
-  const isReasoning = kind === 'reasoning';
-  const label = isReasoning ? (live ? 'thinking' : 'thought') : live ? 'streaming' : 'output';
-  const charCount = text.length;
-  const lineCount = text.split('\n').length;
-  const sizeText =
-    charCount === 0
-      ? '…'
-      : lineCount > 1
-        ? `${lineCount} lines · ${charCount.toLocaleString()} chars`
-        : `${charCount.toLocaleString()} chars`;
+  const meta = toolStatusMeta(status);
+  const argsDisplay =
+    args !== undefined ? JSON.stringify(args) : (argsStr ?? '');
+  const preview =
+    argsDisplay.length > 140 ? argsDisplay.slice(0, 140) + '…' : argsDisplay;
 
   return (
-    <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="port-row"
-        style={{
-          display: 'flex',
-          width: '100%',
-          alignItems: 'baseline',
-          gap: 8,
-          padding: '6px 8px',
-          margin: '4px -8px 0',
-          background: 'transparent',
-          border: 0,
-          borderRadius: 3,
-          cursor: 'pointer',
-          textAlign: 'left',
-          fontFamily: 'inherit',
-          color: 'inherit',
-        }}
-      >
-        <span
-          className="serif"
-          style={{
-            fontStyle: 'italic',
-            fontSize: 12,
-            color: isReasoning ? 'var(--ink-4)' : 'var(--ink-3)',
-          }}
-        >
-          {label}
+    <details className="trace-fold trace-fold--tool" open={meta.live}>
+      <summary className="trace-fold__summary trace-fold__summary--tool">
+        <span className="trace-fold__lead trace-fold__lead--wide">
+          <span className="trace-fold__chevron" aria-hidden>▸</span>
+          <span className="mono" style={{ fontSize: 11.5, color: 'var(--accent-ink)', flexShrink: 0 }}>
+            {tool || '…'}
+          </span>
+          <span
+            className="mono trace-fold__hint"
+            style={{
+              fontSize: 11,
+              fontStyle: 'normal',
+              fontFamily: 'var(--mono)',
+            }}
+          >
+            {preview || '…'}
+          </span>
         </span>
-        {live && <span className="caret" />}
-        <span style={{ flex: 1 }} />
-        <span className="smallcaps" style={{ fontSize: 9, color: 'var(--ink-4)' }}>
-          {sizeText}
+        <span className="port-card__status" style={{ color: meta.color }}>
+          {meta.live && <span className="caret" style={{ marginRight: 4 }} />}
+          {meta.label}
         </span>
-        <span
-          aria-hidden
-          style={{
-            color: 'var(--ink-4)',
-            fontFamily: 'var(--serif)',
-            fontStyle: 'italic',
-            fontSize: 12,
-          }}
-        >
-          ⤢
-        </span>
-      </button>
-      {open && (
-        <ViewerOverlay
-          title={viewerTitle}
-          value={text}
-          onClose={() => setOpen(false)}
-        />
-      )}
-    </>
-  );
-}
-
-function DirectToolCard({ call }: { call: DirectToolCall }) {
-  const [expanded, setExpanded] = useState(false);
-  const status = call.status;
-  const statusLabel =
-    status === 'ok' ? '✓ done' :
-    status === 'err' ? '× failed' :
-    '… running';
-  const statusColor =
-    status === 'ok' ? 'var(--state-ok)' :
-    status === 'err' ? 'var(--state-err)' :
-    'var(--ink-4)';
-  const argsDisplay = JSON.stringify(call.args);
-
-  return (
-    <div
-      className="tool-call fade-in"
-      style={{ padding: '7px 10px', margin: '6px 0', cursor: 'pointer' }}
-      onClick={() => setExpanded((v) => !v)}
-    >
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, fontSize: 11.5 }}>
-        <span
-          aria-hidden
-          style={{
-            width: 10,
-            display: 'inline-block',
-            textAlign: 'center',
-            color: 'var(--ink-4)',
-            fontSize: 10,
-          }}
-        >
-          {expanded ? '▾' : '▸'}
-        </span>
-        <span className="mono" style={{ color: 'var(--accent-ink)', fontSize: 10.5 }}>
-          {call.tool || '…'}
-        </span>
-        <span
-          className="mono"
-          style={{
-            color: 'var(--ink-4)',
-            fontSize: 10.5,
-            flex: 1,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {argsDisplay || '…'}
-        </span>
-        <span className="smallcaps" style={{ color: statusColor, fontSize: 9 }}>
-          {status === 'pending' && <span className="caret" style={{ marginRight: 4 }} />}
-          {statusLabel}
-        </span>
-      </div>
-      {expanded && (
-        <div style={{ marginTop: 8 }} onClick={(e) => e.stopPropagation()}>
-          <div className="smallcaps" style={{ marginBottom: 3 }}>args</div>
-          <JsonView value={call.args} />
-          {call.status === 'ok' && call.result !== undefined && (
+      </summary>
+      <div className="trace-fold__body trace-fold__body--tool" onClick={(e) => e.stopPropagation()}>
+          <div>
+            <div className="smallcaps" style={{ marginBottom: 4 }}>args</div>
+            {args !== undefined ? (
+              <JsonView value={args} />
+            ) : (
+              <pre
+                className="mono"
+                style={{ fontSize: 11, color: 'var(--ink-3)', whiteSpace: 'pre-wrap', margin: 0 }}
+              >
+                {argsStr || '…'}
+              </pre>
+            )}
+          </div>
+          {status === 'ok' && result !== undefined && (
             <ValueRow
               label="result"
-              value={call.result}
-              viewerTitle={`${call.tool || 'tool'} · result`}
+              value={result}
+              viewerTitle={`${tool || 'tool'} · result`}
             />
           )}
-          {call.status === 'err' && call.error && (
-            <>
+          {status === 'err' && error && (
+            <div>
               <div
                 className="smallcaps"
-                style={{ margin: '6px 0 3px', color: 'var(--state-err)' }}
+                style={{ marginBottom: 4, color: 'var(--state-err)' }}
               >
                 error
               </div>
@@ -849,107 +827,11 @@ function DirectToolCard({ call }: { call: DirectToolCall }) {
                 className="mono"
                 style={{ fontSize: 11, color: 'var(--state-err)', whiteSpace: 'pre-wrap', margin: 0 }}
               >
-                {call.error}
+                {error}
               </pre>
-            </>
+            </div>
           )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function NestedToolCard({ tc }: { tc: NestedToolCall }) {
-  const [expanded, setExpanded] = useState(false);
-  const status = tc.status;
-  const statusLabel =
-    status === 'ok' ? '✓ done' :
-    status === 'err' ? '× failed' :
-    status === 'pending' ? '… running' :
-    '… streaming';
-  const statusColor =
-    status === 'ok' ? 'var(--state-ok)' :
-    status === 'err' ? 'var(--state-err)' :
-    'var(--ink-4)';
-  const argsDisplay = tc.args !== undefined ? JSON.stringify(tc.args) : tc.args_str;
-
-  return (
-    <div
-      className="tool-call fade-in"
-      style={{ padding: '7px 10px', margin: '6px 0', cursor: 'pointer' }}
-      onClick={() => setExpanded((v) => !v)}
-    >
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, fontSize: 11.5 }}>
-        <span
-          aria-hidden
-          style={{
-            width: 10,
-            display: 'inline-block',
-            textAlign: 'center',
-            color: 'var(--ink-4)',
-            fontSize: 10,
-          }}
-        >
-          {expanded ? '▾' : '▸'}
-        </span>
-        <span className="mono" style={{ color: 'var(--accent-ink)', fontSize: 10.5 }}>
-          {tc.tool || '…'}
-        </span>
-        <span
-          className="mono"
-          style={{
-            color: 'var(--ink-4)',
-            fontSize: 10.5,
-            flex: 1,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {argsDisplay || '…'}
-        </span>
-        <span className="smallcaps" style={{ color: statusColor, fontSize: 9 }}>
-          {statusLabel}
-        </span>
       </div>
-      {expanded && (
-        <div style={{ marginTop: 8 }} onClick={(e) => e.stopPropagation()}>
-          <div className="smallcaps" style={{ marginBottom: 3 }}>args</div>
-          {tc.args !== undefined ? (
-            <JsonView value={tc.args} />
-          ) : (
-            <pre
-              className="mono"
-              style={{ fontSize: 11, color: 'var(--ink-3)', whiteSpace: 'pre-wrap', margin: 0 }}
-            >
-              {tc.args_str || '…'}
-            </pre>
-          )}
-          {tc.status === 'ok' && tc.result !== undefined && (
-            <ValueRow
-              label="result"
-              value={tc.result}
-              viewerTitle={`${tc.tool || 'tool'} · result`}
-            />
-          )}
-          {tc.status === 'err' && tc.error && (
-            <>
-              <div
-                className="smallcaps"
-                style={{ margin: '6px 0 3px', color: 'var(--state-err)' }}
-              >
-                error
-              </div>
-              <pre
-                className="mono"
-                style={{ fontSize: 11, color: 'var(--state-err)', whiteSpace: 'pre-wrap', margin: 0 }}
-              >
-                {tc.error}
-              </pre>
-            </>
-          )}
-        </div>
-      )}
-    </div>
+    </details>
   );
 }

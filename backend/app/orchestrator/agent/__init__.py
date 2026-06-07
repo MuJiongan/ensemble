@@ -465,12 +465,66 @@ def run_turn(db: DbSession, session_id: str, user_text: str) -> Iterator[dict]:
 # ---------------------------------------------------------------------------
 
 
+def _assistant_content_blocks(
+    r: models.Message, tool_results: dict[str, dict]
+) -> list[dict]:
+    """Render one persisted assistant row into chat-panel content blocks."""
+    content: list[dict] = []
+    # Re-assemble the visible reasoning text from reasoning_details blocks.
+    # Multiple blocks are concatenated with double-newlines so the panel can
+    # render them as paragraphs inside one collapsible.
+    rds = r.reasoning_details or []
+    thinking_text = "\n\n".join(
+        (b.get("text") or "").strip()
+        for b in rds
+        if isinstance(b, dict) and (b.get("text") or "").strip()
+    )
+    if thinking_text:
+        content.append({"t": "thinking", "text": thinking_text})
+    if r.content:
+        content.append({"t": "p", "text": r.content})
+    for tc in (r.tool_calls or []):
+        tc_id = tc.get("id") or ""
+        fn = tc.get("function") or {}
+        name = fn.get("name") or ""
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except json.JSONDecodeError:
+            args = {}
+        summary = _format_args_summary(args)
+        tr = tool_results.get(tc_id)
+        ok = bool(tr) and not (tr.get("result") or {}).get("error")
+        content.append(
+            {
+                "t": "tool",
+                "tool": name,
+                "args": summary,
+                "status": "ok" if ok else ("err" if tr else "pending"),
+                # Surface the persisted result so the chat panel can render rich
+                # tool cards (e.g. `run_workflow` snapshot summary) on history
+                # reload, not just live streams.
+                "result": tr.get("result") if tr else None,
+            }
+        )
+    return content
+
+
+def _flush_assistant_bubble(content: list[dict], cost: float) -> dict | None:
+    if not content:
+        return None
+    bubble: dict = {"role": "assistant", "content": content}
+    if cost > 0:
+        bubble["cost"] = cost
+    return bubble
+
+
 def render_history(db: DbSession, session_id: str) -> list[dict]:
     """Collapse persisted Messages into chat-panel render units.
 
-    Each user Message → one user bubble. Each assistant Message + its
-    immediately-following tool result Messages → one assistant bubble whose
-    content interleaves a paragraph block with one tool-card block per call.
+    Each user Message → one user bubble. All assistant Messages belonging to
+    the same user turn (every LLM round until the next user message) merge into
+    one assistant bubble whose content interleaves paragraphs, thinking traces,
+    and tool-card blocks — matching how the live SSE stream renders a turn.
     """
     rows = (
         db.query(models.Message)
@@ -490,50 +544,19 @@ def render_history(db: DbSession, session_id: str) -> list[dict]:
             tool_results[r.tool_call_id] = {"name": r.name, "result": payload}
 
     bubbles: list[dict] = []
+    turn_content: list[dict] = []
+    turn_cost = 0.0
     for r in rows:
         if r.role == "user":
+            if bubble := _flush_assistant_bubble(turn_content, turn_cost):
+                bubbles.append(bubble)
+            turn_content = []
+            turn_cost = 0.0
             bubbles.append({"role": "user", "text": r.content or ""})
         elif r.role == "assistant":
-            content: list[dict] = []
-            # Re-assemble the visible reasoning text from reasoning_details
-            # blocks. Multiple blocks are concatenated with double-newlines so
-            # the panel can render them as paragraphs inside one collapsible.
-            rds = r.reasoning_details or []
-            thinking_text = "\n\n".join(
-                (b.get("text") or "").strip()
-                for b in rds
-                if isinstance(b, dict) and (b.get("text") or "").strip()
-            )
-            if thinking_text:
-                content.append({"t": "thinking", "text": thinking_text})
-            if r.content:
-                content.append({"t": "p", "text": r.content})
-            for tc in (r.tool_calls or []):
-                tc_id = tc.get("id") or ""
-                fn = tc.get("function") or {}
-                name = fn.get("name") or ""
-                try:
-                    args = json.loads(fn.get("arguments") or "{}")
-                except json.JSONDecodeError:
-                    args = {}
-                summary = _format_args_summary(args)
-                tr = tool_results.get(tc_id)
-                ok = bool(tr) and not (tr.get("result") or {}).get("error")
-                content.append(
-                    {
-                        "t": "tool",
-                        "tool": name,
-                        "args": summary,
-                        "status": "ok" if ok else ("err" if tr else "pending"),
-                        # Surface the persisted result so the chat panel can
-                        # render rich tool cards (e.g. `run_workflow` snapshot
-                        # summary) on history reload, not just live streams.
-                        "result": tr.get("result") if tr else None,
-                    }
-                )
-            bubble: dict = {"role": "assistant", "content": content}
-            if (r.cost or 0) > 0:
-                bubble["cost"] = float(r.cost)
-            bubbles.append(bubble)
+            turn_content.extend(_assistant_content_blocks(r, tool_results))
+            turn_cost += float(r.cost or 0)
         # skip tool / system rows in user-facing render
+    if bubble := _flush_assistant_bubble(turn_content, turn_cost):
+        bubbles.append(bubble)
     return bubbles

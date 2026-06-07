@@ -113,7 +113,7 @@ export function Hero({
               </span>
               <span style={{ flex: 1 }} />
               <button
-                className="btn-ink"
+                className="btn-ink btn-ink--accent"
                 onClick={submit}
                 disabled={disabled || !text.trim()}
               >

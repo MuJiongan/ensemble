@@ -697,6 +697,7 @@ export default function App() {
                         return (
                           <SnapshotRunPanel
                             run={viewingRun}
+                            currentRun={currentRun}
                             onExit={exitSnapshotView}
                             // Block rerun while any run on this workflow is in
                             // flight — server has no guard yet, so we hold the
