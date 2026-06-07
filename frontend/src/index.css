@@ -1040,6 +1040,11 @@ button.port-card:hover .port-card__open {
 .run-compose__fields {
   max-height: 240px;
   overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+}
+.run-compose__fields::-webkit-scrollbar {
+  display: none;
 }
 .run-compose__field + .run-compose__field {
   margin-top: 14px;
@@ -1529,6 +1534,17 @@ button.port-card:hover .port-card__open {
   border-color: transparent;
   box-shadow: none;
 }
+textarea.field {
+  field-sizing: content;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  scrollbar-width: none;
+}
+textarea.field::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
 .field--underline {
   background: transparent;
   border: 0;
@@ -1598,8 +1614,15 @@ button.port-card:hover .port-card__open {
     0 0 0 2px var(--field-focus-ring);
 }
 
-/* scroll */
-.scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+/* scroll — vertical only; hide horizontal track/thumb everywhere */
+.scroll {
+  overflow-x: hidden;
+}
+.scroll::-webkit-scrollbar { width: 8px; }
+.scroll::-webkit-scrollbar:horizontal {
+  display: none;
+  height: 0;
+}
 .scroll::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 4px; }
 .scroll::-webkit-scrollbar-track { background: transparent; }
 

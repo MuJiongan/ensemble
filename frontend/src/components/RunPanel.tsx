@@ -332,7 +332,7 @@ export function RunPanel({
               this node takes no declared inputs.
             </div>
           )}
-          <div className="run-compose__fields scroll">
+          <div className="run-compose__fields">
             {inputPorts.map((p) => (
               <label key={p.name} className="run-compose__field">
                 <span className="run-compose__field-label">
