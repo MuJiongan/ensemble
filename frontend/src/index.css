@@ -540,8 +540,32 @@ button.port-card:hover .port-card__open {
   font-weight: 500;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--ink-3);
+  color: var(--ink-4);
   white-space: nowrap;
+}
+.port-card__status--required {
+  color: var(--ink-3);
+}
+
+/* node panel — schema-only port cards (no values, no click) */
+.port-card--schema {
+  padding: 10px 13px;
+  cursor: default;
+}
+.port-card--schema .port-card__name {
+  color: var(--ink);
+  font-size: 11px;
+}
+.port-card--schema.port-card--output {
+  border-left-color: var(--ink-3);
+}
+.node-io-footnote {
+  margin: 4px 0 0;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-4);
 }
 
 /* execution stats — unified LLM + tool byline under run/node headers */

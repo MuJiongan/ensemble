@@ -220,45 +220,23 @@ export function NodePanel({
         )}
 
         {tab === 'i/o' && (
-          <div style={{ padding: 18 }}>
-            <div className="smallcaps" style={{ marginBottom: 10 }}>inputs</div>
-            {node.inputs.length === 0 ? (
-              <div className="serif" style={{ fontStyle: 'italic', color: 'var(--ink-4)', fontSize: 13 }}>
-                no inputs.
-              </div>
-            ) : (
-              node.inputs.map((p, i) => (
-                <PortRow key={i} port={p} showRequired />
-              ))
-            )}
-
-            <div className="smallcaps" style={{ marginTop: 22, marginBottom: 10 }}>outputs</div>
-            {node.outputs.length === 0 ? (
-              <div className="serif" style={{ fontStyle: 'italic', color: 'var(--ink-4)', fontSize: 13 }}>
-                no outputs.
-              </div>
-            ) : (
-              node.outputs.map((p, i) => (
-                <PortRow key={i} port={p} />
-              ))
-            )}
-
-            <div
-              className="serif"
-              style={{
-                marginTop: 24,
-                fontStyle: 'italic',
-                color: 'var(--ink-4)',
-                fontSize: 12.5,
-                lineHeight: 1.5,
-              }}
-            >
-              ports are shaped by{' '}
-              <span className="italic-em" style={{ color: 'var(--ink-3)' }}>
-                ensemble
-              </span>
-              . ask in the chat to add, rename, or remove one.
-            </div>
+          <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <PortSchemaSection
+              title="inputs"
+              ports={node.inputs}
+              emptyText="no inputs."
+              accent="input"
+              showRequired
+            />
+            <PortSchemaSection
+              title="outputs"
+              ports={node.outputs}
+              emptyText="no outputs."
+              accent="output"
+            />
+            <p className="node-io-footnote">
+              ports are shaped by ensemble — ask in the chat to add, rename, or remove one.
+            </p>
           </div>
         )}
 
@@ -288,62 +266,66 @@ export function NodePanel({
   );
 }
 
-function PortRow({
-  port, showRequired,
+function PortSchemaSection({
+  title,
+  ports,
+  emptyText,
+  accent,
+  showRequired,
 }: {
-  port: IOPort;
+  title: string;
+  ports: IOPort[];
+  emptyText: string;
+  accent: 'input' | 'output';
   showRequired?: boolean;
 }) {
   return (
-    <div
-      style={{
-        padding: '8px 0',
-        borderBottom: '1px solid var(--rule-2)',
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-      }}
-    >
-      <span
-        className="mono"
-        style={{
-          flex: 1,
-          fontSize: 12,
-          color: 'var(--ink-2)',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-        title={port.name}
-      >
-        {port.name}
-      </span>
-      <span
-        className="serif"
-        style={{
-          width: 110,
-          fontStyle: 'italic',
-          fontSize: 12,
-          color: 'var(--ink-3)',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        }}
-        title={port.type_hint}
-      >
-        {port.type_hint || 'any'}
-      </span>
-      {showRequired && (
-        <span
-          className="smallcaps"
-          style={{
-            fontSize: 9,
-            color: port.required ? 'var(--accent-ink)' : 'var(--ink-4)',
-          }}
-        >
-          {port.required ? 'required' : 'optional'}
-        </span>
+    <section className="snapshot-io-section">
+      <div className="snapshot-io-section__head">
+        <span className="smallcaps snapshot-io-section__title">{title}</span>
+        {ports.length > 0 && (
+          <span className="snapshot-io-section__count">
+            {ports.length} {ports.length === 1 ? 'port' : 'ports'}
+          </span>
+        )}
+      </div>
+      {ports.length === 0 ? (
+        <div className="snapshot-io-section__empty">{emptyText}</div>
+      ) : (
+        <div className="snapshot-io-fields">
+          {ports.map((port, i) => (
+            <PortSchemaCard key={i} port={port} accent={accent} showRequired={showRequired} />
+          ))}
+        </div>
       )}
+    </section>
+  );
+}
+
+function PortSchemaCard({
+  port,
+  accent,
+  showRequired,
+}: {
+  port: IOPort;
+  accent: 'input' | 'output';
+  showRequired?: boolean;
+}) {
+  return (
+    <div className={`port-card port-card--schema port-card--${accent}`}>
+      <div className="port-card__head">
+        <div className="port-card__label">
+          <span className="port-card__name">{port.name}</span>
+          <span className="port-card__hint">{port.type_hint || 'any'}</span>
+        </div>
+        {showRequired && (
+          <span
+            className={`port-card__status${port.required ? ' port-card__status--required' : ''}`}
+          >
+            {port.required ? 'required' : 'optional'}
+          </span>
+        )}
+      </div>
     </div>
   );
 }
