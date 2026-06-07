@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Workflow } from '../types';
 import { loadTheme, saveTheme, THEME_CHANGED_EVENT, type Theme } from '../theme';
 import { ThemeToggle } from './ThemeToggle';
@@ -31,11 +31,12 @@ export function TopBar({
 }: Props) {
   const [theme, setTheme] = useState<Theme>(() => loadTheme());
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [query, setQuery] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
-  // id of the workflow row currently being renamed inline (null = none).
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
   const pickerRef = useRef<HTMLDivElement | null>(null);
+  const searchRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const sync = () => setTheme(loadTheme());
@@ -47,8 +48,13 @@ export function TopBar({
     };
   }, []);
 
-  // Close on outside-click. Listener only mounts while the picker is open so
-  // we don't catch the very click that's about to open it.
+  useEffect(() => {
+    if (!pickerOpen) return;
+    setQuery('');
+    const id = requestAnimationFrame(() => searchRef.current?.focus());
+    return () => cancelAnimationFrame(id);
+  }, [pickerOpen]);
+
   useEffect(() => {
     if (!pickerOpen) return;
     const onDoc = (e: MouseEvent) => {
@@ -60,6 +66,12 @@ export function TopBar({
     document.addEventListener('mousedown', onDoc);
     return () => document.removeEventListener('mousedown', onDoc);
   }, [pickerOpen]);
+
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return workflows;
+    return workflows.filter((w) => w.name.toLowerCase().includes(needle));
+  }, [workflows, query]);
 
   const startRename = (w: Workflow) => {
     setEditingId(w.id);
@@ -108,120 +120,88 @@ export function TopBar({
         </span>
       </div>
 
-      <span className="smallcaps" style={{ color: 'var(--ink-4)' }}>project</span>
-
       <div
         ref={pickerRef}
-        style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}
+        style={{ position: 'relative', display: 'flex', alignItems: 'center', flex: 1, minWidth: 0 }}
       >
         <button
           type="button"
           onClick={() => setPickerOpen((v) => !v)}
           aria-haspopup="listbox"
           aria-expanded={pickerOpen}
-          className="serif"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            fontStyle: 'italic',
-            fontSize: 14,
-            color: 'var(--ink-2)',
-            maxWidth: 460,
-            background: 'transparent',
-            border: 0,
-            cursor: 'pointer',
-            padding: '2px 0',
-            textAlign: 'left',
-            minWidth: 0,
-          }}
-          title="open project library"
+          className={`project-switcher${pickerOpen ? ' project-switcher--open' : ''}`}
+          title="switch project"
         >
-          <span
-            style={{
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              minWidth: 0,
-            }}
-          >
-            {activeWorkflow?.name || 'untitled'}
-          </span>
-          <span
-            style={{
-              color: 'var(--ink-4)',
-              fontStyle: 'normal',
-              fontSize: 11,
-              flex: 'none',
-              transition: 'transform .15s',
-              transform: pickerOpen ? 'rotate(180deg)' : 'rotate(0deg)',
-              display: 'inline-block',
-            }}
-          >
-            ▾
-          </span>
+          <span className="project-switcher__kicker smallcaps">project</span>
+          <span className="project-switcher__name">{activeWorkflow?.name || 'untitled'}</span>
+          <span className="project-switcher__caret" aria-hidden="true">▾</span>
         </button>
 
         {pickerOpen && (
           <div
-            className="shadow-card fade-in"
+            className="shadow-card fade-in project-menu"
             role="listbox"
             style={{
               position: 'absolute',
-              top: 28,
+              top: 'calc(100% + 6px)',
               left: 0,
-              minWidth: 320,
-              maxHeight: 360,
+              minWidth: '100%',
+              width: 'max-content',
+              maxWidth: 420,
+              maxHeight: 320,
               overflow: 'auto',
-              background: 'var(--paper)',
               border: '1px solid var(--rule)',
               borderRadius: 4,
-              padding: 6,
               zIndex: 100,
             }}
           >
-            <div
-              className="smallcaps"
-              style={{
-                padding: '7px 10px 6px',
-                color: 'var(--ink-4)',
-                borderBottom: '1px solid var(--rule-2)',
-                marginBottom: 3,
-              }}
-            >
-              project library
-            </div>
-            {workflows.length === 0 && (
-              <div
-                className="serif"
-                style={{ padding: 12, fontStyle: 'italic', color: 'var(--ink-4)', fontSize: 13 }}
-              >
-                no projects yet.
+            {workflows.length > 0 && (
+              <div className="project-menu__search">
+                <input
+                  ref={searchRef}
+                  className="field field--mono"
+                  placeholder="filter projects…"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') {
+                      if (query) setQuery('');
+                      else setPickerOpen(false);
+                    }
+                  }}
+                />
               </div>
             )}
-            {workflows.map((w) => {
-              const isActive = w.id === activeWorkflow?.id;
-              const isEditing = editingId === w.id;
-              return (
-                <WorkflowRow
-                  key={w.id}
-                  workflow={w}
-                  isActive={isActive}
-                  isEditing={isEditing}
-                  draftName={draftName}
-                  onDraftChange={setDraftName}
-                  onCommit={() => commitRename(w.id)}
-                  onCancelEdit={() => setEditingId(null)}
-                  onSelect={() => {
-                    onSelect(w.id);
-                    setPickerOpen(false);
-                    setEditingId(null);
-                  }}
-                  onStartRename={() => startRename(w)}
-                  onDelete={() => setDeleteTarget({ id: w.id, name: w.name })}
-                />
-              );
-            })}
+
+            {workflows.length === 0 ? (
+              <div className="project-menu__empty">no projects yet.</div>
+            ) : filtered.length === 0 ? (
+              <div className="project-menu__empty">no matches.</div>
+            ) : (
+              filtered.map((w) => {
+                const isActive = w.id === activeWorkflow?.id;
+                const isEditing = editingId === w.id;
+                return (
+                  <WorkflowRow
+                    key={w.id}
+                    workflow={w}
+                    isActive={isActive}
+                    isEditing={isEditing}
+                    draftName={draftName}
+                    onDraftChange={setDraftName}
+                    onCommit={() => commitRename(w.id)}
+                    onCancelEdit={() => setEditingId(null)}
+                    onSelect={() => {
+                      onSelect(w.id);
+                      setPickerOpen(false);
+                      setEditingId(null);
+                    }}
+                    onStartRename={() => startRename(w)}
+                    onDelete={() => setDeleteTarget({ id: w.id, name: w.name })}
+                  />
+                );
+              })
+            )}
           </div>
         )}
       </div>
@@ -297,7 +277,6 @@ function WorkflowRow({
   onStartRename: () => void;
   onDelete: () => void;
 }) {
-  const [hovered, setHovered] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -310,20 +289,10 @@ function WorkflowRow({
     <div
       role="option"
       aria-selected={isActive}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      className={`project-menu__item${isActive ? ' project-menu__item--active' : ''}${isEditing ? ' project-menu__item--editing' : ''}`}
       onClick={() => {
         if (isEditing) return;
         onSelect();
-      }}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-        padding: '7px 10px',
-        borderRadius: 3,
-        cursor: isEditing ? 'default' : 'pointer',
-        background: isActive ? 'var(--surface-hover)' : 'transparent',
       }}
     >
       {isEditing ? (
@@ -338,89 +307,41 @@ function WorkflowRow({
             if (e.key === 'Enter') onCommit();
             else if (e.key === 'Escape') onCancelEdit();
           }}
-          className="serif"
-          style={{
-            flex: 1,
-            fontStyle: 'italic',
-            fontSize: 13.5,
-            color: 'var(--ink)',
-            background: 'transparent',
-            border: 0,
-            outline: 'none',
-            borderBottom: '1px solid var(--ink)',
-            padding: '1px 0',
-            minWidth: 0,
-          }}
+          className="field field--plain project-menu__item-name"
+          style={{ fontFamily: 'var(--serif)', fontSize: 13 }}
         />
       ) : (
-        <span
-          className="serif"
-          style={{
-            fontStyle: 'italic',
-            fontSize: 13.5,
-            color: 'var(--ink-2)',
-            flex: 1,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            minWidth: 0,
-          }}
-        >
+        <span className="project-menu__item-name" title={workflow.name}>
           {workflow.name}
         </span>
       )}
 
-      {/* Row actions — only revealed on hover or while editing. */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 2,
-          opacity: hovered || isEditing ? 1 : 0,
-          transition: 'opacity .15s',
-        }}
-      >
+      <div className="project-menu__item-actions">
         {!isEditing && (
           <button
             type="button"
+            className="project-menu__action"
             title="rename"
+            aria-label="rename"
             onMouseDown={(e) => {
               e.preventDefault();
               e.stopPropagation();
               onStartRename();
             }}
             onClick={(e) => e.stopPropagation()}
-            style={{
-              background: 'transparent',
-              border: 0,
-              color: 'var(--ink-4)',
-              cursor: 'pointer',
-              fontSize: 10,
-              padding: '0 5px',
-              fontFamily: 'var(--sans)',
-              fontWeight: 500,
-              letterSpacing: '0.14em',
-              textTransform: 'uppercase',
-            }}
           >
-            rename
+            ✎
           </button>
         )}
         <button
           type="button"
+          className="project-menu__action project-menu__action--danger"
           title="delete"
+          aria-label="delete"
           onClick={(e) => e.stopPropagation()}
           onMouseDown={(e) => {
             e.stopPropagation();
             onDelete();
-          }}
-          style={{
-            background: 'transparent',
-            border: 0,
-            color: 'var(--ink-4)',
-            cursor: 'pointer',
-            fontSize: 13,
-            padding: '0 4px',
           }}
         >
           ×

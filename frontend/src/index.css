@@ -849,6 +849,152 @@ button.port-card:hover .port-card__open {
   );
 }
 
+/* project switcher — topbar chip + compact filter menu */
+.project-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(480px, 100%);
+  min-width: 0;
+  padding: 2px 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  transition: background .15s;
+}
+.project-switcher:hover {
+  background: transparent;
+}
+.project-switcher--open {
+  background: transparent;
+}
+.project-switcher__kicker {
+  flex-shrink: 0;
+  color: var(--ink-4);
+}
+.project-switcher__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 14px;
+  color: var(--ink);
+}
+.project-switcher__caret {
+  flex-shrink: 0;
+  color: var(--ink-4);
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1;
+  transition: transform .15s;
+}
+.project-switcher--open .project-switcher__caret {
+  transform: rotate(180deg);
+}
+
+.project-menu {
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--surface-raised);
+}
+.project-menu__search {
+  margin-bottom: 4px;
+}
+.project-menu__search .field {
+  padding: 7px 10px;
+  font-size: 12px;
+  background: var(--paper);
+}
+.project-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: background .12s;
+}
+.project-menu__item:hover:not(.project-menu__item--editing) {
+  background: var(--hover-subtle);
+}
+.project-menu__item--active {
+  background: var(--muted-fill-2);
+}
+.project-menu__item--editing {
+  cursor: default;
+}
+.project-menu__item-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--serif);
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.project-menu__item--active .project-menu__item-name {
+  color: var(--ink);
+  font-style: italic;
+}
+.project-menu__item-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity .12s;
+}
+.project-menu__item:hover .project-menu__item-actions,
+.project-menu__item--editing .project-menu__item-actions {
+  opacity: 1;
+}
+.project-menu__empty {
+  padding: 10px 9px;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 12.5px;
+  color: var(--ink-4);
+}
+.project-menu__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--ink-4);
+  cursor: pointer;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 12px;
+  line-height: 1;
+  transition: background .12s, color .12s;
+}
+.project-menu__action:hover {
+  background: var(--hover-subtle);
+  color: var(--ink-2);
+}
+.project-menu__action--danger:hover {
+  background: var(--danger-bg);
+  color: var(--state-err);
+}
+
 /* run compose — bottom input strip, matches chat composer tone */
 .run-compose {
   flex-shrink: 0;
