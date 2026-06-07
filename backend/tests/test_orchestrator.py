@@ -1783,6 +1783,81 @@ def test_openai_payload_keeps_reasoning_details_for_openrouter():
     assert payload["messages"][0]["reasoning_details"] == rds
 
 
+def test_render_history_merges_multi_round_turn(db, workflow):
+    """Multiple assistant rows between two user messages should render as one
+    assistant bubble — matching the live SSE stream's per-turn grouping."""
+    sess = models.Session(workflow_id=workflow.id)
+    db.add(sess)
+    db.commit()
+    db.refresh(sess)
+
+    db.add(models.Message(session_id=sess.id, role="user", content="build it"))
+    db.add(
+        models.Message(
+            session_id=sess.id,
+            role="assistant",
+            content="i'll add a loader.",
+            tool_calls=[
+                {
+                    "id": "tc_1",
+                    "type": "function",
+                    "function": {
+                        "name": "add_node",
+                        "arguments": json.dumps({"name": "loader"}),
+                    },
+                }
+            ],
+            cost=0.01,
+        )
+    )
+    db.add(
+        models.Message(
+            session_id=sess.id,
+            role="tool",
+            tool_call_id="tc_1",
+            name="add_node",
+            content=json.dumps({"node_id": "abc", "node": {"name": "loader"}}),
+        )
+    )
+    db.add(
+        models.Message(
+            session_id=sess.id,
+            role="assistant",
+            content="",
+            tool_calls=[
+                {
+                    "id": "tc_2",
+                    "type": "function",
+                    "function": {
+                        "name": "configure_node",
+                        "arguments": json.dumps({"node_id": "abc"}),
+                    },
+                }
+            ],
+            cost=0.02,
+        )
+    )
+    db.add(
+        models.Message(
+            session_id=sess.id,
+            role="tool",
+            tool_call_id="tc_2",
+            name="configure_node",
+            content=json.dumps({"node_id": "abc", "ok": True}),
+        )
+    )
+    db.commit()
+
+    bubbles = orch_agent.render_history(db, sess.id)
+    assert [b["role"] for b in bubbles] == ["user", "assistant"]
+    blocks = bubbles[1]["content"]
+    assert blocks[0]["t"] == "p"
+    assert blocks[0]["text"].startswith("i'll add")
+    assert blocks[1]["t"] == "tool" and blocks[1]["tool"] == "add_node"
+    assert blocks[2]["t"] == "tool" and blocks[2]["tool"] == "configure_node"
+    assert bubbles[1]["cost"] == pytest.approx(0.03)
+
+
 def test_render_history_surfaces_thinking_block(db, workflow):
     """A persisted reasoning_details array should render as a thinking
     ChatBlock at the top of the assistant bubble."""

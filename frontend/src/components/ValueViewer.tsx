@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { JsonView } from './JsonView';
 import { Markdown } from './Markdown';
+import { CloseButton } from './CloseButton';
 
 /**
  * Compact, clickable row for a single named value (e.g. a node input/output
@@ -40,7 +41,19 @@ interface PreviewInfo {
   inline: boolean;
 }
 
-function describe(value: unknown): PreviewInfo {
+export type PortCardAccent =
+  | 'input'
+  | 'output'
+  | 'log'
+  | 'llm'
+  | 'thought'
+  | 'tool';
+
+export function portCardAccentClass(accent?: PortCardAccent): string {
+  return accent ? `port-card--${accent}` : '';
+}
+
+export function describe(value: unknown): PreviewInfo {
   if (value === null) return { text: 'null', size: null, inline: true };
   if (value === undefined) return { text: 'undefined', size: null, inline: true };
   if (typeof value === 'boolean') return { text: String(value), size: null, inline: true };
@@ -89,16 +102,16 @@ function ValueBody({ value, large = false }: { value: unknown; large?: boolean }
     }
     return (
       <pre
-        className="mono"
+        className="mono viewer-plain"
         style={{
-          fontSize: large ? 14 : 12,
-          lineHeight: large ? 1.55 : 1.5,
+          fontSize: large ? 13.5 : 12,
+          lineHeight: large ? 1.6 : 1.5,
           color: 'var(--ink-2)',
           margin: 0,
-          padding: '12px 16px',
-          background: 'var(--paper)',
-          border: '1px solid var(--rule-2)',
-          borderRadius: 3,
+          padding: large ? '16px 18px' : '12px 16px',
+          background: 'var(--surface-raised)',
+          border: '1px solid var(--rule)',
+          borderRadius: 4,
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-word',
         }}
@@ -122,8 +135,19 @@ interface ViewerOverlayProps {
   onClose: () => void;
 }
 
+function parseViewerTitle(title: string): { runRef: string | null; name: string } {
+  const sep = title.indexOf(' · ');
+  if (sep === -1) return { runRef: null, name: title };
+  const runRef = title.slice(0, sep).trim();
+  const name = title.slice(sep + 3).trim();
+  return { runRef: runRef || null, name: name || title };
+}
+
 export function ViewerOverlay({ title, subtitle, value, onClose }: ViewerOverlayProps) {
   const [copied, setCopied] = useState(false);
+  const { runRef, name } = parseViewerTitle(title);
+  const isMarkdown = typeof value === 'string' && looksLikeMarkdown(value);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -144,83 +168,45 @@ export function ViewerOverlay({ title, subtitle, value, onClose }: ViewerOverlay
   };
 
   return createPortal(
-    <div
-      onClick={onClose}
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'var(--overlay)',
-        backdropFilter: 'blur(2px)',
-        display: 'flex',
-        alignItems: 'stretch',
-        justifyContent: 'center',
-        padding: '4vh 4vw',
-        zIndex: 1000,
-      }}
-      className="fade-in"
-    >
-      <div
+    <div onClick={onClose} className="viewer-backdrop fade-in">
+      <aside
         onClick={(e) => e.stopPropagation()}
-        className="shadow-card"
-        style={{
-          flex: 1,
-          maxWidth: 1100,
-          background: 'var(--paper)',
-          border: '1px solid var(--rule)',
-          borderRadius: 4,
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
-        }}
+        className="viewer-panel"
+        role="dialog"
+        aria-labelledby="viewer-title"
       >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'baseline',
-            gap: 10,
-            padding: '14px 18px',
-            borderBottom: '1px solid var(--rule)',
-            background: 'var(--paper-2)',
-          }}
-        >
-          <span className="smallcaps">{title}</span>
-          {subtitle && (
-            <span
-              className="serif"
-              style={{ fontStyle: 'italic', color: 'var(--ink-4)', fontSize: 12 }}
-            >
-              {subtitle}
-            </span>
-          )}
-          <span style={{ flex: 1 }} />
-          <button className="ed-btn ed-btn--mini" onClick={onCopy}>
-            {copied ? 'copied' : 'copy'}{' '}
-            <span className="ed-btn__mark">{copied ? '✓' : '⎘'}</span>
-          </button>
-          <button className="text-btn" onClick={onClose} title="close">
-            close
-          </button>
-        </div>
-        <div
-          className="scroll"
-          style={{ flex: 1, overflow: 'auto', padding: 18 }}
-        >
+        <header className="viewer-panel__head">
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              justifyContent: 'space-between',
+              gap: 16,
+            }}
+          >
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div className="viewer-panel__meta">
+                {subtitle && <span className="smallcaps viewer-panel__kind">{subtitle}</span>}
+                {runRef && <span className="viewer-panel__run">{runRef}</span>}
+              </div>
+              <h2 id="viewer-title" className="viewer-panel__title">
+                {name}
+              </h2>
+            </div>
+            <CloseButton onClick={onClose} title="close (esc)" />
+          </div>
+          <div className="viewer-panel__actions">
+            <button className="text-btn text-btn--accent" onClick={onCopy}>
+              {copied ? 'copied' : 'copy'}
+            </button>
+            <span style={{ flex: 1 }} />
+            <span className="viewer-panel__hint">esc to close</span>
+          </div>
+        </header>
+        <div className={`viewer-panel__body scroll${isMarkdown ? ' viewer-prose' : ''}`}>
           <ValueBody value={value} large />
         </div>
-        <div
-          style={{
-            padding: '8px 18px',
-            borderTop: '1px solid var(--rule)',
-            background: 'var(--paper-2)',
-            color: 'var(--ink-4)',
-          }}
-          className="serif"
-        >
-          <span style={{ fontStyle: 'italic', fontSize: 11.5 }}>
-            esc to close
-          </span>
-        </div>
-      </div>
+      </aside>
     </div>,
     document.body,
   );
@@ -234,6 +220,14 @@ interface PortRowProps {
   viewerTitle: string;
   /** Optional subtitle for the overlay header (e.g. "from analyze.summary"). */
   viewerSubtitle?: string;
+  /** `card` — raised field tiles for snapshot run details; `row` — dense trace list. */
+  variant?: 'row' | 'card';
+  /** Left-rail accent when variant is `card`. */
+  cardAccent?: PortCardAccent;
+  /** Optional right-rail badge (e.g. streaming / done). */
+  statusBadge?: { label: string; color?: string };
+  /** Show live caret beside the badge. */
+  live?: boolean;
 }
 
 /**
@@ -247,9 +241,82 @@ export function PortRow({
   value,
   viewerTitle,
   viewerSubtitle,
+  variant = 'row',
+  cardAccent,
+  statusBadge,
+  live,
 }: PortRowProps) {
   const [open, setOpen] = useState(false);
   const info = describe(value);
+
+  if (variant === 'card') {
+    const cardClass = `port-card${portCardAccentClass(cardAccent) ? ` ${portCardAccentClass(cardAccent)}` : ''}`;
+    const showMeta = !info.inline || statusBadge || live;
+    const head = (
+      <div className="port-card__head">
+        <div className="port-card__label">
+          <span className="port-card__name">{name}</span>
+          {typeHint && <span className="port-card__hint">{typeHint}</span>}
+        </div>
+        {showMeta && (
+          <div className="port-card__meta">
+            {info.size && <span className="port-card__size">{info.size}</span>}
+            {statusBadge && (
+              <span
+                className="port-card__status"
+                style={statusBadge.color ? { color: statusBadge.color } : undefined}
+              >
+                {live && <span className="caret" style={{ marginRight: 4 }} />}
+                {statusBadge.label}
+              </span>
+            )}
+            {!info.inline && (
+              <span className="port-card__open" aria-hidden>
+                open <span className="ed-btn__mark">⤢</span>
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+    );
+    const body = (
+      <div
+        className={`port-card__value${info.inline ? ' port-card__value--inline' : ''}`}
+      >
+        {info.text}
+      </div>
+    );
+
+    if (info.inline) {
+      return (
+        <div className={cardClass}>
+          {head}
+          {body}
+        </div>
+      );
+    }
+
+    return (
+      <>
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className={cardClass}
+        >
+          {head}
+          {body}
+        </button>
+        {open && (
+          <ViewerOverlay
+            title={viewerTitle}
+            subtitle={viewerSubtitle}
+            value={value}
+            onClose={() => setOpen(false)}
+          />
+        )}
+      </>
+    );
+  }
 
   const labelEl = (
     <>

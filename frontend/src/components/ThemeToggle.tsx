@@ -2,17 +2,17 @@ import type { Theme } from '../theme';
 
 function SunIcon() {
   return (
-    <svg className="theme-toggle__icon" width="14" height="14" viewBox="0 0 14 14" aria-hidden>
-      <circle cx="7" cy="7" r="2.5" fill="currentColor" />
-      <g stroke="currentColor" strokeWidth="1.1" strokeLinecap="round">
-        <line x1="7" y1="1.2" x2="7" y2="2.8" />
-        <line x1="7" y1="11.2" x2="7" y2="12.8" />
-        <line x1="1.2" y1="7" x2="2.8" y2="7" />
-        <line x1="11.2" y1="7" x2="12.8" y2="7" />
-        <line x1="2.9" y1="2.9" x2="4.1" y2="4.1" />
-        <line x1="9.9" y1="9.9" x2="11.1" y2="11.1" />
-        <line x1="9.9" y1="4.1" x2="11.1" y2="2.9" />
-        <line x1="2.9" y1="11.1" x2="4.1" y2="9.9" />
+    <svg className="theme-toggle__icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden>
+      <circle cx="8" cy="8" r="3" fill="currentColor" />
+      <g stroke="currentColor" strokeWidth="1.2" strokeLinecap="round">
+        <line x1="8" y1="1.4" x2="8" y2="3.2" />
+        <line x1="8" y1="12.8" x2="8" y2="14.6" />
+        <line x1="1.4" y1="8" x2="3.2" y2="8" />
+        <line x1="12.8" y1="8" x2="14.6" y2="8" />
+        <line x1="3.4" y1="3.4" x2="4.7" y2="4.7" />
+        <line x1="11.3" y1="11.3" x2="12.6" y2="12.6" />
+        <line x1="11.3" y1="4.7" x2="12.6" y2="3.4" />
+        <line x1="3.4" y1="12.6" x2="4.7" y2="11.3" />
       </g>
     </svg>
   );
@@ -20,9 +20,9 @@ function SunIcon() {
 
 function MoonIcon() {
   return (
-    <svg className="theme-toggle__icon" width="14" height="14" viewBox="0 0 14 14" aria-hidden>
+    <svg className="theme-toggle__icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden>
       <path
-        d="M7.2 2.1a3.6 3.6 0 0 0 5.4 5.4a5.4 5.4 0 1 1-5.4-5.4Z"
+        d="M8.2 2.2a4.2 4.2 0 0 0 6.1 6.1A6.2 6.2 0 1 1 8.2 2.2Z"
         fill="currentColor"
       />
     </svg>
@@ -41,19 +41,18 @@ export function ThemeToggle({
   return (
     <button
       type="button"
-      className="theme-toggle"
+      className={`theme-toggle ${isDark ? 'is-dark' : ''}`}
       role="switch"
       aria-checked={isDark}
       aria-label={isDark ? 'switch to light mode' : 'switch to dark mode'}
       title={isDark ? 'light mode' : 'dark mode'}
       onClick={() => onChange(isDark ? 'light' : 'dark')}
     >
-      <span className="theme-toggle__track">
-        <span className={`theme-toggle__thumb ${isDark ? 'theme-toggle__thumb--dark' : ''}`} />
-        <span className={`theme-toggle__option ${!isDark ? 'is-active' : ''}`}>
+      <span className="theme-toggle__glyphs">
+        <span className="theme-toggle__glyph theme-toggle__glyph--sun">
           <SunIcon />
         </span>
-        <span className={`theme-toggle__option ${isDark ? 'is-active' : ''}`}>
+        <span className="theme-toggle__glyph theme-toggle__glyph--moon">
           <MoonIcon />
         </span>
       </span>

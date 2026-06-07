@@ -23,7 +23,6 @@ export function notifyRunFinished({
   status,
   error,
   outputs,
-  totalCost,
   durationMs,
 }: {
   runId: string;
@@ -31,61 +30,64 @@ export function notifyRunFinished({
   status: RunStatus;
   error: string | null;
   outputs: Record<string, unknown> | null;
-  totalCost: number;
   durationMs: number;
 }): void {
   if (typeof Notification === 'undefined') return;
   if (Notification.permission !== 'granted') return;
+  if (status === 'cancelled') return;
 
-  const icon =
-    status === 'success' ? '✓'
-    : status === 'error' ? '×'
-    : status === 'cancelled' ? '—'
-    : '·';
-  const title = `${icon} ${workflowName}`;
-
-  const lines: string[] = [];
-  if (status === 'success' && outputs) {
-    const preview = previewOutputs(outputs);
-    if (preview) lines.push(preview);
-  } else if (status === 'error' && error) {
-    lines.push(truncate(error.replace(/\s+/g, ' ').trim(), 200));
-  } else if (status === 'cancelled') {
-    lines.push('cancelled');
-  }
-  const meta: string[] = [`run ${runId.slice(0, 8)}`];
-  if (Number.isFinite(durationMs) && durationMs > 0) meta.push(formatDuration(durationMs));
-  if (Number.isFinite(totalCost) && totalCost > 0) meta.push(`$${totalCost.toFixed(4)}`);
-  lines.push(meta.join(' · '));
+  const title = workflowName;
+  const body = buildBody({ status, error, outputs, durationMs });
 
   try {
-    new Notification(title, { body: lines.join('\n'), tag: `run-${runId}` });
+    new Notification(title, { body, tag: `run-${runId}` });
   } catch {
     /* ignore — some browsers throw when the page lacks user activation */
   }
 }
 
-function previewOutputs(outputs: Record<string, unknown>): string {
+function buildBody({
+  status,
+  error,
+  outputs,
+  durationMs,
+}: {
+  status: RunStatus;
+  error: string | null;
+  outputs: Record<string, unknown> | null;
+  durationMs: number;
+}): string {
+  if (status === 'success') {
+    const hint = briefOutputHint(outputs);
+    const timing =
+      Number.isFinite(durationMs) && durationMs > 0
+        ? `Finished in ${formatDuration(durationMs)}`
+        : 'Finished';
+    return hint ? `${timing} — ${hint}` : timing;
+  }
+  if (status === 'error') {
+    return error
+      ? truncate(error.replace(/\s+/g, ' ').trim(), 100)
+      : 'Failed';
+  }
+  return status;
+}
+
+function briefOutputHint(outputs: Record<string, unknown> | null): string {
+  if (!outputs) return '';
   const entries = Object.entries(outputs).filter(
     ([, v]) => v !== null && v !== undefined && v !== '',
   );
   if (entries.length === 0) return '';
   if (entries.length === 1) {
-    return truncate(formatValue(entries[0][1]), 120);
+    const v = entries[0][1];
+    if (typeof v === 'string') {
+      const text = v.replace(/\s+/g, ' ').trim();
+      return text.length <= 60 ? text : '';
+    }
+    return '';
   }
-  const per = Math.max(20, Math.floor(120 / entries.length));
-  return entries
-    .map(([k, v]) => `${k}: ${truncate(formatValue(v), per)}`)
-    .join(' · ');
-}
-
-function formatValue(v: unknown): string {
-  const raw = typeof v === 'string' ? v : safeStringify(v);
-  return raw.replace(/\s+/g, ' ').trim();
-}
-
-function safeStringify(v: unknown): string {
-  try { return JSON.stringify(v); } catch { return String(v); }
+  return `${entries.length} outputs`;
 }
 
 function truncate(s: string, n: number): string {

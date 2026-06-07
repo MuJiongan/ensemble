@@ -17,7 +17,7 @@ export function SnapshotBanner({
     <div
       style={{
         padding: '6px 12px',
-        background: 'var(--paper-2)',
+        background: 'var(--paper)',
         borderTop: '1px solid var(--rule)',
         display: 'flex',
         alignItems: 'center',

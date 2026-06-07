@@ -286,8 +286,222 @@ function ObjectNode({
   );
 }
 
+function isPrimitiveValue(v: unknown): boolean {
+  return v === null || v === undefined || ['string', 'number', 'boolean'].includes(typeof v);
+}
+
+function isPrimitiveArray(arr: unknown[]): boolean {
+  return arr.every(isPrimitiveValue);
+}
+
+function isObjectRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function formatPrimitive(v: unknown): string {
+  if (v === null) return 'null';
+  if (v === undefined) return 'undefined';
+  return String(v);
+}
+
+function PanelPrimitive({ value }: { value: unknown }) {
+  if (value === null || value === undefined) {
+    return <span className="viewer-primitive viewer-primitive--null">{formatPrimitive(value)}</span>;
+  }
+  if (typeof value === 'boolean') {
+    return <span className="viewer-primitive viewer-primitive--bool">{String(value)}</span>;
+  }
+  if (typeof value === 'number') {
+    return <span className="viewer-primitive viewer-primitive--num">{value}</span>;
+  }
+  return <span className="viewer-primitive">{formatPrimitive(value)}</span>;
+}
+
+function PanelString({ value }: { value: string }) {
+  if (looksLikeMarkdown(value)) {
+    return <Markdown large>{value}</Markdown>;
+  }
+  if (value.includes('\n')) {
+    return <pre className="viewer-block mono">{value}</pre>;
+  }
+  return <span className="viewer-primitive">{value}</span>;
+}
+
+function PanelPrimitiveList({ items, compact = false }: { items: unknown[]; compact?: boolean }) {
+  if (compact) {
+    return (
+      <div className="viewer-tags">
+        {items.map((item, i) => (
+          <span key={i} className="viewer-tag">{formatPrimitive(item)}</span>
+        ))}
+      </div>
+    );
+  }
+  return (
+    <div className="viewer-data">
+      <div className="viewer-data__meta">
+        {items.length} {items.length === 1 ? 'item' : 'items'}
+      </div>
+      <div className="viewer-list">
+        {items.map((item, i) => (
+          <div key={i} className="viewer-list__row">
+            <span className="viewer-list__idx">[{i}]</span>
+            <span className="viewer-list__val">{formatPrimitive(item)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PanelField({ name, value }: { name: string; value: unknown }) {
+  return (
+    <div className="viewer-field">
+      <div className="viewer-field__key">{name}</div>
+      <div className="viewer-field__val">
+        <PanelValue value={value} nested />
+      </div>
+    </div>
+  );
+}
+
+function PanelObject({
+  value,
+  title,
+  nested = false,
+}: {
+  value: Record<string, unknown>;
+  title?: string;
+  nested?: boolean;
+}) {
+  const keys = Object.keys(value);
+  if (keys.length === 0) {
+    return <div className="viewer-scalar">{'{ }'}</div>;
+  }
+  return (
+    <div className={`viewer-record${nested ? ' viewer-record--nested' : ''}`}>
+      {title && <div className="viewer-record__head">{title}</div>}
+      <div className="viewer-record__fields">
+        {keys.map((k) => (
+          <PanelField key={k} name={k} value={value[k]} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PanelArray({ value, nested = false }: { value: unknown[]; nested?: boolean }) {
+  if (value.length === 0) {
+    return <div className="viewer-scalar">[ ]</div>;
+  }
+  if (isPrimitiveArray(value)) {
+    if (nested && value.length <= 8) {
+      return <PanelPrimitiveList items={value} compact />;
+    }
+    return <PanelPrimitiveList items={value} />;
+  }
+
+  const objectItems = value.filter(isObjectRecord);
+  const allObjects = objectItems.length === value.length;
+
+  if (allObjects) {
+    const body = (
+      <div className="viewer-collection">
+        {value.map((item, i) => (
+          <PanelObject
+            key={i}
+            value={item as Record<string, unknown>}
+            title={`[${i}]`}
+            nested
+          />
+        ))}
+      </div>
+    );
+    if (nested) return body;
+    return (
+      <div className="viewer-data">
+        <div className="viewer-data__meta">
+          {value.length} {value.length === 1 ? 'record' : 'records'}
+        </div>
+        {body}
+      </div>
+    );
+  }
+
+  const body = (
+    <div className="viewer-collection">
+      {value.map((item, i) => (
+        <div key={i} className="viewer-array-item">
+          <div className="viewer-array-item__head">[{i}]</div>
+          <div className="viewer-array-item__body">
+            <PanelValue value={item} nested />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+  if (nested) return body;
+  return (
+    <div className="viewer-data">
+      <div className="viewer-data__meta">
+        {value.length} {value.length === 1 ? 'item' : 'items'}
+      </div>
+      {body}
+    </div>
+  );
+}
+
+function PanelValue({ value, nested = false }: { value: unknown; nested?: boolean }) {
+  if (isPrimitiveValue(value)) {
+    return <PanelPrimitive value={value} />;
+  }
+  if (typeof value === 'string') {
+    return <PanelString value={value} />;
+  }
+  if (Array.isArray(value)) {
+    return <PanelArray value={value} nested={nested} />;
+  }
+  if (isObjectRecord(value)) {
+    return <PanelObject value={value} nested={nested} />;
+  }
+  return <span className="viewer-primitive">{String(value)}</span>;
+}
+
+function PanelDataView({ value }: { value: unknown }) {
+  if (isPrimitiveValue(value)) {
+    return <div className="viewer-scalar">{formatPrimitive(value)}</div>;
+  }
+  if (typeof value === 'string') {
+    return (
+      <div className="viewer-data">
+        <PanelString value={value} />
+      </div>
+    );
+  }
+  if (Array.isArray(value)) {
+    return <PanelArray value={value} />;
+  }
+  if (isObjectRecord(value)) {
+    const keys = Object.keys(value);
+    return (
+      <div className="viewer-data">
+        {keys.length > 0 && (
+          <div className="viewer-data__meta">
+            {keys.length} {keys.length === 1 ? 'field' : 'fields'}
+          </div>
+        )}
+        <PanelObject value={value} />
+      </div>
+    );
+  }
+  return <div className="viewer-scalar">{String(value)}</div>;
+}
+
 export function JsonView({ value, large = false }: { value: unknown; large?: boolean }) {
-  // Top level — wrap in a paper card matching the prior <pre> styling.
+  if (large) {
+    return <PanelDataView value={value} />;
+  }
+  // Compact inline card for run-trace rows.
   return (
     <div
       style={{
@@ -295,13 +509,13 @@ export function JsonView({ value, large = false }: { value: unknown; large?: boo
         background: 'var(--paper)',
         border: '1px solid var(--rule-2)',
         borderRadius: 3,
-        fontSize: large ? 14 : 12,
+        fontSize: 12,
         color: 'var(--ink-2)',
         maxWidth: '100%',
         overflowX: 'auto',
       }}
     >
-      <Node value={value} level={0} large={large} />
+      <Node value={value} level={0} large={false} />
     </div>
   );
 }

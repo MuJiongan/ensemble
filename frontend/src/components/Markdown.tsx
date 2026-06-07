@@ -6,7 +6,7 @@ import 'katex/dist/katex.min.css';
 
 /**
  * Renders markdown using the editorial palette: serif body for prose, mono
- * for code, terracotta for accents/links. Used wherever an LLM-produced text
+ * for code, sage for accents/links. Used wherever an LLM-produced text
  * value lands in the UI (mostly inside JsonView for run inputs/outputs).
  */
 export function Markdown({ children, large = false }: { children: string; large?: boolean }) {
@@ -14,8 +14,8 @@ export function Markdown({ children, large = false }: { children: string; large?
     <div
       style={{
         fontFamily: 'var(--serif)',
-        fontSize: large ? 15 : 13,
-        lineHeight: 1.6,
+        fontSize: large ? 15.5 : 13,
+        lineHeight: large ? 1.68 : 1.6,
         color: 'var(--ink-2)',
       }}
     >
@@ -23,11 +23,17 @@ export function Markdown({ children, large = false }: { children: string; large?
         remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
         rehypePlugins={[rehypeKatex]}
         components={{
-          p: ({ children }) => <p style={{ margin: '0 0 8px' }}>{children}</p>,
+          p: ({ children }) => <p style={{ margin: large ? '0 0 12px' : '0 0 8px' }}>{children}</p>,
           h1: ({ children }) => (
             <h1
               className="serif"
-              style={{ fontSize: large ? 21 : 18, fontWeight: 500, margin: '6px 0 6px', color: 'var(--ink)' }}
+              style={{
+                fontSize: large ? 24 : 18,
+                fontWeight: 500,
+                margin: large ? '0 0 14px' : '6px 0 6px',
+                color: 'var(--ink)',
+                lineHeight: 1.25,
+              }}
             >
               {children}
             </h1>
@@ -35,7 +41,13 @@ export function Markdown({ children, large = false }: { children: string; large?
           h2: ({ children }) => (
             <h2
               className="serif"
-              style={{ fontSize: large ? 18 : 16, fontWeight: 500, margin: '6px 0 6px', color: 'var(--ink)' }}
+              style={{
+                fontSize: large ? 19 : 16,
+                fontWeight: 500,
+                margin: large ? '20px 0 10px' : '6px 0 6px',
+                color: 'var(--ink)',
+                lineHeight: 1.3,
+              }}
             >
               {children}
             </h2>
@@ -114,7 +126,11 @@ export function Markdown({ children, large = false }: { children: string; large?
           ),
           hr: () => (
             <hr
-              style={{ border: 0, borderTop: '1px solid var(--rule)', margin: '12px 0' }}
+              style={{
+                border: 0,
+                borderTop: '1px solid var(--rule)',
+                margin: large ? '24px 0' : '12px 0',
+              }}
             />
           ),
           code: ({ inline, children, className }: any) => {
@@ -123,7 +139,7 @@ export function Markdown({ children, large = false }: { children: string; large?
                 <code
                   className="mono"
                   style={{
-                    background: 'var(--paper-2)',
+                    background: 'var(--surface-chip)',
                     padding: '0 4px',
                     borderRadius: 2,
                     fontSize: '0.92em',
@@ -144,7 +160,7 @@ export function Markdown({ children, large = false }: { children: string; large?
             <pre
               className="scroll"
               style={{
-                background: 'var(--paper-2)',
+                background: 'var(--surface-chip)',
                 border: '1px solid var(--rule-2)',
                 borderRadius: 3,
                 padding: 10,

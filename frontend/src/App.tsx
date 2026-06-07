@@ -8,6 +8,7 @@ import { SettingsPanel } from './components/Settings';
 import { Hero } from './components/Hero';
 import { SnapshotBanner } from './components/SnapshotBanner';
 import { SnapshotRunPanel } from './components/SnapshotRunPanel';
+import { AlertDialog, ConfirmDialog } from './components/ConfirmDialog';
 import { api } from './api';
 import {
   loadSettings,
@@ -59,6 +60,11 @@ export default function App() {
   const [chatByWorkflow, setChatByWorkflow] = useState<Record<string, ChatMessage[]>>({});
   // Workflows whose orchestrator is currently streaming.
   const [orchestratingIds, setOrchestratingIds] = useState<Set<string>>(new Set());
+  type AppDialog =
+    | { kind: 'none' }
+    | { kind: 'alert'; message: string; variant?: 'default' | 'error' }
+    | { kind: 'confirm-clear-context' };
+  const [dialog, setDialog] = useState<AppDialog>({ kind: 'none' });
 
   // When non-null, the canvas renders this run's frozen `workflow_snapshot`
   // instead of the live graph. NodePanel still works (read-only) so the user
@@ -335,14 +341,21 @@ export default function App() {
 
   const handleForkWorkflow = async (id: string) => {
     if (orchestratingIds.has(id)) {
-      alert('wait for the orchestrator to finish before forking this project.');
+      setDialog({
+        kind: 'alert',
+        message: 'wait for the orchestrator to finish before forking this project.',
+      });
       return;
     }
     try {
       const fork = await api.forkWorkflow(id);
       await activateFork(fork);
     } catch (e) {
-      alert(`couldn't fork project: ${e instanceof Error ? e.message : String(e)}`);
+      setDialog({
+        kind: 'alert',
+        message: `couldn't fork project: ${e instanceof Error ? e.message : String(e)}`,
+        variant: 'error',
+      });
     }
   };
 
@@ -352,7 +365,11 @@ export default function App() {
       const fork = await api.forkRunSnapshot(viewingRun.id);
       await activateFork(fork);
     } catch (e) {
-      alert(`couldn't fork snapshot: ${e instanceof Error ? e.message : String(e)}`);
+      setDialog({
+        kind: 'alert',
+        message: `couldn't fork snapshot: ${e instanceof Error ? e.message : String(e)}`,
+        variant: 'error',
+      });
     }
   };
 
@@ -385,19 +402,30 @@ export default function App() {
   const selectedNode = detail?.nodes.find((n) => n.id === selectedNodeId);
   const isOrchestrating = !!activeId && orchestratingIds.has(activeId);
 
-  const clearChatContext = async () => {
+  const clearChatContext = () => {
     if (!activeId || isOrchestrating) return;
     const sid = sessionByWorkflow[activeId];
     if (!sid) {
       setChatByWorkflow((prev) => ({ ...prev, [activeId]: [] }));
       return;
     }
-    if (!confirm('clear this chat context? the project graph and run history will stay.')) return;
+    setDialog({ kind: 'confirm-clear-context' });
+  };
+
+  const doClearChatContext = async () => {
+    if (!activeId) return;
+    const sid = sessionByWorkflow[activeId];
+    if (!sid) return;
+    setDialog({ kind: 'none' });
     try {
       await api.clearSessionMessages(sid);
       setChatByWorkflow((prev) => ({ ...prev, [activeId]: [] }));
     } catch (e) {
-      alert(`couldn't clear context: ${e instanceof Error ? e.message : String(e)}`);
+      setDialog({
+        kind: 'alert',
+        message: `couldn't clear context: ${e instanceof Error ? e.message : String(e)}`,
+        variant: 'error',
+      });
     }
   };
 
@@ -447,7 +475,6 @@ export default function App() {
           setCurrentRun(null);
         }}
         onNew={handleNew}
-        onFork={handleForkWorkflow}
         onRename={handleRename}
         onDelete={handleDelete}
         onOpenSettings={() => setView('settings')}
@@ -489,36 +516,6 @@ export default function App() {
                   minWidth: 0,
                 }}
               >
-                {viewingRun && (
-                  <div
-                    style={{
-                      borderBottom: '1px solid var(--rule)',
-                      background: 'var(--paper-2)',
-                      padding: '10px 12px',
-                      display: 'flex',
-                      justifyContent: 'flex-end',
-                      gap: 8,
-                      flexShrink: 0,
-                    }}
-                  >
-                    <button
-                      type="button"
-                      onClick={handleForkSnapshot}
-                      className="snapshot-action-btn snapshot-action-btn--secondary"
-                      title="copy this frozen run graph into a new editable project"
-                    >
-                      create project from snapshot
-                    </button>
-                    <button
-                      type="button"
-                      onClick={exitSnapshotView}
-                      className="snapshot-action-btn"
-                      title="return to the live, editable canvas"
-                    >
-                      back to live canvas
-                    </button>
-                  </div>
-                )}
                 {/* Canvas (and the empty-canvas placeholder) need
                  * `position: relative` to host React Flow's absolute layout.
                  * Action bar / banner stack above and below via flex; this
@@ -543,6 +540,26 @@ export default function App() {
                           if (id !== null) setRightPanelMode('workspace');
                         }}
                         nodeStates={snapshotNodeStates}
+                        headerActions={
+                          <>
+                            <button
+                              type="button"
+                              onClick={handleForkSnapshot}
+                              className="snapshot-action-btn snapshot-action-btn--secondary"
+                              title="copy this frozen run graph into a new editable project"
+                            >
+                              save as new
+                            </button>
+                            <button
+                              type="button"
+                              onClick={exitSnapshotView}
+                              className="snapshot-action-btn"
+                              title="return to the live, editable canvas"
+                            >
+                              back to live
+                            </button>
+                          </>
+                        }
                       />
                     ) : null;
                   })()
@@ -566,6 +583,17 @@ export default function App() {
                       !currentRun.executesOnSnapshot
                         ? currentRun.nodeStates
                         : undefined
+                    }
+                    headerActions={
+                      <button
+                        type="button"
+                        onClick={() => handleForkWorkflow(detail.id)}
+                        className="snapshot-action-btn snapshot-action-btn--secondary"
+                        disabled={isOrchestrating}
+                        title="copy the current live canvas into a new project"
+                      >
+                        save as new
+                      </button>
                     }
                   />
                 ) : (
@@ -628,7 +656,6 @@ export default function App() {
                         onSend={handleSend}
                         onCancel={cancelOrchestrator}
                         disabled={isOrchestrating}
-                        workflowTitle={activeWorkflow?.name}
                         modelLabel={orchestratorModel}
                         onClearContext={clearChatContext}
                         onViewRun={(runId) => {
@@ -670,6 +697,7 @@ export default function App() {
                         return (
                           <SnapshotRunPanel
                             run={viewingRun}
+                            currentRun={currentRun}
                             onExit={exitSnapshotView}
                             // Block rerun while any run on this workflow is in
                             // flight — server has no guard yet, so we hold the
@@ -773,6 +801,24 @@ export default function App() {
           </>
         )}
       </main>
+
+      {dialog.kind === 'alert' && (
+        <AlertDialog
+          message={dialog.message}
+          variant={dialog.variant}
+          onClose={() => setDialog({ kind: 'none' })}
+        />
+      )}
+      {dialog.kind === 'confirm-clear-context' && (
+        <ConfirmDialog
+          title="clear chat context"
+          message="clear this chat context? the project graph and run history will stay."
+          confirmLabel="clear"
+          variant="danger"
+          onConfirm={doClearChatContext}
+          onCancel={() => setDialog({ kind: 'none' })}
+        />
+      )}
     </div>
   );
 }
@@ -796,7 +842,7 @@ function RightPanelTabs({
         gap: 0,
         padding: '0 12px',
         borderBottom: '1px solid var(--rule)',
-        background: 'var(--paper-2)',
+        background: 'var(--paper)',
         flexShrink: 0,
       }}
     >

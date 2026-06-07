@@ -7,6 +7,7 @@ import type { Components } from 'react-markdown';
 import 'katex/dist/katex.min.css';
 import { api } from '../api';
 import type { Run } from '../types';
+import { CloseButton } from './CloseButton';
 
 export type ChatToolStatus = 'pending' | 'ok' | 'err';
 
@@ -53,7 +54,7 @@ const MD_COMPONENTS: Components = {
       style={{
         margin: '8px 0 12px',
         padding: 10,
-        background: 'var(--paper-2)',
+        background: 'var(--surface-chip)',
         border: '1px solid var(--rule)',
         borderRadius: 3,
         overflow: 'auto',
@@ -248,7 +249,6 @@ interface Props {
   onSend: (text: string) => void;
   onCancel?: () => void;
   disabled?: boolean;
-  workflowTitle?: string;
   modelLabel?: string;
   onClose?: () => void;
   onClearContext?: () => void;
@@ -778,19 +778,6 @@ function MessageBubble({
         }}
       >
         <span>ensemble</span>
-        <span
-          style={{
-            fontFamily: 'var(--serif)',
-            textTransform: 'none',
-            letterSpacing: 0,
-            fontStyle: 'italic',
-            fontWeight: 400,
-            color: 'var(--ink-4)',
-            fontSize: 10.5,
-          }}
-        >
-          · {msg.streaming ? 'thinking' : 'said'}
-        </span>
         <span style={{ flex: 1 }} />
         {typeof msg.cost === 'number' && msg.cost > 0 && (
           <span
@@ -856,7 +843,6 @@ export function ChatPanel({
   onSend,
   onCancel,
   disabled,
-  workflowTitle,
   modelLabel,
   onClose,
   onClearContext,
@@ -933,54 +919,23 @@ export function ChatPanel({
               </span>
             </>
           )}
-          {onClose && (
-            <button
-              onClick={onClose}
-              className="text-btn"
-              title="close chat"
-              style={{ marginLeft: 8 }}
-            >
-              close
-            </button>
-          )}
-        </div>
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'baseline',
-            gap: 12,
-            marginTop: 6,
-            minWidth: 0,
-          }}
-        >
-          <div
-            className="serif"
-            style={{
-              fontStyle: 'italic',
-              fontSize: 18,
-              lineHeight: 1.3,
-              color: 'var(--ink)',
-              flex: 1,
-              minWidth: 0,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              display: '-webkit-box',
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: 'vertical',
-            }}
-          >
-            {workflowTitle || 'untitled project'}
-          </div>
           {onClearContext && messages.length > 0 && !disabled && (
             <button
               type="button"
               onClick={onClearContext}
               className="text-btn"
               title="clear chat context while keeping this project and its runs"
-              style={{ flexShrink: 0 }}
+              style={{ marginLeft: 8, flexShrink: 0 }}
             >
               reset chat
             </button>
+          )}
+          {onClose && (
+            <CloseButton
+              onClick={onClose}
+              title="close chat"
+              style={{ marginLeft: 8 }}
+            />
           )}
         </div>
       </div>
@@ -1024,11 +979,11 @@ export function ChatPanel({
         style={{
           padding: '14px 22px 16px',
           borderTop: '1px solid var(--rule)',
-          background: 'var(--paper-2)',
+          background: 'var(--paper)',
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div className="chat-composer">
+          <div className="chat-composer field-shell">
             <span className="chat-composer__mark" aria-hidden="true">✽</span>
             <input
               value={draft}

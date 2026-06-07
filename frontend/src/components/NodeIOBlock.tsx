@@ -1,16 +1,7 @@
 import type { IOPort, WorkflowDetail } from '../types';
-import { JsonView } from './JsonView';
-import { PortRow } from './ValueViewer';
+import { IOSection, type IOFieldEntry } from './IOSection';
 
-/**
- * Render a node's input/output ports as a compact, clickable list.
- *
- * Each port becomes one row (name · type · preview · size · expand affordance);
- * clicking opens the full value in the viewer overlay. For inputs, we resolve
- * the upstream edge so the row also shows "from upstream-node.port" — clarifying
- * that the value is a duplicate of an upstream output without re-rendering it.
- */
-function PortList({
+function buildPortEntries({
   values,
   schema,
   workflow,
@@ -24,56 +15,43 @@ function PortList({
   nodeId: string;
   nodeName: string;
   kind: 'inputs' | 'outputs';
-}) {
+}): IOFieldEntry[] {
   const seen = new Set<string>();
-  const rows: React.ReactNode[] = [];
+  const entries: IOFieldEntry[] = [];
+  const ioLabel = kind === 'inputs' ? 'in' : 'out';
+
   for (const port of schema) {
     seen.add(port.name);
     if (!(port.name in values)) continue;
-    let subtitle: string | undefined;
+    let viewerSubtitle: string | undefined;
     if (kind === 'inputs') {
       const e = workflow.edges.find(
         (x) => x.to_node_id === nodeId && x.to_input === port.name,
       );
       if (e) {
         const src = workflow.nodes.find((n) => n.id === e.from_node_id);
-        subtitle = `from ${src?.name ?? e.from_node_id}.${e.from_output}`;
+        viewerSubtitle = `from ${src?.name ?? e.from_node_id}.${e.from_output}`;
       }
     }
-    rows.push(
-      <PortRow
-        key={port.name}
-        name={port.name}
-        typeHint={port.type_hint}
-        value={values[port.name]}
-        viewerTitle={`${nodeName} · ${kind === 'inputs' ? 'in' : 'out'} · ${port.name}`}
-        viewerSubtitle={subtitle}
-      />,
-    );
+    entries.push({
+      name: port.name,
+      value: values[port.name],
+      typeHint: port.type_hint,
+      viewerTitle: `${nodeName} · ${ioLabel} · ${port.name}`,
+      viewerSubtitle,
+    });
   }
-  // any keys present at runtime but not declared in the schema
+
   for (const k of Object.keys(values)) {
     if (seen.has(k)) continue;
-    rows.push(
-      <PortRow
-        key={k}
-        name={k}
-        value={values[k]}
-        viewerTitle={`${nodeName} · ${kind === 'inputs' ? 'in' : 'out'} · ${k}`}
-      />,
-    );
+    entries.push({
+      name: k,
+      value: values[k],
+      viewerTitle: `${nodeName} · ${ioLabel} · ${k}`,
+    });
   }
-  if (rows.length === 0) {
-    return (
-      <span
-        className="serif"
-        style={{ fontStyle: 'italic', fontSize: 11.5, color: 'var(--ink-4)' }}
-      >
-        none
-      </span>
-    );
-  }
-  return <div>{rows}</div>;
+
+  return entries;
 }
 
 export function NodeIOBlock({
@@ -82,50 +60,47 @@ export function NodeIOBlock({
   nodeName,
   inputs,
   outputs,
-  logs,
 }: {
   workflow: WorkflowDetail;
   nodeId: string;
   nodeName: string;
   inputs?: Record<string, unknown>;
   outputs?: Record<string, unknown>;
-  logs?: unknown[];
 }) {
   const schemaNode = workflow.nodes.find((n) => n.id === nodeId);
+
   return (
-    <>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       {inputs !== undefined && (
-        <div style={{ marginBottom: 8 }}>
-          <div className="smallcaps" style={{ marginBottom: 4 }}>inputs</div>
-          <PortList
-            values={inputs}
-            schema={schemaNode?.inputs ?? []}
-            workflow={workflow}
-            nodeId={nodeId}
-            nodeName={nodeName}
-            kind="inputs"
-          />
-        </div>
+        <IOSection
+          title="inputs"
+          emptyText="this node received no inputs."
+          accent="input"
+          entries={buildPortEntries({
+            values: inputs,
+            schema: schemaNode?.inputs ?? [],
+            workflow,
+            nodeId,
+            nodeName,
+            kind: 'inputs',
+          })}
+        />
       )}
       {outputs !== undefined && (
-        <div style={{ marginBottom: 8 }}>
-          <div className="smallcaps" style={{ marginBottom: 4 }}>outputs</div>
-          <PortList
-            values={outputs}
-            schema={schemaNode?.outputs ?? []}
-            workflow={workflow}
-            nodeId={nodeId}
-            nodeName={nodeName}
-            kind="outputs"
-          />
-        </div>
+        <IOSection
+          title="outputs"
+          emptyText="no outputs recorded for this node."
+          accent="output"
+          entries={buildPortEntries({
+            values: outputs,
+            schema: schemaNode?.outputs ?? [],
+            workflow,
+            nodeId,
+            nodeName,
+            kind: 'outputs',
+          })}
+        />
       )}
-      {logs && logs.length > 0 && (
-        <div style={{ marginBottom: 8 }}>
-          <div className="smallcaps" style={{ marginBottom: 3 }}>logs</div>
-          <JsonView value={logs} />
-        </div>
-      )}
-    </>
+    </div>
   );
 }

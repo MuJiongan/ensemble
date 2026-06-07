@@ -1,13 +1,31 @@
 import { useRef, useState, type SetStateAction } from 'react';
 import { api } from './api';
 import { ensureNotificationPermission, notifyRunFinished } from './notify';
-import type { CurrentRun, RunEvent, RunStatus, Workflow } from './types';
+import type { CurrentRun, NodeRunStatus, RunEvent, RunStatus, Workflow } from './types';
+
+/** Clone nodeStates only when a mutation actually changes a value. Keeps
+ * the prior reference on log/chunk events so the canvas doesn't rebuild
+ * every React Flow node on each streamed token. */
+function patchNodeStates(
+  cur: Record<string, NodeRunStatus>,
+  mutate: (next: Record<string, NodeRunStatus>) => void,
+): Record<string, NodeRunStatus> {
+  const next = { ...cur };
+  mutate(next);
+  for (const id of Object.keys(cur)) {
+    if (cur[id] !== next[id]) return next;
+  }
+  for (const id of Object.keys(next)) {
+    if (!(id in cur)) return next;
+  }
+  return cur;
+}
 
 /** Apply one streamed RunEvent to the in-memory CurrentRun. Pure for
  * unit-testability — the caller passes in the prior state and stores the
  * returned next state. */
 export function applyRunEvent(cur: CurrentRun, ev: RunEvent): CurrentRun {
-  const nextStates = { ...cur.nodeStates };
+  let nodeStates = cur.nodeStates;
   let nextStatus = cur.status;
   let finalOutputs = cur.finalOutputs;
   let error = cur.error;
@@ -15,13 +33,23 @@ export function applyRunEvent(cur: CurrentRun, ev: RunEvent): CurrentRun {
 
   if (ev.type === 'run_started') {
     nextStatus = 'running';
-    for (const nodeId of ev.order) {
-      if (!nextStates[nodeId]) nextStates[nodeId] = 'pending';
-    }
+    nodeStates = patchNodeStates(nodeStates, (next) => {
+      for (const nodeId of ev.order) {
+        if (!next[nodeId]) next[nodeId] = 'pending';
+      }
+    });
   } else if (ev.type === 'node_started') {
-    nextStates[ev.node_id] = 'running';
+    if (nodeStates[ev.node_id] !== 'running') {
+      nodeStates = patchNodeStates(nodeStates, (next) => {
+        next[ev.node_id] = 'running';
+      });
+    }
   } else if (ev.type === 'node_finished') {
-    nextStates[ev.node_id] = ev.status;
+    if (nodeStates[ev.node_id] !== ev.status) {
+      nodeStates = patchNodeStates(nodeStates, (next) => {
+        next[ev.node_id] = ev.status;
+      });
+    }
   } else if (ev.type === 'run_finished') {
     nextStatus = ev.status;
     finalOutputs = ev.outputs;
@@ -35,20 +63,22 @@ export function applyRunEvent(cur: CurrentRun, ev: RunEvent): CurrentRun {
     // started but never resolved); "pending" → "skipped" (never
     // started). On a cancelled run prefer "skipped" for both — those
     // nodes didn't fail, they just got interrupted.
-    for (const nid of Object.keys(nextStates)) {
-      const s = nextStates[nid];
-      if (s === 'running') {
-        nextStates[nid] = ev.status === 'cancelled' ? 'skipped' : 'error';
-      } else if (s === 'pending') {
-        nextStates[nid] = 'skipped';
+    nodeStates = patchNodeStates(nodeStates, (next) => {
+      for (const nid of Object.keys(next)) {
+        const s = next[nid];
+        if (s === 'running') {
+          next[nid] = ev.status === 'cancelled' ? 'skipped' : 'error';
+        } else if (s === 'pending') {
+          next[nid] = 'skipped';
+        }
       }
-    }
+    });
   }
 
   return {
     ...cur,
     events: [...cur.events, ev],
-    nodeStates: nextStates,
+    nodeStates,
     status: nextStatus,
     finalOutputs,
     error,
@@ -113,7 +143,6 @@ export function useRunWebSocket(workflows: Workflow[]) {
           status: ev.status,
           error: ev.error,
           outputs: ev.outputs,
-          totalCost: ev.total_cost,
           durationMs: Date.now() - startedAt,
         });
       }
