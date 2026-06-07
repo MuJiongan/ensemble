@@ -9,7 +9,6 @@ interface Props {
   activeWorkflow: Workflow | null;
   onSelect: (id: string) => void;
   onNew: () => void;
-  onFork: (id: string) => void;
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
   onOpenSettings: () => void;
@@ -23,7 +22,6 @@ export function TopBar({
   activeWorkflow,
   onSelect,
   onNew,
-  onFork,
   onRename,
   onDelete,
   onOpenSettings,
@@ -249,14 +247,6 @@ export function TopBar({
       />
       <button className="topbar-btn" onClick={onOpenSettings}>
         settings
-      </button>
-      <button
-        className="topbar-btn"
-        onClick={() => activeWorkflow && onFork(activeWorkflow.id)}
-        disabled={!activeWorkflow}
-        title="copy the current live canvas into a new project"
-      >
-        fork
       </button>
       <button className="topbar-btn" onClick={onNew}>
         new project

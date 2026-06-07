@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ReactFlow, ReactFlowProvider, Controls,
   Handle, Position,
@@ -15,6 +15,9 @@ interface CanvasProps {
   // nodes, edges) are owned exclusively by the orchestrator, so we no longer
   // need an `onChange` for those callbacks.
   nodeStates?: Record<string, NodeRunStatus>;
+  // Graph-level actions rendered in the canvas header, right of the legend.
+  // The host decides what belongs here for the current graph (live vs. snapshot).
+  headerActions?: ReactNode;
 }
 
 type DotState = 'idle' | 'running' | 'success' | 'error' | 'skipped';
@@ -425,7 +428,7 @@ function computeVerticalLayout(
   return out;
 }
 
-function CanvasInner({ detail, selectedNodeId, onSelectNode, nodeStates }: CanvasProps) {
+function CanvasInner({ detail, selectedNodeId, onSelectNode, nodeStates, headerActions }: CanvasProps) {
   const states = nodeStates ?? {};
   const positions = useMemo(
     () => computeVerticalLayout(detail.nodes, detail.edges),
@@ -506,6 +509,21 @@ function CanvasInner({ detail, selectedNodeId, onSelectNode, nodeStates }: Canva
         <CanvasLegend />
       </div>
       <div style={{ flex: 1, position: 'relative' }} className="dotgrid">
+        {headerActions && (
+          <div
+            style={{
+              position: 'absolute',
+              top: 12,
+              right: 12,
+              zIndex: 10,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+            }}
+          >
+            {headerActions}
+          </div>
+        )}
         <ReactFlow
           nodes={rfNodes}
           edges={rfEdges}

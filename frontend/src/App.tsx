@@ -475,7 +475,6 @@ export default function App() {
           setCurrentRun(null);
         }}
         onNew={handleNew}
-        onFork={handleForkWorkflow}
         onRename={handleRename}
         onDelete={handleDelete}
         onOpenSettings={() => setView('settings')}
@@ -517,36 +516,6 @@ export default function App() {
                   minWidth: 0,
                 }}
               >
-                {viewingRun && (
-                  <div
-                    style={{
-                      borderBottom: '1px solid var(--rule)',
-                      background: 'var(--paper)',
-                      padding: '10px 12px',
-                      display: 'flex',
-                      justifyContent: 'flex-end',
-                      gap: 8,
-                      flexShrink: 0,
-                    }}
-                  >
-                    <button
-                      type="button"
-                      onClick={handleForkSnapshot}
-                      className="snapshot-action-btn snapshot-action-btn--secondary"
-                      title="copy this frozen run graph into a new editable project"
-                    >
-                      create project from snapshot
-                    </button>
-                    <button
-                      type="button"
-                      onClick={exitSnapshotView}
-                      className="snapshot-action-btn"
-                      title="return to the live, editable canvas"
-                    >
-                      back to live canvas
-                    </button>
-                  </div>
-                )}
                 {/* Canvas (and the empty-canvas placeholder) need
                  * `position: relative` to host React Flow's absolute layout.
                  * Action bar / banner stack above and below via flex; this
@@ -571,6 +540,26 @@ export default function App() {
                           if (id !== null) setRightPanelMode('workspace');
                         }}
                         nodeStates={snapshotNodeStates}
+                        headerActions={
+                          <>
+                            <button
+                              type="button"
+                              onClick={handleForkSnapshot}
+                              className="snapshot-action-btn snapshot-action-btn--secondary"
+                              title="copy this frozen run graph into a new editable project"
+                            >
+                              save as new
+                            </button>
+                            <button
+                              type="button"
+                              onClick={exitSnapshotView}
+                              className="snapshot-action-btn"
+                              title="return to the live, editable canvas"
+                            >
+                              back to live
+                            </button>
+                          </>
+                        }
                       />
                     ) : null;
                   })()
@@ -594,6 +583,17 @@ export default function App() {
                       !currentRun.executesOnSnapshot
                         ? currentRun.nodeStates
                         : undefined
+                    }
+                    headerActions={
+                      <button
+                        type="button"
+                        onClick={() => handleForkWorkflow(detail.id)}
+                        className="snapshot-action-btn snapshot-action-btn--secondary"
+                        disabled={isOrchestrating}
+                        title="copy the current live canvas into a new project"
+                      >
+                        save as new
+                      </button>
                     }
                   />
                 ) : (
