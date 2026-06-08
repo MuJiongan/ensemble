@@ -107,6 +107,7 @@ export default function App() {
     setChatByWorkflow,
     setOrchestratingIds,
     refreshDetail,
+    refreshWorkflows,
     attachToRunRef,
   });
 

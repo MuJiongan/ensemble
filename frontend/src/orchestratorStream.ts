@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { api } from './api';
-import { GRAPH_MUTATING_TOOLS } from './appHelpers';
+import { GRAPH_MUTATING_TOOLS, WORKFLOW_METADATA_TOOLS } from './appHelpers';
 import type { AssistantMessage, ChatMessage } from './components/ChatPanel';
 import type { OrchestratorEvent } from './types';
 
@@ -104,6 +104,7 @@ interface UseOrchestratorStreamArgs {
   setChatByWorkflow: React.Dispatch<React.SetStateAction<Record<string, ChatMessage[]>>>;
   setOrchestratingIds: React.Dispatch<React.SetStateAction<Set<string>>>;
   refreshDetail: (wid?: string) => Promise<void>;
+  refreshWorkflows: () => Promise<unknown>;
   /** Ref to the run-attach handler. Held as a ref so the handler can change
    * without invalidating in-flight streams. */
   attachToRunRef: React.MutableRefObject<
@@ -118,6 +119,7 @@ export function useOrchestratorStream({
   setChatByWorkflow,
   setOrchestratingIds,
   refreshDetail,
+  refreshWorkflows,
   attachToRunRef,
 }: UseOrchestratorStreamArgs) {
   const abortRefs = useRef<Record<string, AbortController>>({});
@@ -161,6 +163,8 @@ export function useOrchestratorStream({
       if (mut) updateAssistant(wid, mut);
       if (ev.kind === 'tool_call_end' && ev.status === 'ok' && GRAPH_MUTATING_TOOLS.has(ev.tool)) {
         refreshDetail(wid);
+      } else if (ev.kind === 'tool_call_end' && ev.status === 'ok' && WORKFLOW_METADATA_TOOLS.has(ev.tool)) {
+        void refreshWorkflows();
       } else if (ev.kind === 'run_started') {
         // Orchestrator kicked off a run via `run_workflow`. Attach the run
         // panel via the same code path the Run button uses, so the user
