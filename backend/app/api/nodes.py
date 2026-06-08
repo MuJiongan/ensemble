@@ -1,5 +1,4 @@
 from __future__ import annotations
-from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -50,8 +49,6 @@ def patch_node(nid: str, body: schemas.NodePatch, db: Session = Depends(get_db))
         n.config = body.config.model_dump()
     if body.position is not None:
         n.position = body.position.model_dump()
-    if body.mark_user_edited:
-        n.user_edited_at = datetime.utcnow()
     db.commit()
     db.refresh(n)
     return to_node_out(n)

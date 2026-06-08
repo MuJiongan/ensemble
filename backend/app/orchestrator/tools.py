@@ -75,9 +75,8 @@ def _node_summary(n: models.Node) -> dict:
 
 def _node_full(n: models.Node) -> dict:
     """Full node payload — used by view_node_details. No truncation.
-    `position` and `user_edited_at` are deliberately omitted: the LLM can't
-    move nodes (no `set_position` tool — `add_node` auto-lays them out), and
-    the boolean `user_edited` flag in `view_graph` is all it needs."""
+    `position` is deliberately omitted: the LLM can't move nodes (no
+    `set_position` tool — `add_node` auto-lays them out)."""
     cfg = n.config or {}
     return {
         "id": n.id,
@@ -89,7 +88,6 @@ def _node_full(n: models.Node) -> dict:
         "config": {
             "model": cfg.get("model", ""),
         },
-        "user_edited": n.user_edited_at is not None,
     }
 
 
@@ -155,6 +153,16 @@ def rename_node(db: DbSession, wid: str, *, node_id: str, new_name: str) -> dict
     n.name = new_name
     db.commit()
     return {"node_id": node_id, "name": new_name}
+
+
+def rename_project(db: DbSession, wid: str, *, new_name: str) -> dict:
+    """Rename the current project (workflow)."""
+    if not new_name.strip():
+        raise ValueError("new_name must be non-empty")
+    w = _get_workflow(db, wid)
+    w.name = new_name.strip()
+    db.commit()
+    return {"workflow_id": w.id, "name": w.name}
 
 
 def configure_node(
@@ -278,8 +286,8 @@ def set_output_node(db: DbSession, wid: str, *, node_id: str) -> dict:
 
 def view_graph(db: DbSession, wid: str) -> dict:
     """Return a structural snapshot of the workflow — node ids, names,
-    descriptions, ports, model, user_edited. Code is intentionally
-    omitted; call `view_node_details` for the full body of a specific node."""
+    descriptions, ports, model. Code is intentionally omitted; call
+    `view_node_details` for the full body of a specific node."""
     w = _get_workflow(db, wid)
     nodes = []
     for n in w.nodes:
@@ -292,7 +300,6 @@ def view_graph(db: DbSession, wid: str) -> dict:
                 "inputs": n.inputs or [],
                 "outputs": n.outputs or [],
                 "model": cfg.get("model", ""),
-                "user_edited": n.user_edited_at is not None,
             }
         )
     edges = [_edge_summary(e) for e in w.edges]
@@ -307,8 +314,8 @@ def view_graph(db: DbSession, wid: str) -> dict:
 
 
 def view_node_details(db: DbSession, wid: str, *, node_id: str) -> dict:
-    """Return the full record for a node — including untruncated code, full
-    config, position, and user_edited timestamp."""
+    """Return the full record for a node — including untruncated code and
+    full config."""
     n = _get_node(db, wid, node_id)
     return _node_full(n)
 
@@ -737,6 +744,7 @@ REGISTRY = {
     "add_node": add_node,
     "remove_node": remove_node,
     "rename_node": rename_node,
+    "rename_project": rename_project,
     "configure_node": configure_node,
     "add_edge": add_edge,
     "remove_edge": remove_edge,
@@ -761,6 +769,7 @@ NON_GRAPH_MUTATING_TOOLS: set[str] = {
     "list_runs",
     "view_run",
     "run_workflow",
+    "rename_project",
 }
 
 
@@ -785,7 +794,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
             "name": "view_graph",
             "description": (
                 "Return a structural snapshot of the workflow — node ids, names, descriptions, "
-                "ports, model, user_edited. Useful to confirm state mid-turn after "
+                "ports, model. Useful to confirm state mid-turn after "
                 "a sequence of mutations, or to plan before editing. Does not include node code; "
                 "use `view_node_details` for that."
             ),
@@ -797,10 +806,10 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "function": {
             "name": "view_node_details",
             "description": (
-                "Return the full record for one node — including its complete code, full config "
-                "(model), and user_edited status. Call this before "
+                "Return the full record for one node — including its complete code and full config "
+                "(model). Call this before "
                 "editing a node so you can make targeted patches instead of guessing at its "
-                "current state, especially when `user_edited` is true."
+                "current state."
             ),
             "parameters": {
                 "type": "object",
@@ -880,6 +889,20 @@ TOOL_SCHEMAS: dict[str, dict] = {
                     "new_name": {"type": "string"},
                 },
                 "required": ["node_id", "new_name"],
+            },
+        },
+    },
+    "rename_project": {
+        "type": "function",
+        "function": {
+            "name": "rename_project",
+            "description": "Rename the current project (workflow).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "new_name": {"type": "string"},
+                },
+                "required": ["new_name"],
             },
         },
     },
@@ -1019,8 +1042,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 "(you started it via `run_workflow`). Use when the user references a past run "
                 "without giving you its id (\"the last failure\", \"yesterday's run\"), or "
                 "when you need to find a specific run to inspect. Don't list runs "
-                "preemptively — every turn already ships the current graph state, not run "
-                "history."
+                "preemptively — inspect run history only when the task calls for it."
             ),
             "parameters": {
                 "type": "object",
