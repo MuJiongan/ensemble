@@ -28,7 +28,6 @@ from app import compaction, models
 from app.orchestrator import tools as orch_tools
 from app.orchestrator.prompt import (
     build_system_prompt,
-    graph_state_message,
     mcp_tools_message,
 )
 
@@ -290,13 +289,12 @@ def run_turn(db: DbSession, session_id: str, user_text: str) -> Iterator[dict]:
                 yield from _cancellation_events()
                 return
 
-            # Refresh history every turn — including a fresh system snapshot of
-            # the graph as it stands. We DON'T persist these system messages.
+            # Refresh history every turn. The graph's structure isn't injected
+            # here — the model pulls it on demand via `view_graph`.
             history = _history_messages(db, session_id)
             mcp_msg = mcp_tools_message()
             messages = (
                 [{"role": "system", "content": build_system_prompt()}]
-                + [graph_state_message(db, workflow_id)]
                 + ([mcp_msg] if mcp_msg else [])
                 + history
             )

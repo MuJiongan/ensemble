@@ -133,6 +133,10 @@ export const GRAPH_MUTATING_TOOLS = new Set([
   'clean_canvas',
 ]);
 
+// Tools that mutate workflow metadata (not the graph) — refresh the project
+// list so the header / switcher pick up the new name.
+export const WORKFLOW_METADATA_TOOLS = new Set(['rename_project']);
+
 /** Coerce a Run's `workflow_snapshot` into a WorkflowDetail so the Canvas can
  * render it the same way it renders the live graph. The snapshot omits the
  * Workflow's user-visible `name` field; we synthesise one from the run id. */

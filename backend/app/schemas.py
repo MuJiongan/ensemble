@@ -44,7 +44,6 @@ class NodePatch(BaseModel):
     outputs: list[IOPort] | None = None
     config: NodeConfig | None = None
     position: Position | None = None
-    mark_user_edited: bool = False
 
 
 class EdgeIn(BaseModel):

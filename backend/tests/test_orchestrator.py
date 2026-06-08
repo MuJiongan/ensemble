@@ -17,7 +17,6 @@ from app.orchestrator import agent as orch_agent
 from app.orchestrator.prompt import (
     SYSTEM_PROMPT,
     build_system_prompt,
-    graph_state_message,
 )
 from app.runner import events as runner_events
 
@@ -222,21 +221,6 @@ def test_build_system_prompt_appends_custom_instructions_section(monkeypatch):
     assert prompt.endswith("always parallelize independent steps")
 
 
-def test_graph_state_message_contains_current_state(db, workflow):
-    nid = orch_tools.add_node(
-        db, workflow.id, name="loader", outputs=[{"name": "files"}],
-    )["node_id"]
-    orch_tools.set_input_node(db, workflow.id, node_id=nid)
-
-    msg = graph_state_message(db, workflow.id)
-    assert msg["role"] == "system"
-    # parse out the JSON portion
-    payload = msg["content"].split("\n", 1)[1]
-    state = json.loads(payload)
-    assert state["input_node_id"] == nid
-    assert any(n["name"] == "loader" for n in state["nodes"])
-
-
 def test_render_history_collapses_assistant_with_tool_cards(db, workflow):
     """After persisting an assistant message + a tool result, the rendered
     history should contain a single assistant bubble with both a paragraph
@@ -295,6 +279,7 @@ def test_llm_tool_specs_covers_full_surface():
         "add_node",
         "remove_node",
         "rename_node",
+        "rename_project",
         "configure_node",
         "add_edge",
         "remove_edge",
@@ -393,11 +378,11 @@ def test_delete_workflow_cascades_rows_and_discards_run_events(db, workflow):
 
 
 # graph state snapshot — code is intentionally omitted (orchestrator pulls it
-# on demand via view_node_details). The user_edited flag stays.
+# on demand via view_node_details).
 # ---------------------------------------------------------------------------
 
 
-def test_graph_state_omits_code_but_keeps_user_edited_flag(db, workflow):
+def test_view_graph_omits_code(db, workflow):
     nid = orch_tools.add_node(db, workflow.id, name="loader")["node_id"]
     orch_tools.configure_node(
         db, workflow.id,
@@ -405,23 +390,11 @@ def test_graph_state_omits_code_but_keeps_user_edited_flag(db, workflow):
         code="def run(inputs, ctx):\n    return {'x': 1}\n",
     )
 
-    msg = graph_state_message(db, workflow.id)
-    state = json.loads(msg["content"].split("\n", 1)[1])
+    state = orch_tools.view_graph(db, workflow.id)
     node = next(n for n in state["nodes"] if n["id"] == nid)
 
     assert "code" not in node
     assert "code_truncated" not in node
-    assert node["user_edited"] is False
-
-    # mark the node user-edited and verify the flag flips
-    n = db.get(models.Node, nid)
-    from datetime import datetime
-    n.user_edited_at = datetime.utcnow()
-    db.commit()
-    msg2 = graph_state_message(db, workflow.id)
-    state2 = json.loads(msg2["content"].split("\n", 1)[1])
-    node2 = next(n for n in state2["nodes"] if n["id"] == nid)
-    assert node2["user_edited"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -475,11 +448,8 @@ def test_view_node_details_returns_full_untruncated_code(db, workflow):
     assert res["config"]["model"] == "anthropic/claude-sonnet-4.5"
     assert "tools_enabled" not in res["config"]
     assert "timeout_s" not in res["config"]
-    assert res["user_edited"] is False
-    # position + user_edited_at are not exposed to the LLM (no point — it
-    # can't move nodes and the boolean `user_edited` is all it acts on).
+    # position is not exposed to the LLM — it can't move nodes.
     assert "position" not in res
-    assert "user_edited_at" not in res
 
 
 def test_view_node_details_unknown_node_errors(db, workflow):
@@ -1096,7 +1066,8 @@ def test_non_graph_mutating_tools_set_matches_registry():
     # Belt-and-braces: the named-set has to match what's exempt from the
     # dispatcher's "no mutation during a run" guard. Inspection tools and
     # `run_workflow` qualify; `run_workflow` does its own active-run check
-    # internally with a clearer error message.
+    # internally with a clearer error message. `rename_project` is exempt too
+    # — it mutates the workflow's name, not the graph, so it's safe mid-run.
     assert orch_tools.NON_GRAPH_MUTATING_TOOLS == {
         "view_graph",
         "view_node_details",
@@ -1104,6 +1075,7 @@ def test_non_graph_mutating_tools_set_matches_registry():
         "list_runs",
         "view_run",
         "run_workflow",
+        "rename_project",
     }
     for name in orch_tools.NON_GRAPH_MUTATING_TOOLS:
         assert name in orch_tools.REGISTRY
@@ -1428,13 +1400,13 @@ def test_call_llm_stream_skips_remaining_lines_when_cancelled():
 
 
 # ---------------------------------------------------------------------------
-# gap 2 — user_edited mentioned in system prompt
+# gap 2 — editing existing nodes is explained in the system prompt
 # ---------------------------------------------------------------------------
 
 
-def test_system_prompt_explains_user_edited_flag():
-    assert "user_edited" in SYSTEM_PROMPT
-    # Must instruct the model to *preserve* user intent, not just mention the flag.
+def test_system_prompt_explains_editing_existing_nodes():
+    # Must instruct the model to inspect before patching and preserve structure.
+    assert "view_node_details" in SYSTEM_PROMPT
     assert "preserve" in SYSTEM_PROMPT.lower()
 
 
@@ -1466,6 +1438,16 @@ def test_system_prompt_lists_node_runtime_tool_signatures():
     assert "command: str" in p  # shell
     assert "query: str" in p  # web_search
     assert "urls: list[str]" in p  # web_fetch
+
+
+def test_system_prompt_lists_orchestrator_tool_names():
+    """The 'two kinds of tool' overview pulls the orchestrator's own tool
+    names from the live REGISTRY, so a newly added tool (e.g. rename_project)
+    shows up without anyone editing the prompt text."""
+    p = SYSTEM_PROMPT
+    assert "[[ORCHESTRATOR_TOOL_NAMES]]" not in p
+    for name in orch_tools.REGISTRY:
+        assert f"`{name}`" in p, f"missing orchestrator tool name '{name}'"
 
 
 def test_system_prompt_distinguishes_orchestrator_vs_node_tools():

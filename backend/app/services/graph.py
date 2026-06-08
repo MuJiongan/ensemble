@@ -54,7 +54,6 @@ def clone_live_workflow(
             outputs=src.outputs or [],
             config=src.config or {},
             position=src.position or {},
-            user_edited_at=src.user_edited_at,
         )
         db.add(node)
         db.flush()

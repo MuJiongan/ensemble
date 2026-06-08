@@ -43,7 +43,6 @@ export interface PatchNodePayload {
   outputs?: IOPort[];
   config?: NodeConfig;
   position?: { x: number; y: number };
-  mark_user_edited?: boolean;
 }
 
 export const api = {

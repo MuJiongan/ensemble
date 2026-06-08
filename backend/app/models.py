@@ -35,7 +35,6 @@ class Node(Base):
     outputs = Column(JSON, default=list)
     config = Column(JSON, default=dict)
     position = Column(JSON, default=dict)
-    user_edited_at = Column(DateTime, nullable=True)
     workflow = relationship("Workflow", back_populates="nodes")
 
 

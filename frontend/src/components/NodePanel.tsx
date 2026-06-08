@@ -47,9 +47,6 @@ const PANEL_STYLE: React.CSSProperties = {
  *
  * Content the user can still refine directly:
  *   - code (Monaco editor)
- *
- * Saves set `mark_user_edited` so the orchestrator's next pass can preserve
- * user intent (per PRD §4.4).
  */
 export function NodePanel({
   node, workflow, onClose, onChange, readOnly, pinnedRun, currentRun,
@@ -108,7 +105,6 @@ export function NodePanel({
   const save = async () => {
     await api.patchNode(node.id, {
       code,
-      mark_user_edited: true,
     });
     setDirty(false);
     onChange();
