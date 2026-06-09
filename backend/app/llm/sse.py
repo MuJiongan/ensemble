@@ -58,9 +58,23 @@ def sanitize_json_schema(schema: Any) -> Any:
 
 
 def compute_cost(usage: dict, cost: dict | None) -> float:
-    """Estimate USD cost from token usage + catalog per-Mtoken cost, or 0."""
+    """Estimate USD cost from token usage + catalog per-Mtoken cost, or 0.
+
+    ``prompt_tokens`` is the full input count (fresh + cache read + cache
+    write). Cache tokens are billed at their own rates when the catalog
+    provides them; the fresh remainder uses the standard input rate."""
     if not cost:
         return 0.0
-    pin = (usage.get("prompt_tokens") or 0) * (cost.get("input") or 0) / 1_000_000
+    rate_in = cost.get("input") or 0
+    cache_read = usage.get("cache_read_tokens") or 0
+    cache_write = usage.get("cache_write_tokens") or 0
+    rate_cr = cost.get("cache_read")
+    rate_cw = cost.get("cache_write")
+    rate_cr = rate_in if rate_cr is None else rate_cr
+    rate_cw = rate_in if rate_cw is None else rate_cw
+    fresh = max((usage.get("prompt_tokens") or 0) - cache_read - cache_write, 0)
+    pin = fresh * rate_in / 1_000_000
     pout = (usage.get("completion_tokens") or 0) * (cost.get("output") or 0) / 1_000_000
-    return float(pin + pout)
+    pcr = cache_read * rate_cr / 1_000_000
+    pcw = cache_write * rate_cw / 1_000_000
+    return float(pin + pout + pcr + pcw)

@@ -151,6 +151,9 @@ def stream_round(
                     usage["prompt_tokens"] = um.get("promptTokenCount") or usage["prompt_tokens"]
                     cand = um.get("candidatesTokenCount") or 0
                     usage["completion_tokens"] = cand + (um.get("thoughtsTokenCount") or 0)
+                    # promptTokenCount already includes cached content; expose the
+                    # subset so it bills at the cheaper cache-read rate.
+                    usage["cache_read_tokens"] = um.get("cachedContentTokenCount") or 0
                 cand0 = (ev.get("candidates") or [{}])[0]
                 content = cand0.get("content") or {}
                 for part in content.get("parts") or []:

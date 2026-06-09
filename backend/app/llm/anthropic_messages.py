@@ -134,6 +134,48 @@ def _lower_tools(tool_schemas: list[dict]) -> list[dict]:
     return tools
 
 
+# Anthropic caps a request at 4 cache breakpoints. Ported from opencode's
+# "auto" cache policy: spend them in invalidation order — tools, then system,
+# then the latest *user* message — so the large static prefix (tool schemas +
+# the ~900-line system prompt) is cached and every intra-turn tool round-trip
+# reads it back at 0.1x instead of re-billing it in full. Marking the latest
+# user message (not the newest message) keeps the breakpoint stable across a
+# turn's many assistant/tool rounds, while still extending the cached span turn
+# over turn as old turns become history. Only this native-Anthropic protocol
+# emits inline markers; OpenAI/OpenRouter (implicit prefix caching) and Gemini
+# (out-of-band CachedContent) ignore them, so their adapters stay untouched.
+_CACHE_BREAKPOINT_CAP = 4
+
+
+def _apply_cache_breakpoints(system: list[dict], msgs: list[dict], tools: list[dict]) -> None:
+    """Mark up to 4 cache breakpoints in place, in tool→system→message order."""
+    remaining = _CACHE_BREAKPOINT_CAP
+
+    def take() -> dict | None:
+        nonlocal remaining
+        if remaining <= 0:
+            return None
+        remaining -= 1
+        return {"type": "ephemeral"}
+
+    if tools and (cc := take()):
+        tools[-1]["cache_control"] = cc
+    if system and (cc := take()):
+        system[-1]["cache_control"] = cc
+    # Latest *human* user turn — its last text block. _lower_messages folds
+    # tool results into user-role blocks too, so skip those: a tool-result tail
+    # moves every round and would churn the breakpoint, while the human turn is
+    # a stable boundary that holds across a turn's many tool round-trips.
+    for m in reversed(msgs):
+        if m.get("role") != "user":
+            continue
+        text_idxs = [i for i, b in enumerate(m.get("content") or []) if b.get("type") == "text"]
+        if text_idxs:
+            if cc := take():
+                m["content"][text_idxs[-1]]["cache_control"] = cc
+            break
+
+
 def stream_round(
     *,
     model: str,
@@ -155,10 +197,12 @@ def stream_round(
     if budget and max_tokens <= budget:
         max_tokens = budget + 4096
 
+    tools = _lower_tools(tool_schemas)
+    _apply_cache_breakpoints(system, msgs, tools)
+
     body: dict[str, Any] = {"model": model, "messages": msgs, "stream": True, "max_tokens": max_tokens}
     if system:
         body["system"] = system
-    tools = _lower_tools(tool_schemas)
     if tools:
         body["tools"] = tools
     if thinking:
@@ -178,7 +222,7 @@ def stream_round(
     content_parts: list[str] = []
     tool_calls: dict[int, dict] = {}
     reasoning: dict[int, dict] = {}
-    usage = {"prompt_tokens": 0, "completion_tokens": 0}
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}
 
     with httpx.Client(timeout=None) as client:
         with client.stream("POST", url, headers=headers, json=body) as r:
@@ -196,11 +240,11 @@ def stream_round(
                 etype = ev.get("type")
                 if etype == "message_start":
                     u = (ev.get("message") or {}).get("usage") or {}
-                    usage["prompt_tokens"] = (
-                        (u.get("input_tokens") or 0)
-                        + (u.get("cache_read_input_tokens") or 0)
-                        + (u.get("cache_creation_input_tokens") or 0)
-                    )
+                    cr = u.get("cache_read_input_tokens") or 0
+                    cw = u.get("cache_creation_input_tokens") or 0
+                    usage["cache_read_tokens"] = cr
+                    usage["cache_write_tokens"] = cw
+                    usage["prompt_tokens"] = (u.get("input_tokens") or 0) + cr + cw
                 elif etype == "content_block_start":
                     idx = ev.get("index", 0)
                     block = ev.get("content_block") or {}

@@ -18,6 +18,14 @@ from app.llm.sse import iter_sse_json, compute_cost
 PROTOCOL = "openai_chat"
 
 
+def _record_cache_tokens(usage: dict) -> None:
+    """OpenAI reports ``prompt_tokens`` inclusive of cached input; expose the
+    cached subset so cost is billed at the cheaper cache-read rate."""
+    cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+    if cached:
+        usage["cache_read_tokens"] = cached
+
+
 def _is_openrouter(base_url: str) -> bool:
     return "openrouter" in base_url.lower()
 
@@ -185,6 +193,7 @@ def stream_round(
 
                 for item in parse_sse_lines(_lines(), cancel_event):
                     if item[0] == "done" and not item[1]["usage"].get("cost"):
+                        _record_cache_tokens(item[1]["usage"])
                         item[1]["usage"]["cost"] = compute_cost(item[1]["usage"], cost)
                     yield item
         else:
@@ -195,5 +204,6 @@ def stream_round(
             usage = data.get("usage") or {}
             msg = (data.get("choices") or [{}])[0].get("message") or {"role": "assistant", "content": ""}
             if not usage.get("cost"):
+                _record_cache_tokens(usage)
                 usage["cost"] = compute_cost(usage, cost)
             yield ("done", {"message": msg, "usage": usage})
