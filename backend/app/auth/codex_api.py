@@ -39,6 +39,39 @@ log = logging.getLogger(__name__)
 # Translation: chat-completions shape  →  Responses API shape
 # ---------------------------------------------------------------------------
 
+def _user_input_parts(content) -> tuple[list[dict], str]:
+    """Lower user content — a raw string or an OpenAI-style parts array
+    (text / image_url / file with base64 data URLs) — to Responses API input
+    parts. Returns ``(parts, text)`` with ``text`` being the concatenated
+    visible text (used for the ``instructions`` fallback)."""
+    if isinstance(content, str):
+        return [{"type": "input_text", "text": content}], content
+    if not isinstance(content, list):
+        text = json.dumps(content)
+        return [{"type": "input_text", "text": text}], text
+    parts: list[dict] = []
+    texts: list[str] = []
+    for p in content:
+        if not isinstance(p, dict):
+            continue
+        if p.get("type") == "text" and p.get("text"):
+            parts.append({"type": "input_text", "text": p["text"]})
+            texts.append(p["text"])
+        elif p.get("type") == "image_url":
+            url = (p.get("image_url") or {}).get("url") or ""
+            if url:
+                parts.append({"type": "input_image", "image_url": url})
+        elif p.get("type") == "file":
+            f = p.get("file") or {}
+            if f.get("file_data"):
+                parts.append({
+                    "type": "input_file",
+                    "filename": f.get("filename") or "document.pdf",
+                    "file_data": f["file_data"],
+                })
+    return parts or [{"type": "input_text", "text": ""}], "".join(texts)
+
+
 def _to_responses_input(messages: list[dict]) -> tuple[Optional[str], list[dict]]:
     """Convert a chat-completions ``messages`` list into Responses API input.
 
@@ -98,14 +131,14 @@ def _to_responses_input(messages: list[dict]) -> tuple[Optional[str], list[dict]
                 )
             continue
 
-        # user / anything else → input_text message
+        # user / anything else → input_text (+ input_image) message
         content = m.get("content") or ""
-        text = content if isinstance(content, str) else json.dumps(content)
+        parts, text = _user_input_parts(content)
         items.append(
             {
                 "type": "message",
                 "role": role or "user",
-                "content": [{"type": "input_text", "text": text}],
+                "content": parts,
             }
         )
         if role == "user" and first_user_text is None and text:

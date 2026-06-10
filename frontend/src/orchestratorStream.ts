@@ -140,7 +140,12 @@ export function useOrchestratorStream({
     });
   };
 
-  const streamToOrchestrator = async (wid: string, sid: string, text: string) => {
+  const streamToOrchestrator = async (
+    wid: string,
+    sid: string,
+    text: string,
+    attachments?: { dataUrl: string; filename: string; mime: string }[],
+  ) => {
     abortRefs.current[wid]?.abort();
     const ctrl = new AbortController();
     abortRefs.current[wid] = ctrl;
@@ -153,9 +158,27 @@ export function useOrchestratorStream({
 
     // Optimistically add the user bubble + a streaming assistant placeholder.
     const placeholder: AssistantMessage = { role: 'assistant', content: [], streaming: true };
+    const images = (attachments ?? [])
+      .filter((a) => a.mime.startsWith('image/'))
+      .map((a) => a.dataUrl);
+    const files = (attachments ?? [])
+      .filter((a) => !a.mime.startsWith('image/'))
+      .map((a) => ({
+        name: a.filename,
+        kind: a.mime === 'application/pdf' ? 'pdf' : 'txt',
+      }));
     setChatByWorkflow((prev) => ({
       ...prev,
-      [wid]: [...(prev[wid] ?? []), { role: 'user', text }, placeholder],
+      [wid]: [
+        ...(prev[wid] ?? []),
+        {
+          role: 'user',
+          text,
+          ...(images.length ? { images } : {}),
+          ...(files.length ? { files } : {}),
+        },
+        placeholder,
+      ],
     }));
 
     const handleEvent = (ev: OrchestratorEvent) => {
@@ -174,7 +197,7 @@ export function useOrchestratorStream({
     };
 
     try {
-      await api.streamUserMessage(sid, text, handleEvent, ctrl.signal);
+      await api.streamUserMessage(sid, text, handleEvent, ctrl.signal, attachments);
     } catch (e) {
       if (ctrl.signal.aborted) {
         updateAssistant(wid, (a) => ({ ...a, streaming: false }));

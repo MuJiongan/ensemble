@@ -26,6 +26,33 @@ def _as_text(content: Any) -> str:
     return "" if content is None else str(content)
 
 
+def _user_parts(content: Any) -> list[dict]:
+    """Lower user content — a raw string or an OpenAI-style parts array
+    (text / image_url / file with base64 data URLs) — to Gemini parts.
+    Images and PDFs both ride ``inlineData``."""
+    if not isinstance(content, list):
+        return [{"text": _as_text(content)}]
+
+    def inline(url: str) -> dict | None:
+        head, _, data = url.partition(";base64,")
+        mime = head[len("data:"):] if head.startswith("data:") else ""
+        return {"inlineData": {"mimeType": mime, "data": data}} if mime and data else None
+
+    parts: list[dict] = []
+    for p in content:
+        if not isinstance(p, dict):
+            continue
+        if p.get("type") == "text" and p.get("text"):
+            parts.append({"text": p["text"]})
+        elif p.get("type") == "image_url":
+            if part := inline((p.get("image_url") or {}).get("url") or ""):
+                parts.append(part)
+        elif p.get("type") == "file":
+            if part := inline((p.get("file") or {}).get("file_data") or ""):
+                parts.append(part)
+    return parts or [{"text": ""}]
+
+
 def _lower(messages: list[dict]) -> tuple[dict | None, list[dict]]:
     system_parts: list[dict] = []
     contents: list[dict] = []
@@ -45,7 +72,8 @@ def _lower(messages: list[dict]) -> tuple[dict | None, list[dict]]:
                 system_parts.append({"text": txt})
             continue
         if role == "user":
-            push_user_part({"text": _as_text(m.get("content"))})
+            for part in _user_parts(m.get("content")):
+                push_user_part(part)
             continue
         if role == "tool":
             name = id_to_name.get(m.get("tool_call_id") or "", m.get("name") or "tool")

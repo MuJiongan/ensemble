@@ -1,18 +1,28 @@
 import { useEffect, useRef, useState } from 'react';
+import { AttachmentChips, type PendingAttachment } from './ImageAttachments';
 
 export function Hero({
   hasApiKey,
   disabled,
   onSend,
   onOpenSettings,
+  pendingAttachments,
+  onRemoveAttachment,
+  draggingFile,
+  attachmentNotice,
 }: {
   hasApiKey: boolean;
   disabled: boolean;
   onSend: (text: string) => void;
   onOpenSettings: () => void;
+  pendingAttachments?: PendingAttachment[];
+  onRemoveAttachment?: (id: string) => void;
+  draggingFile?: boolean;
+  attachmentNotice?: string | null;
 }) {
   const [text, setText] = useState('');
   const taRef = useRef<HTMLTextAreaElement | null>(null);
+  const attachments = pendingAttachments ?? [];
 
   useEffect(() => {
     if (hasApiKey) taRef.current?.focus();
@@ -27,7 +37,7 @@ export function Hero({
 
   const submit = () => {
     const t = text.trim();
-    if (!t || disabled) return;
+    if ((!t && attachments.length === 0) || disabled) return;
     setText('');
     onSend(t);
   };
@@ -89,8 +99,22 @@ export function Hero({
               display: 'flex',
               flexDirection: 'column',
               gap: 10,
+              ...(draggingFile
+                ? { outline: '1.5px dashed var(--accent-ink)', outlineOffset: 2 }
+                : {}),
             }}
           >
+            {attachmentNotice && (
+              <div
+                className="serif"
+                style={{ fontStyle: 'italic', fontSize: 12, color: 'var(--ink-4)' }}
+              >
+                {attachmentNotice}
+              </div>
+            )}
+            {onRemoveAttachment && (
+              <AttachmentChips attachments={attachments} onRemove={onRemoveAttachment} />
+            )}
             <textarea
               ref={taRef}
               rows={3}
@@ -123,7 +147,7 @@ export function Hero({
               <button
                 className="btn-ink btn-ink--accent"
                 onClick={submit}
-                disabled={disabled || !text.trim()}
+                disabled={disabled || (!text.trim() && attachments.length === 0)}
               >
                 ask ensemble <span className="italic-em">→</span>
               </button>

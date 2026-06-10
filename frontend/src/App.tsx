@@ -22,6 +22,7 @@ import {
   snapshotToDetail,
 } from './appHelpers';
 import { useOrchestratorStream } from './orchestratorStream';
+import { useImageAttachments } from './components/ImageAttachments';
 import { useRunWebSocket } from './runWebSocket';
 import type {
   Workflow, WorkflowDetail, NodeRunStatus, Run,
@@ -47,6 +48,14 @@ export default function App() {
   // The chat used to float as an overlay; tabbing replaces it cleanly so the
   // run/execute footer is never blocked.
   const [rightPanelMode, setRightPanelMode] = useState<'workspace' | 'chat'>('workspace');
+
+  // Image attachments live at the App level so dropping/pasting an image
+  // works anywhere in the workflow view — Hero, canvas, or either right-panel
+  // tab — not just while the chat composer happens to be mounted. A drop
+  // flips the right panel to chat so the attachment chips are visible.
+  const imageAttachments = useImageAttachments(view === 'workflow', () =>
+    setRightPanelMode('chat'),
+  );
 
   // Mirror of `activeId` so async callbacks (SSE handlers, refreshDetail)
   // can read the latest value without being trapped by render-time closures.
@@ -240,6 +249,12 @@ export default function App() {
    * the placeholder.
    */
   const handleSend = async (text: string) => {
+    const attachments = imageAttachments.attachments.map((a) => ({
+      dataUrl: a.dataUrl,
+      filename: a.filename,
+      mime: a.mime,
+    }));
+    if (attachments.length > 0) imageAttachments.clear();
     let wid = activeId;
     let isFirstMessage = false;
 
@@ -272,7 +287,7 @@ export default function App() {
       api.patchWorkflow(wid, { name: nextName }).then(() => refreshWorkflows()).catch(() => {});
     }
 
-    streamToOrchestrator(wid, sid, text);
+    streamToOrchestrator(wid, sid, text, attachments);
   };
 
   const cancelOrchestrator = async () => {
@@ -501,6 +516,10 @@ export default function App() {
                 handleSend(text);
               }}
               onOpenSettings={() => setView('settings')}
+              pendingAttachments={imageAttachments.attachments}
+              onRemoveAttachment={imageAttachments.remove}
+              draggingFile={imageAttachments.dragging}
+              attachmentNotice={imageAttachments.notice}
             />
           )}
 
@@ -655,6 +674,10 @@ export default function App() {
                       <ChatPanel
                         messages={messages}
                         onSend={handleSend}
+                        pendingAttachments={imageAttachments.attachments}
+                        onRemoveAttachment={imageAttachments.remove}
+                        draggingFile={imageAttachments.dragging}
+                        attachmentNotice={imageAttachments.notice}
                         onCancel={cancelOrchestrator}
                         disabled={isOrchestrating}
                         modelLabel={orchestratorModel}

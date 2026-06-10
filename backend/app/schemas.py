@@ -153,6 +153,8 @@ class ChatMessageOut(BaseModel):
     role: str  # "user" | "assistant"
     text: str | None = None
     content: list[dict[str, Any]] | None = None  # for assistant: list of ChatBlockP / ChatBlockTool
+    images: list[str] | None = None  # for user: attached images as data URLs
+    files: list[dict[str, Any]] | None = None  # for user: non-image tiles [{name, kind}]
     # Provider-reported USD cost for the assistant round that produced this
     # bubble. Currently only OpenRouter reports cost; omitted otherwise.
     cost: float | None = None
@@ -162,5 +164,12 @@ class SessionMessagesOut(BaseModel):
     messages: list[ChatMessageOut]
 
 
+class AttachmentIn(BaseModel):
+    """One chat attachment (image, PDF, or text file) as a base64 data URL."""
+    data_url: str
+    filename: str | None = None
+
+
 class UserMessageIn(BaseModel):
     text: str
+    attachments: list[AttachmentIn] = []

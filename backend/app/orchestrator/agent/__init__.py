@@ -48,6 +48,7 @@ from .persistence import (
     _persist_tool_result,
     _persist_user,
     _row_to_message,
+    user_bubble_fields,
 )
 from .llm_stream import _call_llm_stream, _parse_sse_chunks
 
@@ -147,6 +148,45 @@ def _resolve_llm_stream(
     return _call_llm_stream(model, messages, tool_specs, cancel_event)
 
 
+def _strip_unsupported_attachments(messages: list[dict], model: str) -> list[dict]:
+    """Replace attachment parts the selected model can't ingest (per its
+    models.dev input modalities) with an explanatory text part, so the model
+    tells the user instead of the provider rejecting the whole request.
+    Models with no modality metadata pass through untouched — the provider
+    stays the authority."""
+    from app.auth.resolve import current_provider_id
+    from app.catalog import models_dev as md
+
+    provider_id = current_provider_id()
+    m = md.get_model(provider_id, model) if provider_id else None
+    inputs = (m.modalities or {}).get("input") if m else None
+    if not inputs:
+        return messages
+
+    def gate_part(p: dict) -> dict:
+        if p.get("type") == "image_url":
+            modality, name = "image", "image"
+        elif p.get("type") == "file":
+            modality, name = "pdf", (p.get("file") or {}).get("filename") or "PDF"
+        else:
+            return p
+        if modality in inputs:
+            return p
+        return {
+            "type": "text",
+            "text": f"ERROR: Cannot read {name} (this model does not support "
+                    f"{modality} input). Inform the user.",
+        }
+
+    out: list[dict] = []
+    for msg in messages:
+        content = msg.get("content")
+        if msg.get("role") == "user" and isinstance(content, list):
+            msg = {**msg, "content": [gate_part(p) if isinstance(p, dict) else p for p in content]}
+        out.append(msg)
+    return out
+
+
 def _resolve_model(db: DbSession) -> str:
     # localStorage (forwarded as a header by the frontend, applied to env in
     # main.middleware) wins; the DB row is only a backwards-compat fallback.
@@ -239,7 +279,9 @@ def _maybe_compact(
     return _compact_session(db, session_id, model, model_obj, cancel_event)
 
 
-def run_turn(db: DbSession, session_id: str, user_text: str) -> Iterator[dict]:
+def run_turn(
+    db: DbSession, session_id: str, user_text: str, attachments: list[dict] | None = None
+) -> Iterator[dict]:
     """Run one user-message turn end-to-end. Yields event dicts:
 
       {kind: "user_message",            ...}    — echo of the persisted user msg
@@ -257,7 +299,7 @@ def run_turn(db: DbSession, session_id: str, user_text: str) -> Iterator[dict]:
     workflow_id = sess.workflow_id
 
     # 1) persist + announce the user message
-    user_msg = _persist_user(db, session_id, user_text)
+    user_msg = _persist_user(db, session_id, user_text, attachments)
     yield {"kind": "user_message", "id": user_msg.id, "text": user_text}
 
     # Claim this session's turn slot. If a prior turn was running, this signals
@@ -291,7 +333,7 @@ def run_turn(db: DbSession, session_id: str, user_text: str) -> Iterator[dict]:
 
             # Refresh history every turn. The graph's structure isn't injected
             # here — the model pulls it on demand via `view_graph`.
-            history = _history_messages(db, session_id)
+            history = _strip_unsupported_attachments(_history_messages(db, session_id), model)
             mcp_msg = mcp_tools_message()
             messages = (
                 [{"role": "system", "content": build_system_prompt()}]
@@ -550,7 +592,13 @@ def render_history(db: DbSession, session_id: str) -> list[dict]:
                 bubbles.append(bubble)
             turn_content = []
             turn_cost = 0.0
-            bubbles.append({"role": "user", "text": r.content or ""})
+            text, imgs, files = user_bubble_fields(r)
+            bubbles.append({
+                "role": "user",
+                "text": text,
+                **({"images": imgs} if imgs else {}),
+                **({"files": files} if files else {}),
+            })
         elif r.role == "assistant":
             turn_content.extend(_assistant_content_blocks(r, tool_results))
             turn_cost += float(r.cost or 0)

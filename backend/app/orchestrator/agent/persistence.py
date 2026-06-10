@@ -1,5 +1,7 @@
 """Message persistence + history → OpenRouter chat-shape conversion."""
 from __future__ import annotations
+import base64
+import binascii
 import json
 from typing import Any
 
@@ -12,6 +14,12 @@ from app import compaction, models
 # to point at the first message of the verbatim tail (``None`` => no tail kept,
 # the summary stands in for everything before it). See ``_history_messages``.
 COMPACTION_MARKER = "__compaction__"
+
+# A user message with attachments stores its ``content`` as a JSON OpenAI-style
+# parts array ([{type: text}, {type: image_url}, {type: file}, ...]) and is
+# tagged with this name (the ``name`` column is otherwise unused on user
+# rows). Plain-text user rows stay raw strings, so old sessions replay as-is.
+USER_PARTS_MARKER = "__parts__"
 
 
 def _is_self_contained_reasoning_block(rd: Any) -> bool:
@@ -26,12 +34,106 @@ def _is_self_contained_reasoning_block(rd: Any) -> bool:
     return bool(rd.get("text") or rd.get("data") or rd.get("signature"))
 
 
-def _persist_user(db: DbSession, sid: str, text: str) -> models.Message:
-    m = models.Message(session_id=sid, role="user", content=text)
+def _persist_user(
+    db: DbSession, sid: str, text: str, attachments: list[dict] | None = None
+) -> models.Message:
+    """Persist a user message. ``attachments`` items are ``{data_url, filename?}``;
+    images become ``image_url`` parts, everything else (PDFs, text files)
+    becomes an OpenAI-style ``file`` part."""
+    if attachments:
+        parts: list[dict] = [{"type": "text", "text": text}] if text else []
+        for a in attachments:
+            url = a.get("data_url") or ""
+            if url.startswith("data:image/"):
+                parts.append({"type": "image_url", "image_url": {"url": url}})
+            else:
+                default = "document.pdf" if url.startswith("data:application/pdf") else "file.txt"
+                parts.append({
+                    "type": "file",
+                    "file": {"filename": a.get("filename") or default, "file_data": url},
+                })
+        m = models.Message(
+            session_id=sid, role="user", content=json.dumps(parts), name=USER_PARTS_MARKER
+        )
+    else:
+        m = models.Message(session_id=sid, role="user", content=text)
     db.add(m)
     db.commit()
     db.refresh(m)
     return m
+
+
+def _raw_user_parts(r: models.Message) -> str | list:
+    """A user row's content as stored: the decoded parts array for
+    attachment-carrying rows (see ``USER_PARTS_MARKER``), the raw string
+    otherwise."""
+    if r.name != USER_PARTS_MARKER:
+        return r.content or ""
+    try:
+        parts = json.loads(r.content or "[]")
+    except json.JSONDecodeError:
+        return r.content or ""
+    return parts if isinstance(parts, list) else r.content or ""
+
+
+def _decode_text_file_data(file_data: str) -> str | None:
+    """Decode a ``data:text/...;base64,`` URL to its text, or ``None`` when
+    the data URL isn't a text file."""
+    head, _, b64 = file_data.partition(";base64,")
+    if not head.startswith("data:text/"):
+        return None
+    try:
+        return base64.b64decode(b64).decode("utf-8", errors="replace")
+    except (binascii.Error, ValueError):
+        return None
+
+
+def _user_content(r: models.Message) -> str | list:
+    """A user row's content for model replay. Text-file attachments are
+    inlined as plain text parts, so only images and PDFs survive as binary
+    parts for the adapters."""
+    content = _raw_user_parts(r)
+    if isinstance(content, str):
+        return content
+    out: list = []
+    for p in content:
+        if isinstance(p, dict) and p.get("type") == "file":
+            f = p.get("file") or {}
+            text = _decode_text_file_data(f.get("file_data") or "")
+            if text is not None:
+                name = f.get("filename") or "file.txt"
+                out.append({"type": "text", "text": f"<file: {name}>\n{text}"})
+                continue
+        out.append(p)
+    return out
+
+
+def user_bubble_fields(r: models.Message) -> tuple[str, list[str], list[dict]]:
+    """Split a user row into (visible text, image data URLs, file tiles) for
+    the chat panel. File tiles are ``{name, kind}`` with kind "pdf"/"txt"."""
+    content = _raw_user_parts(r)
+    if isinstance(content, str):
+        return content, [], []
+    text = "".join(
+        p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"
+    )
+    images = [
+        url
+        for p in content
+        if isinstance(p, dict) and p.get("type") == "image_url"
+        if (url := (p.get("image_url") or {}).get("url"))
+    ]
+    files = []
+    for p in content:
+        if not (isinstance(p, dict) and p.get("type") == "file"):
+            continue
+        f = p.get("file") or {}
+        is_pdf = (f.get("file_data") or "").startswith("data:application/pdf")
+        files.append({
+            "name": f.get("filename") or ("document.pdf" if is_pdf else "file.txt"),
+            "kind": "pdf" if is_pdf else "txt",
+        })
+    return text, images, files
 
 
 def _persist_assistant(
@@ -127,7 +229,7 @@ def _row_to_message(r: models.Message) -> dict | None:
                 msg["reasoning_details"] = rds
         return msg
     if r.role == "user":
-        return {"role": "user", "content": r.content or ""}
+        return {"role": "user", "content": _user_content(r)}
     if r.role == "system":
         return {"role": "system", "content": r.content or ""}
     return None
