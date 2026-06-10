@@ -19,4 +19,10 @@ Because every adapter speaks the same in/out contract, the agent loops in
 logic unchanged. Each adapter owns its own reasoning-variant translation
 (OpenAI ``reasoning_effort``, Anthropic ``thinking`` budget, Gemini
 ``thinkingConfig``).
+
+Transport rides the official provider SDKs (``openai``, ``anthropic``,
+``google-genai``); the lowering and parsing stay ours. Adapters build
+wire-shaped payloads (non-standard fields via ``extra_body``) and feed
+``model_dump()``-ed stream events to their parsers, so the translation layer
+is SDK-agnostic and unit-testable without a network.
 """

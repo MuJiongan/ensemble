@@ -3,10 +3,10 @@
 When the user signs in to ChatGPT, calls go to
 ``https://chatgpt.com/backend-api/codex/responses`` with the OAuth bearer plus
 ``ChatGPT-Account-Id``. The endpoint speaks the OpenAI **Responses API**, not
-chat completions, so we translate our internal chat-completions shape
-(messages list, tool_calls array) into Responses-API ``input`` items and
-parse the resulting SSE stream back into the same
-``(text|thinking|tool_args|done)`` events our existing parsers emit.
+chat completions — the translation and SSE parsing live in the shared
+protocol adapter (:mod:`app.llm.openai_responses`); this module layers the
+Codex-specific endpoint, OAuth headers, and required-``instructions`` rule
+on top.
 
 Two entry points mirroring the existing callers:
 
@@ -28,7 +28,11 @@ import httpx
 
 from app import compaction
 from app.catalog import models_dev as md
-from app.llm.openai_chat import lower_attachments
+from app.llm.openai_responses import (
+    parse_responses_sse,
+    to_responses_input,
+    to_responses_tools,
+)
 from app.runner.tools import prepare_tool_result
 
 
@@ -37,261 +41,19 @@ CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
 log = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Translation: chat-completions shape  →  Responses API shape
-# ---------------------------------------------------------------------------
-
-def _user_input_parts(content) -> tuple[list[dict], str]:
-    """Lower user content — a raw string or an OpenAI-style parts array
-    (text / image_url / file with base64 data URLs) — to Responses API input
-    parts. Returns ``(parts, text)`` with ``text`` being the concatenated
-    visible text (used for the ``instructions`` fallback)."""
-    if isinstance(content, str):
-        return [{"type": "input_text", "text": content}], content
-    if not isinstance(content, list):
-        text = json.dumps(content)
-        return [{"type": "input_text", "text": text}], text
-    parts: list[dict] = []
-    texts: list[str] = []
-    for p in content:
-        if not isinstance(p, dict):
-            continue
-        if p.get("type") == "text" and p.get("text"):
-            parts.append({"type": "input_text", "text": p["text"]})
-            texts.append(p["text"])
-        elif p.get("type") == "image_url":
-            url = (p.get("image_url") or {}).get("url") or ""
-            if url:
-                parts.append({"type": "input_image", "image_url": url})
-        elif p.get("type") == "file":
-            f = p.get("file") or {}
-            if f.get("file_data"):
-                parts.append({
-                    "type": "input_file",
-                    "filename": f.get("filename") or "document.pdf",
-                    "file_data": f["file_data"],
-                })
-    return parts or [{"type": "input_text", "text": ""}], "".join(texts)
-
-
 def _to_responses_input(messages: list[dict]) -> tuple[Optional[str], list[dict]]:
-    """Convert a chat-completions ``messages`` list into Responses API input.
+    """Chat-completions ``messages`` → Responses API ``(instructions, input)``,
+    with the first user message's text standing in for ``instructions`` when
+    no system message exists — Codex requires it to be non-empty, and the
+    first user turn is the closest stand-in for the task the model should
+    follow. The actual lowering lives in :mod:`app.llm.openai_responses`."""
+    return to_responses_input(messages, instructions_fallback=True)
 
-    Returns ``(instructions, input_items)``:
-      * ``instructions`` is the concatenated text of any ``role=system``
-        messages (Responses API takes them as a separate top-level field).
-        When the caller didn't supply a system message we fall back to the
-        first user message's text — Codex requires ``instructions`` to be
-        non-empty, and the first user turn is the closest stand-in for the
-        task the model should follow.
-      * ``input_items`` is the input list of ``message`` /
-        ``function_call`` / ``function_call_output`` items, preserving
-        original order.
-    """
-    # function_call_output is text-only — relocate tool-result attachments
-    # (image bytes from read_file) into a user message of OpenAI-style
-    # parts, which _user_input_parts lowers to input_image.
-    messages = lower_attachments(messages)
-
-    instructions_parts: list[str] = []
-    items: list[dict] = []
-    first_user_text: Optional[str] = None
-
-    for m in messages:
-        role = m.get("role")
-        if role == "system":
-            content = m.get("content") or ""
-            if isinstance(content, str) and content:
-                instructions_parts.append(content)
-            continue
-
-        if role == "tool":
-            items.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": m.get("tool_call_id") or "",
-                    "output": m.get("content") or "",
-                }
-            )
-            continue
-
-        if role == "assistant":
-            # Assistant turn may carry visible text and/or tool calls.
-            content = m.get("content") or ""
-            if isinstance(content, str) and content:
-                items.append(
-                    {
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [{"type": "output_text", "text": content}],
-                    }
-                )
-            for tc in m.get("tool_calls") or []:
-                fn = tc.get("function") or {}
-                items.append(
-                    {
-                        "type": "function_call",
-                        "call_id": tc.get("id") or "",
-                        "name": fn.get("name") or "",
-                        "arguments": fn.get("arguments") or "",
-                    }
-                )
-            continue
-
-        # user / anything else → input_text (+ input_image) message
-        content = m.get("content") or ""
-        parts, text = _user_input_parts(content)
-        items.append(
-            {
-                "type": "message",
-                "role": role or "user",
-                "content": parts,
-            }
-        )
-        if role == "user" and first_user_text is None and text:
-            first_user_text = text
-
-    if instructions_parts:
-        instructions: Optional[str] = "\n\n".join(instructions_parts)
-    else:
-        instructions = first_user_text
-    return instructions, items
-
-
-def _to_responses_tools(tool_schemas: list[dict]) -> list[dict]:
-    """Chat-completions tools (``{"type":"function","function":{...}}``) →
-    Responses-API tools (flat: ``{"type":"function","name":...,"parameters":...}``)."""
-    out: list[dict] = []
-    for t in tool_schemas:
-        if t.get("type") != "function":
-            continue
-        fn = t.get("function") or {}
-        out.append(
-            {
-                "type": "function",
-                "name": fn.get("name") or "",
-                "description": fn.get("description") or "",
-                "parameters": fn.get("parameters") or {},
-            }
-        )
-    return out
-
-
-# ---------------------------------------------------------------------------
-# SSE parsing: Responses API events  →  internal event tuples
-# ---------------------------------------------------------------------------
 
 def _parse_responses_sse(lines: Iterator[str]) -> Iterator[tuple]:
-    """Parse Codex Responses API SSE stream.
-
-    Yields the same tuple shapes the existing chat-completions parser does:
-
-      ``("text",     delta_str)``                     visible content delta
-      ``("thinking", delta_str)``                     reasoning delta
-      ``("tool_args", tc_index, name, args_delta)``   streaming tool call args
-      ``("done", {"message": assistant_msg, "usage": {...}})``
-
-    The assembled ``assistant_msg`` is in chat-completions shape — so the
-    rest of the agent loop (which keeps a single chat-completions message
-    history) can append it verbatim.
-    """
-    content_parts: list[str] = []
-    # Track function_call items by their item_id (assigned in output_item.added).
-    # The Responses API uses an opaque item_id; we map it to a stable index so
-    # callers can co-render multiple in-flight tool calls.
-    fn_items: dict[str, dict] = {}
-    fn_order: list[str] = []
-    usage: dict = {}
-
-    for line in lines:
-        if not line:
-            continue
-        if not line.startswith("data:"):
-            continue
-        data_str = line[len("data:"):].strip()
-        if not data_str or data_str == "[DONE]":
-            continue
-        try:
-            evt = json.loads(data_str)
-        except json.JSONDecodeError:
-            continue
-
-        ev_type = evt.get("type") or ""
-
-        if ev_type == "response.output_item.added":
-            item = evt.get("item") or {}
-            if item.get("type") == "function_call":
-                item_id = item.get("id") or f"_idx{len(fn_order)}"
-                fn_items[item_id] = {
-                    "id": item.get("call_id") or item_id,
-                    "type": "function",
-                    "function": {"name": item.get("name") or "", "arguments": ""},
-                }
-                fn_order.append(item_id)
-            continue
-
-        if ev_type == "response.output_text.delta":
-            delta = evt.get("delta") or ""
-            if delta:
-                content_parts.append(delta)
-                yield ("text", delta)
-            continue
-
-        if ev_type in (
-            "response.reasoning_summary_text.delta",
-            "response.reasoning.delta",
-        ):
-            delta = evt.get("delta") or ""
-            if delta:
-                yield ("thinking", delta)
-            continue
-
-        if ev_type == "response.function_call_arguments.delta":
-            item_id = evt.get("item_id") or ""
-            delta = evt.get("delta") or ""
-            cur = fn_items.get(item_id)
-            if cur is None:
-                # Argument delta arrived before the item.added event — rare;
-                # synthesize a placeholder so we don't drop the data.
-                cur = {
-                    "id": item_id,
-                    "type": "function",
-                    "function": {"name": "", "arguments": ""},
-                }
-                fn_items[item_id] = cur
-                fn_order.append(item_id)
-            cur["function"]["arguments"] += delta
-            if delta:
-                idx = fn_order.index(item_id)
-                yield ("tool_args", idx, cur["function"]["name"], delta)
-            continue
-
-        if ev_type == "response.completed":
-            resp = evt.get("response") or {}
-            u = resp.get("usage") or {}
-            if u:
-                # Normalize Responses-API usage keys to chat-completions ones
-                # so cost/token UI keeps working.
-                usage = {
-                    "prompt_tokens": u.get("input_tokens", u.get("prompt_tokens", 0)) or 0,
-                    "completion_tokens": u.get(
-                        "output_tokens", u.get("completion_tokens", 0)
-                    ) or 0,
-                    # Subscription-billed; no per-call USD.
-                    "cost": 0.0,
-                }
-            continue
-
-        if ev_type == "response.failed":
-            resp = evt.get("response") or {}
-            err = (resp.get("error") or {}).get("message") or "Codex response failed"
-            raise RuntimeError(f"Codex: {err}")
-
-    tool_calls = [fn_items[i] for i in fn_order if fn_items[i]["function"]["name"]]
-    msg: dict = {"role": "assistant", "content": "".join(content_parts)}
-    if tool_calls:
-        msg["tool_calls"] = tool_calls
-    yield ("done", {"message": msg, "usage": usage})
+    """Parse the Codex Responses API SSE stream into the shared event tuples
+    (see :func:`app.llm.openai_responses.parse_responses_sse`)."""
+    return parse_responses_sse(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +82,7 @@ def _request_payload(
         "store": False,
     }
     if tool_schemas:
-        payload["tools"] = _to_responses_tools(tool_schemas)
+        payload["tools"] = to_responses_tools(tool_schemas)
     payload.update(extra)
     return payload
 

@@ -2,17 +2,25 @@
 
 Port of opencode's gemini.ts, scoped to gorchestra. Translates
 chat-completions-shaped messages to Gemini's ``contents`` body, streams
-``:streamGenerateContent?alt=sse``, and re-emits gorchestra's event tuples.
-Reasoning variants apply as the native ``generationConfig.thinkingConfig``.
+generateContent, and re-emits gorchestra's event tuples. Reasoning variants
+apply as the native ``thinkingConfig``.
+
+Transport rides the official ``google-genai`` SDK. Lowering still produces
+wire-shaped (camelCase) dicts — they cross into the SDK's types via JSON-mode
+validation and come back out via JSON-mode dumps, because the SDK models
+base64 fields (``inlineData.data``, ``thoughtSignature``) as ``bytes`` and
+only its JSON mode converts base64 strings losslessly in both directions.
 """
 from __future__ import annotations
 
 import json
 from typing import Any, Iterator
 
-import httpx
+from google import genai
+from google.genai import errors as genai_errors
+from google.genai import types as genai_types
 
-from app.llm.sse import iter_sse_json, sanitize_json_schema, compute_cost
+from app.llm.sse import sanitize_json_schema, compute_cost
 
 PROTOCOL = "gemini"
 DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
@@ -132,6 +140,78 @@ def _lower_tools(tool_schemas: list[dict]) -> list[dict]:
     return [{"functionDeclarations": decls}] if decls else []
 
 
+def _parse_events(events: Iterator[dict]) -> Iterator[tuple]:
+    """Parse generateContent stream chunks (as wire-shaped camelCase dicts)
+    into gorchestra event tuples, ending with the assembled ``done`` payload
+    (usage carries token counts; the caller adds cost)."""
+    content_parts: list[str] = []
+    tool_calls: list[dict] = []
+    reasoning: dict = {"type": "thinking", "text": "", "thoughtSignature": None}
+    usage = {"prompt_tokens": 0, "completion_tokens": 0}
+    tc_index = 0
+
+    for ev in events:
+        um = ev.get("usageMetadata")
+        if um:
+            usage["prompt_tokens"] = um.get("promptTokenCount") or usage["prompt_tokens"]
+            cand = um.get("candidatesTokenCount") or 0
+            usage["completion_tokens"] = cand + (um.get("thoughtsTokenCount") or 0)
+            # promptTokenCount already includes cached content; expose the
+            # subset so it bills at the cheaper cache-read rate.
+            usage["cache_read_tokens"] = um.get("cachedContentTokenCount") or 0
+        cand0 = (ev.get("candidates") or [{}])[0]
+        content = cand0.get("content") or {}
+        for part in content.get("parts") or []:
+            if part.get("thoughtSignature") and part.get("thought"):
+                reasoning["thoughtSignature"] = part["thoughtSignature"]
+            text = part.get("text")
+            if text:
+                if part.get("thought"):
+                    reasoning["text"] += text
+                    yield ("thinking", text)
+                else:
+                    content_parts.append(text)
+                    yield ("text", text)
+                continue
+            fc = part.get("functionCall")
+            if fc:
+                args_json = json.dumps(fc.get("args") or {})
+                tc: dict = {
+                    "id": f"tool_{tc_index}",
+                    "type": "function",
+                    "function": {"name": fc.get("name") or "", "arguments": args_json},
+                }
+                # Carry the per-call thoughtSignature so it round-trips
+                # back to Gemini on the next turn (see _lower).
+                if part.get("thoughtSignature"):
+                    tc["thoughtSignature"] = part["thoughtSignature"]
+                tool_calls.append(tc)
+                yield ("tool_args", tc_index, fc.get("name") or "", args_json)
+                tc_index += 1
+
+    msg: dict = {"role": "assistant", "content": "".join(content_parts)}
+    if tool_calls:
+        msg["tool_calls"] = tool_calls
+    if reasoning["text"]:
+        msg["reasoning_details"] = [reasoning]
+    yield ("done", {"message": msg, "usage": usage})
+
+
+def _sdk_client(base_url: str, api_key: str, extra_headers: dict | None) -> genai.Client:
+    """The SDK joins ``base_url + api_version + path``; our configured base
+    URLs carry the version suffix (the raw-wire convention), so split it."""
+    base = base_url.rstrip("/")
+    http_options: dict[str, Any] = {"timeout": None}
+    for suffix in ("/v1beta", "/v1alpha", "/v1"):
+        if base.endswith(suffix):
+            base, http_options["api_version"] = base[: -len(suffix)], suffix[1:]
+            break
+    http_options["base_url"] = base
+    if extra_headers:
+        http_options["headers"] = extra_headers
+    return genai.Client(api_key=api_key, http_options=http_options)
+
+
 def stream_round(
     *,
     model: str,
@@ -148,81 +228,34 @@ def stream_round(
     cancel_event=None,
 ) -> Iterator[tuple]:
     system_instruction, contents = _lower(messages)
-    body: dict[str, Any] = {"contents": contents}
+    # JSON-mode validation decodes the base64 fields into the SDK's bytes
+    # types; python-mode would utf-8-encode the strings and corrupt them.
+    sdk_contents = [genai_types.Content.model_validate_json(json.dumps(c)) for c in contents]
+    config: dict[str, Any] = {}
     if system_instruction:
-        body["systemInstruction"] = system_instruction
+        config["system_instruction"] = system_instruction
     tools = _lower_tools(tool_schemas)
     if tools:
-        body["tools"] = tools
+        config["tools"] = tools
     tcfg = (variant_opts or {}).get("thinkingConfig")
     if isinstance(tcfg, dict):
-        body["generationConfig"] = {"thinkingConfig": tcfg}
+        config["thinking_config"] = tcfg
 
-    headers = {"x-goog-api-key": api_key, "content-type": "application/json"}
-    headers.update(extra_headers or {})
-    url = f"{base_url.rstrip('/')}/models/{model}:streamGenerateContent?alt=sse"
+    client = _sdk_client(base_url, api_key, extra_headers)
+    try:
+        stream = client.models.generate_content_stream(
+            model=model, contents=sdk_contents, config=config or None
+        )
 
-    content_parts: list[str] = []
-    tool_calls: list[dict] = []
-    reasoning: dict = {"type": "thinking", "text": "", "thoughtSignature": None}
-    usage = {"prompt_tokens": 0, "completion_tokens": 0}
-    tc_index = 0
+        def _events():
+            for chunk in stream:
+                if cancel_event is not None and cancel_event.is_set():
+                    return
+                yield chunk.model_dump(mode="json", by_alias=True, exclude_none=True)
 
-    with httpx.Client(timeout=None) as client:
-        with client.stream("POST", url, headers=headers, json=body) as r:
-            if r.status_code >= 400:
-                detail = r.read().decode(errors="replace")[:500]
-                raise RuntimeError(f"LLM {r.status_code}: {detail}")
-
-            def _lines():
-                for line in r.iter_lines():
-                    if cancel_event is not None and cancel_event.is_set():
-                        return
-                    yield line
-
-            for ev in iter_sse_json(_lines(), cancel_event):
-                um = ev.get("usageMetadata")
-                if um:
-                    usage["prompt_tokens"] = um.get("promptTokenCount") or usage["prompt_tokens"]
-                    cand = um.get("candidatesTokenCount") or 0
-                    usage["completion_tokens"] = cand + (um.get("thoughtsTokenCount") or 0)
-                    # promptTokenCount already includes cached content; expose the
-                    # subset so it bills at the cheaper cache-read rate.
-                    usage["cache_read_tokens"] = um.get("cachedContentTokenCount") or 0
-                cand0 = (ev.get("candidates") or [{}])[0]
-                content = cand0.get("content") or {}
-                for part in content.get("parts") or []:
-                    if part.get("thoughtSignature") and part.get("thought"):
-                        reasoning["thoughtSignature"] = part["thoughtSignature"]
-                    text = part.get("text")
-                    if text:
-                        if part.get("thought"):
-                            reasoning["text"] += text
-                            yield ("thinking", text)
-                        else:
-                            content_parts.append(text)
-                            yield ("text", text)
-                        continue
-                    fc = part.get("functionCall")
-                    if fc:
-                        args_json = json.dumps(fc.get("args") or {})
-                        tc: dict = {
-                            "id": f"tool_{tc_index}",
-                            "type": "function",
-                            "function": {"name": fc.get("name") or "", "arguments": args_json},
-                        }
-                        # Carry the per-call thoughtSignature so it round-trips
-                        # back to Gemini on the next turn (see _lower).
-                        if part.get("thoughtSignature"):
-                            tc["thoughtSignature"] = part["thoughtSignature"]
-                        tool_calls.append(tc)
-                        yield ("tool_args", tc_index, fc.get("name") or "", args_json)
-                        tc_index += 1
-
-    msg: dict = {"role": "assistant", "content": "".join(content_parts)}
-    if tool_calls:
-        msg["tool_calls"] = tool_calls
-    if reasoning["text"]:
-        msg["reasoning_details"] = [reasoning]
-    usage["cost"] = compute_cost(usage, cost)
-    yield ("done", {"message": msg, "usage": usage})
+        for item in _parse_events(_events()):
+            if item[0] == "done":
+                item[1]["usage"]["cost"] = compute_cost(item[1]["usage"], cost)
+            yield item
+    except genai_errors.APIError as e:
+        raise RuntimeError(f"LLM {e.code}: {str(e)[:500]}") from None

@@ -12,7 +12,7 @@ from typing import Callable
 from app.catalog import models_dev as md
 from app.catalog import providers as prov
 from app.catalog.variants import base_options, merge_options
-from app.llm import anthropic_messages, gemini, openai_chat
+from app.llm import anthropic_messages, gemini, openai_chat, openai_responses
 
 _ANTHROPIC_NPM = {"@ai-sdk/anthropic", "@ai-sdk/google-vertex/anthropic"}
 _GEMINI_NPM = {"@ai-sdk/google", "@ai-sdk/google-vertex"}
@@ -38,6 +38,13 @@ def _select(provider_id: str, model_id: str):
         return anthropic_messages.stream_round, anthropic_messages.PROTOCOL, anthropic_messages.DEFAULT_BASE_URL
     if npm in _GEMINI_NPM:
         return gemini.stream_round, gemini.PROTOCOL, gemini.DEFAULT_BASE_URL
+    # Native OpenAI speaks the Responses API — chat completions rejects the
+    # agentic shape (function tools + reasoning_effort) for its newest models.
+    # Matching on provider id too keeps the route on a catalog miss. (The
+    # codex synthetic provider shares this npm but is dispatched before the
+    # router ever sees it.)
+    if provider_id == "openai" or npm == "@ai-sdk/openai":
+        return openai_responses.stream_round, openai_responses.PROTOCOL, openai_responses.DEFAULT_BASE_URL
     return openai_chat.stream_round, openai_chat.PROTOCOL, OPENROUTER_DEFAULT
 
 
