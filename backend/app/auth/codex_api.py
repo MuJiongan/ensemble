@@ -28,6 +28,8 @@ import httpx
 
 from app import compaction
 from app.catalog import models_dev as md
+from app.llm.openai_chat import _lower_attachments
+from app.runner.tools import reject_image_attachments, strip_attachment_data
 
 
 CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
@@ -86,6 +88,11 @@ def _to_responses_input(messages: list[dict]) -> tuple[Optional[str], list[dict]
         ``function_call`` / ``function_call_output`` items, preserving
         original order.
     """
+    # function_call_output is text-only — relocate tool-result attachments
+    # (image bytes from read_file) into a user message of OpenAI-style
+    # parts, which _user_input_parts lowers to input_image.
+    messages = _lower_attachments(messages)
+
     instructions_parts: list[str] = []
     items: list[dict] = []
     first_user_text: Optional[str] = None
@@ -405,6 +412,7 @@ def call_codex_chat(
     ctx_limit = model_obj.limit.context if model_obj else 0
     out_limit = model_obj.limit.output if model_obj else 0
     in_limit = model_obj.limit.input if model_obj else None
+    accepts_images = md.supports_image_input(model_obj)
 
     def _emit(ev: dict) -> None:
         if on_event is None:
@@ -545,19 +553,33 @@ def call_codex_chat(
                 except Exception as e:
                     traceback.print_exc(file=sys.stderr)
                     result = {"error": f"{type(e).__name__}: {e}"}
-            tool_calls_made.append({"name": fn_name, "args": fn_args, "result": result})
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tc.get("id"),
-                    "content": json.dumps(result, default=str),
-                }
+            # function_call_output is text-only, so the output text and the
+            # recorded result carry a size note; the binary payload rides on
+            # the message for _to_responses_input to re-deliver as
+            # input_image parts in a follow-up user message.
+            attachments = (
+                result.get("attachments") if isinstance(result, dict) else None
             )
+            if attachments and not accepts_images:
+                # Text-only model: a clean tool-result error beats a provider
+                # 400 that would kill the whole call.
+                result = reject_image_attachments(fn_name, model)
+                attachments = None
+            recorded = strip_attachment_data(result)
+            tool_calls_made.append({"name": fn_name, "args": fn_args, "result": recorded})
+            tool_msg = {
+                "role": "tool",
+                "tool_call_id": tc.get("id"),
+                "content": json.dumps(recorded, default=str),
+            }
+            if attachments:
+                tool_msg["attachments"] = attachments
+            messages.append(tool_msg)
             _emit({
                 "type": "tool_call_finished",
                 "tool": fn_name,
                 "args": fn_args,
-                "result": result,
+                "result": recorded,
                 "via": "llm",
                 "tc_index": tc_idx,
                 "round": round_idx,

@@ -80,6 +80,13 @@ def _lower(messages: list[dict]) -> tuple[dict | None, list[dict]]:
             push_user_part({
                 "functionResponse": {"name": name, "response": {"name": name, "content": _as_text(m.get("content"))}}
             })
+            # functionResponse is JSON-only; attachments (image bytes from
+            # read_file) ride alongside as inlineData parts in the same user
+            # turn.
+            for a in (m.get("attachments") or []):
+                push_user_part({
+                    "inlineData": {"mimeType": a.get("mime") or "", "data": a.get("data") or ""}
+                })
             continue
         if role == "assistant":
             parts: list[dict] = []

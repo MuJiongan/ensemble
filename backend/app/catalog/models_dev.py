@@ -370,6 +370,19 @@ def get_model(provider_id: str, model_id: str) -> Optional[CatalogModel]:
     return p.models.get(model_id)
 
 
+def supports_image_input(model: Optional[CatalogModel]) -> bool:
+    """Whether the model accepts image input, per the catalog's ``modalities``
+    (falling back to the coarser ``attachment`` flag). Catalog misses count as
+    capable — only a positive "text-only" signal should block an image, the
+    provider enforces its own limits otherwise."""
+    if model is None:
+        return True
+    mod_in = (model.modalities or {}).get("input")
+    if isinstance(mod_in, list):
+        return "image" in mod_in
+    return model.attachment
+
+
 def start_background_refresh() -> None:
     """Start a daemon thread that refreshes the catalog hourly. Idempotent;
     called once from the FastAPI lifespan."""
