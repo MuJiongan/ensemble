@@ -1,16 +1,22 @@
 """OpenAI chat-completions protocol adapter.
 
-The default protocol — used by OpenAI and every OpenAI-compatible upstream
-(OpenRouter, Groq, Mistral, xAI, DeepSeek, Together, Cerebras, DeepInfra,
-Perplexity, …). Reasoning variants apply as ``reasoning_effort`` /
-``reasoning:{effort}`` (the latter for OpenRouter).
+The default protocol — used by every OpenAI-compatible upstream (OpenRouter,
+Groq, Mistral, xAI, DeepSeek, Together, Cerebras, DeepInfra, Perplexity, …).
+Reasoning variants apply as ``reasoning_effort`` / ``reasoning:{effort}``
+(the latter for OpenRouter).
+
+Transport rides the official ``openai`` SDK (pointed at the upstream's
+``base_url``); the SDK's models keep provider extension fields (e.g.
+OpenRouter's ``reasoning_details``), so ``model_dump()`` chunks feed the same
+parser the SSE path used. Request lowering and stream parsing stay ours —
+the payload is built wire-shaped and non-standard fields ride ``extra_body``.
 """
 from __future__ import annotations
 
 import json
 from typing import Any, Iterator
 
-import httpx
+from openai import OpenAI, APIStatusError
 
 from app.catalog.variants import to_openai_body
 from app.llm.sse import iter_sse_json, compute_cost
@@ -203,6 +209,19 @@ def _build_payload(model, messages, tool_schemas, base_url, variant_opts, stream
     return payload
 
 
+def _split_payload(payload: dict) -> dict:
+    """Wire-shaped payload → SDK call kwargs. Standard fields become typed
+    params; everything else (OpenRouter ``usage``/``reasoning``, zai
+    ``thinking``, …) rides ``extra_body``, which the SDK merges verbatim."""
+    kwargs: dict[str, Any] = {"model": payload.pop("model"), "messages": payload.pop("messages")}
+    if "tools" in payload:
+        kwargs["tools"] = payload.pop("tools")
+    payload.pop("stream", None)  # passed as the typed `stream` param instead
+    if payload:
+        kwargs["extra_body"] = payload
+    return kwargs
+
+
 def stream_round(
     *,
     model: str,
@@ -218,37 +237,34 @@ def stream_round(
     extra_body: dict | None = None,
     cancel_event=None,
 ) -> Iterator[tuple]:
-    chat_url = base_url.rstrip("/") + "/chat/completions"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    headers.update(extra_headers or {})
     payload = _build_payload(model, messages, tool_schemas, base_url, variant_opts, streaming, extra_body)
+    kwargs = _split_payload(payload)
 
-    with httpx.Client(timeout=None) as client:
-        if streaming:
-            with client.stream("POST", chat_url, headers=headers, json=payload) as r:
-                if r.status_code >= 400:
-                    body = r.read().decode(errors="replace")[:500]
-                    raise RuntimeError(f"LLM {r.status_code}: {body}")
+    with OpenAI(
+        api_key=api_key, base_url=base_url, default_headers=extra_headers or None, timeout=None
+    ) as client:
+        try:
+            if streaming:
+                with client.chat.completions.create(stream=True, **kwargs) as stream:
 
-                def _lines():
-                    for line in r.iter_lines():
-                        if cancel_event is not None and cancel_event.is_set():
-                            return
-                        yield line
+                    def _chunks():
+                        for chunk in stream:
+                            if cancel_event is not None and cancel_event.is_set():
+                                return
+                            yield chunk.model_dump(exclude_none=True)
 
-                for item in parse_sse_lines(_lines(), cancel_event):
-                    if item[0] == "done" and not item[1]["usage"].get("cost"):
-                        _record_cache_tokens(item[1]["usage"])
-                        item[1]["usage"]["cost"] = compute_cost(item[1]["usage"], cost)
-                    yield item
-        else:
-            r = client.post(chat_url, headers=headers, json=payload)
-            if r.status_code >= 400:
-                raise RuntimeError(f"LLM {r.status_code}: {r.text[:500]}")
-            data = r.json()
-            usage = data.get("usage") or {}
-            msg = (data.get("choices") or [{}])[0].get("message") or {"role": "assistant", "content": ""}
-            if not usage.get("cost"):
-                _record_cache_tokens(usage)
-                usage["cost"] = compute_cost(usage, cost)
-            yield ("done", {"message": msg, "usage": usage})
+                    for item in _parse_stream(_chunks()):
+                        if item[0] == "done" and not item[1]["usage"].get("cost"):
+                            _record_cache_tokens(item[1]["usage"])
+                            item[1]["usage"]["cost"] = compute_cost(item[1]["usage"], cost)
+                        yield item
+            else:
+                data = client.chat.completions.create(stream=False, **kwargs).model_dump(exclude_none=True)
+                usage = data.get("usage") or {}
+                msg = (data.get("choices") or [{}])[0].get("message") or {"role": "assistant", "content": ""}
+                if not usage.get("cost"):
+                    _record_cache_tokens(usage)
+                    usage["cost"] = compute_cost(usage, cost)
+                yield ("done", {"message": msg, "usage": usage})
+        except APIStatusError as e:
+            raise RuntimeError(f"LLM {e.status_code}: {e.response.text[:500]}") from None

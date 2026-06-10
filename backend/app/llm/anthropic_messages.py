@@ -6,19 +6,22 @@ translates chat-completions-shaped messages to Anthropic's content-block body
 and re-emits gorchestra's event tuples. Reasoning variants apply as the native
 ``thinking: {type: enabled, budget_tokens}`` field, or — for Opus 4.7+ class
 models — ``thinking: {type: adaptive}`` paired with ``output_config.effort``.
+
+Transport rides the official ``anthropic`` SDK; lowering and event parsing
+stay ours (the body is built wire-shaped, with not-yet-typed fields like
+``output_config`` on ``extra_body``).
 """
 from __future__ import annotations
 
 import json
 from typing import Any, Iterator
 
-import httpx
+from anthropic import Anthropic, APIError, APIStatusError
 
-from app.llm.sse import iter_sse_json, compute_cost
+from app.llm.sse import compute_cost
 
 PROTOCOL = "anthropic"
 DEFAULT_BASE_URL = "https://api.anthropic.com/v1"
-ANTHROPIC_VERSION = "2023-06-01"
 
 # effort → thinking budget (tokens). Mirrors the spread of opencode's anthropic
 # variant budgets across the low→max effort scale.
@@ -228,6 +231,76 @@ def _apply_cache_breakpoints(system: list[dict], msgs: list[dict], tools: list[d
             break
 
 
+def _parse_events(events: Iterator[dict]) -> Iterator[tuple]:
+    """Parse Anthropic Messages stream events (as dicts, wire-shaped) into
+    gorchestra event tuples, ending with the assembled ``done`` payload
+    (usage carries token counts; the caller adds cost)."""
+    content_parts: list[str] = []
+    tool_calls: dict[int, dict] = {}
+    reasoning: dict[int, dict] = {}
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}
+
+    for ev in events:
+        etype = ev.get("type")
+        if etype == "message_start":
+            u = (ev.get("message") or {}).get("usage") or {}
+            cr = u.get("cache_read_input_tokens") or 0
+            cw = u.get("cache_creation_input_tokens") or 0
+            usage["cache_read_tokens"] = cr
+            usage["cache_write_tokens"] = cw
+            usage["prompt_tokens"] = (u.get("input_tokens") or 0) + cr + cw
+        elif etype == "content_block_start":
+            idx = ev.get("index", 0)
+            block = ev.get("content_block") or {}
+            bt = block.get("type")
+            if bt in ("tool_use", "server_tool_use"):
+                tool_calls[idx] = {
+                    "id": block.get("id") or str(idx),
+                    "type": "function",
+                    "function": {"name": block.get("name") or "", "arguments": ""},
+                }
+            elif bt == "text" and block.get("text"):
+                content_parts.append(block["text"])
+                yield ("text", block["text"])
+            elif bt == "thinking" and block.get("thinking"):
+                reasoning.setdefault(idx, {"type": "thinking", "text": "", "signature": None})
+                reasoning[idx]["text"] += block["thinking"]
+                yield ("thinking", block["thinking"])
+        elif etype == "content_block_delta":
+            idx = ev.get("index", 0)
+            delta = ev.get("delta") or {}
+            dt = delta.get("type")
+            if dt == "text_delta" and delta.get("text"):
+                content_parts.append(delta["text"])
+                yield ("text", delta["text"])
+            elif dt == "thinking_delta" and delta.get("thinking"):
+                reasoning.setdefault(idx, {"type": "thinking", "text": "", "signature": None})
+                reasoning[idx]["text"] += delta["thinking"]
+                yield ("thinking", delta["thinking"])
+            elif dt == "signature_delta" and delta.get("signature"):
+                reasoning.setdefault(idx, {"type": "thinking", "text": "", "signature": None})
+                reasoning[idx]["signature"] = delta["signature"]
+            elif dt == "input_json_delta" and idx in tool_calls:
+                pj = delta.get("partial_json") or ""
+                tool_calls[idx]["function"]["arguments"] += pj
+                if pj:
+                    yield ("tool_args", idx, tool_calls[idx]["function"]["name"], pj)
+        elif etype == "message_delta":
+            u = ev.get("usage") or {}
+            if u.get("output_tokens") is not None:
+                usage["completion_tokens"] = u["output_tokens"]
+        elif etype == "error":
+            err = ev.get("error") or {}
+            raise RuntimeError(f"Anthropic stream error: {err.get('type','')}: {err.get('message','')}")
+
+    msg: dict = {"role": "assistant", "content": "".join(content_parts)}
+    if tool_calls:
+        msg["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
+    if reasoning:
+        msg["reasoning_details"] = [reasoning[i] for i in sorted(reasoning)]
+    yield ("done", {"message": msg, "usage": usage})
+
+
 def stream_round(
     *,
     model: str,
@@ -252,99 +325,40 @@ def stream_round(
     tools = _lower_tools(tool_schemas)
     _apply_cache_breakpoints(system, msgs, tools)
 
-    body: dict[str, Any] = {"model": model, "messages": msgs, "stream": True, "max_tokens": max_tokens}
+    kwargs: dict[str, Any] = {"model": model, "messages": msgs, "max_tokens": max_tokens}
     if system:
-        body["system"] = system
+        kwargs["system"] = system
     if tools:
-        body["tools"] = tools
+        kwargs["tools"] = tools
     if thinking:
-        body["thinking"] = thinking
+        kwargs["thinking"] = thinking
     if output_config:
-        body["output_config"] = output_config
+        kwargs["extra_body"] = {"output_config": output_config}
 
-    headers = {
-        "x-api-key": api_key,
-        "anthropic-version": ANTHROPIC_VERSION,
-        "content-type": "application/json",
-    }
-    headers.update(extra_headers or {})
+    # The SDK roots its paths at /v1; our configured base URLs carry the
+    # version suffix (the raw-wire convention), so strip it.
+    sdk_base = base_url.rstrip("/")
+    if sdk_base.endswith("/v1"):
+        sdk_base = sdk_base[: -len("/v1")]
 
-    url = base_url.rstrip("/") + "/messages"
+    with Anthropic(
+        api_key=api_key, base_url=sdk_base, default_headers=extra_headers or None, timeout=None
+    ) as client:
+        try:
+            stream = client.messages.create(stream=True, **kwargs)
 
-    content_parts: list[str] = []
-    tool_calls: dict[int, dict] = {}
-    reasoning: dict[int, dict] = {}
-    usage = {"prompt_tokens": 0, "completion_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}
+            def _events():
+                with stream:
+                    for ev in stream:
+                        if cancel_event is not None and cancel_event.is_set():
+                            return
+                        yield ev.model_dump(exclude_none=True)
 
-    with httpx.Client(timeout=None) as client:
-        with client.stream("POST", url, headers=headers, json=body) as r:
-            if r.status_code >= 400:
-                detail = r.read().decode(errors="replace")[:500]
-                raise RuntimeError(f"LLM {r.status_code}: {detail}")
-
-            def _lines():
-                for line in r.iter_lines():
-                    if cancel_event is not None and cancel_event.is_set():
-                        return
-                    yield line
-
-            for ev in iter_sse_json(_lines(), cancel_event):
-                etype = ev.get("type")
-                if etype == "message_start":
-                    u = (ev.get("message") or {}).get("usage") or {}
-                    cr = u.get("cache_read_input_tokens") or 0
-                    cw = u.get("cache_creation_input_tokens") or 0
-                    usage["cache_read_tokens"] = cr
-                    usage["cache_write_tokens"] = cw
-                    usage["prompt_tokens"] = (u.get("input_tokens") or 0) + cr + cw
-                elif etype == "content_block_start":
-                    idx = ev.get("index", 0)
-                    block = ev.get("content_block") or {}
-                    bt = block.get("type")
-                    if bt in ("tool_use", "server_tool_use"):
-                        tool_calls[idx] = {
-                            "id": block.get("id") or str(idx),
-                            "type": "function",
-                            "function": {"name": block.get("name") or "", "arguments": ""},
-                        }
-                    elif bt == "text" and block.get("text"):
-                        content_parts.append(block["text"])
-                        yield ("text", block["text"])
-                    elif bt == "thinking" and block.get("thinking"):
-                        reasoning.setdefault(idx, {"type": "thinking", "text": "", "signature": None})
-                        reasoning[idx]["text"] += block["thinking"]
-                        yield ("thinking", block["thinking"])
-                elif etype == "content_block_delta":
-                    idx = ev.get("index", 0)
-                    delta = ev.get("delta") or {}
-                    dt = delta.get("type")
-                    if dt == "text_delta" and delta.get("text"):
-                        content_parts.append(delta["text"])
-                        yield ("text", delta["text"])
-                    elif dt == "thinking_delta" and delta.get("thinking"):
-                        reasoning.setdefault(idx, {"type": "thinking", "text": "", "signature": None})
-                        reasoning[idx]["text"] += delta["thinking"]
-                        yield ("thinking", delta["thinking"])
-                    elif dt == "signature_delta" and delta.get("signature"):
-                        reasoning.setdefault(idx, {"type": "thinking", "text": "", "signature": None})
-                        reasoning[idx]["signature"] = delta["signature"]
-                    elif dt == "input_json_delta" and idx in tool_calls:
-                        pj = delta.get("partial_json") or ""
-                        tool_calls[idx]["function"]["arguments"] += pj
-                        if pj:
-                            yield ("tool_args", idx, tool_calls[idx]["function"]["name"], pj)
-                elif etype == "message_delta":
-                    u = ev.get("usage") or {}
-                    if u.get("output_tokens") is not None:
-                        usage["completion_tokens"] = u["output_tokens"]
-                elif etype == "error":
-                    err = ev.get("error") or {}
-                    raise RuntimeError(f"Anthropic stream error: {err.get('type','')}: {err.get('message','')}")
-
-    msg: dict = {"role": "assistant", "content": "".join(content_parts)}
-    if tool_calls:
-        msg["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
-    if reasoning:
-        msg["reasoning_details"] = [reasoning[i] for i in sorted(reasoning)]
-    usage["cost"] = compute_cost(usage, cost)
-    yield ("done", {"message": msg, "usage": usage})
+            for item in _parse_events(_events()):
+                if item[0] == "done":
+                    item[1]["usage"]["cost"] = compute_cost(item[1]["usage"], cost)
+                yield item
+        except APIStatusError as e:
+            raise RuntimeError(f"LLM {e.status_code}: {e.response.text[:500]}") from None
+        except APIError as e:
+            raise RuntimeError(f"Anthropic stream error: {e}") from None
