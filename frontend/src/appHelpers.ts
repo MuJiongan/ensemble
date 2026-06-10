@@ -214,7 +214,14 @@ export function summariseRun(run: Run): { text: string; kind: 'value' | 'id' } {
 
 export function historyToChatMessages(history: ChatHistoryMessage[]): ChatMessage[] {
   return history.map((m) => {
-    if (m.role === 'user') return { role: 'user', text: m.text ?? '' };
+    if (m.role === 'user') {
+      return {
+        role: 'user',
+        text: m.text ?? '',
+        ...(m.images?.length ? { images: m.images } : {}),
+        ...(m.files?.length ? { files: m.files } : {}),
+      };
+    }
     return {
       role: 'assistant',
       content: (m.content ?? []).map((b): ChatBlock => {

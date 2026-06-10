@@ -286,6 +286,10 @@ export interface ChatHistoryUser {
   role: 'user';
   text: string;
   content?: null;
+  /** Attached images as base64 data URLs; omitted when none. */
+  images?: string[] | null;
+  /** Attached non-image file tiles; omitted when none. */
+  files?: { name: string; kind: string }[] | null;
 }
 
 export interface ChatHistoryAssistant {

@@ -73,6 +73,40 @@ def _as_text(content: Any) -> str:
     return "" if content is None else str(content)
 
 
+def _split_data_url(url: str) -> tuple[str, str]:
+    head, _, data = url.partition(";base64,")
+    mime = head[len("data:"):] if head.startswith("data:") else ""
+    return mime, data
+
+
+def _user_blocks(content: Any) -> list[dict]:
+    """Lower user content — a raw string or an OpenAI-style parts array
+    (text / image_url / file with base64 data URLs) — to Anthropic blocks."""
+    if not isinstance(content, list):
+        return [{"type": "text", "text": _as_text(content)}]
+    blocks: list[dict] = []
+    for p in content:
+        if not isinstance(p, dict):
+            continue
+        if p.get("type") == "text" and p.get("text"):
+            blocks.append({"type": "text", "text": p["text"]})
+        elif p.get("type") == "image_url":
+            mime, data = _split_data_url((p.get("image_url") or {}).get("url") or "")
+            if mime and data:
+                blocks.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": mime, "data": data},
+                })
+        elif p.get("type") == "file":
+            mime, data = _split_data_url((p.get("file") or {}).get("file_data") or "")
+            if mime and data:
+                blocks.append({
+                    "type": "document",
+                    "source": {"type": "base64", "media_type": mime, "data": data},
+                })
+    return blocks or [{"type": "text", "text": ""}]
+
+
 def _lower_messages(messages: list[dict]) -> tuple[list[dict], list[dict]]:
     """Return (system_blocks, anthropic_messages)."""
     system: list[dict] = []
@@ -92,7 +126,8 @@ def _lower_messages(messages: list[dict]) -> tuple[list[dict], list[dict]]:
                 system.append({"type": "text", "text": txt})
             continue
         if role == "user":
-            push_user_block({"type": "text", "text": _as_text(m.get("content"))})
+            for block in _user_blocks(m.get("content")):
+                push_user_block(block)
             continue
         if role == "tool":
             push_user_block({

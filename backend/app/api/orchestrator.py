@@ -15,7 +15,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session as DbSession
 
 from app.db import get_db, SessionLocal
-from app import models, schemas
+from app import images as images_mod, models, schemas
 from app.orchestrator import agent
 
 
@@ -85,6 +85,16 @@ def post_message(sid: str, body: schemas.UserMessageIn) -> StreamingResponse:
     ``app.orchestrator.agent.run_turn``: user_message, assistant_text,
     tool_call_start, tool_call_end, error, done.
     """
+    # Validate + downscale attachments before the stream opens so a bad one
+    # fails the whole request as a 422 instead of erroring mid-SSE.
+    try:
+        attachments = [
+            {"data_url": images_mod.normalize_attachment(a.data_url), "filename": a.filename}
+            for a in body.attachments
+        ]
+    except images_mod.ImageError as e:
+        raise HTTPException(422, str(e))
+
     # We use our own DB session here (not Depends) because the generator runs
     # outside the FastAPI request handler's lifecycle.
     db = SessionLocal()
@@ -94,7 +104,7 @@ def post_message(sid: str, body: schemas.UserMessageIn) -> StreamingResponse:
 
     def gen():
         try:
-            for event in agent.run_turn(db, sid, body.text):
+            for event in agent.run_turn(db, sid, body.text, attachments=attachments):
                 yield f"data: {json.dumps(event, default=str)}\n\n"
         finally:
             db.close()

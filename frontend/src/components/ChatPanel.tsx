@@ -8,6 +8,7 @@ import 'katex/dist/katex.min.css';
 import { api } from '../api';
 import type { Run } from '../types';
 import { CloseButton } from './CloseButton';
+import { AttachmentChips, FileTile, type PendingAttachment } from './ImageAttachments';
 
 export type ChatToolStatus = 'pending' | 'ok' | 'err';
 
@@ -232,6 +233,10 @@ export type ChatBlock = ChatParagraph | ChatToolCall | ChatThinking | ChatNotice
 export interface UserMessage {
   role: 'user';
   text: string;
+  /** Attached images as base64 data URLs. */
+  images?: string[];
+  /** Attached non-image file tiles. */
+  files?: { name: string; kind: string }[];
 }
 
 export interface AssistantMessage {
@@ -247,6 +252,14 @@ export type ChatMessage = UserMessage | AssistantMessage;
 interface Props {
   messages: ChatMessage[];
   onSend: (text: string) => void;
+  /** Pending attachments (owned by the App-level useImageAttachments hook
+   * so drops/pastes land regardless of which panel is showing). */
+  pendingAttachments?: PendingAttachment[];
+  onRemoveAttachment?: (id: string) => void;
+  /** True while a file is being dragged over the window. */
+  draggingFile?: boolean;
+  /** Transient "unsupported file" message from the attachments hook. */
+  attachmentNotice?: string | null;
   onCancel?: () => void;
   disabled?: boolean;
   modelLabel?: string;
@@ -748,6 +761,35 @@ function MessageBubble({
         <div className="smallcaps" style={{ marginBottom: 6, color: 'var(--ink-3)' }}>
           you
         </div>
+        {(!!msg.images?.length || !!msg.files?.length) && (
+          <div
+            style={{
+              display: 'flex',
+              gap: 8,
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              marginBottom: msg.text ? 8 : 0,
+            }}
+          >
+            {(msg.images ?? []).map((src, i) => (
+              <img
+                key={i}
+                src={src}
+                alt="attached image"
+                style={{
+                  maxWidth: '100%',
+                  maxHeight: 240,
+                  borderRadius: 3,
+                  border: '1px solid var(--rule-2)',
+                  display: 'block',
+                }}
+              />
+            ))}
+            {(msg.files ?? []).map((f, i) => (
+              <FileTile key={i} filename={f.name} label={f.kind} />
+            ))}
+          </div>
+        )}
         <div
           style={{
             fontFamily: 'var(--serif)',
@@ -841,6 +883,10 @@ function MessageBubble({
 export function ChatPanel({
   messages,
   onSend,
+  pendingAttachments,
+  onRemoveAttachment,
+  draggingFile,
+  attachmentNotice,
   onCancel,
   disabled,
   modelLabel,
@@ -850,6 +896,7 @@ export function ChatPanel({
 }: Props) {
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const attachments = pendingAttachments ?? [];
 
   const totalCost = messages.reduce(
     (sum, m) => sum + (m.role === 'assistant' ? m.cost ?? 0 : 0),
@@ -864,8 +911,9 @@ export function ChatPanel({
 
   const submit = (e?: React.FormEvent) => {
     e?.preventDefault();
-    if (!draft.trim() || disabled) return;
-    onSend(draft.trim());
+    const text = draft.trim();
+    if ((!text && attachments.length === 0) || disabled) return;
+    onSend(text);
     setDraft('');
   };
 
@@ -982,13 +1030,37 @@ export function ChatPanel({
           background: 'var(--paper)',
         }}
       >
+        {attachmentNotice && (
+          <div
+            className="serif"
+            style={{ fontStyle: 'italic', fontSize: 12, color: 'var(--ink-4)', marginBottom: 8 }}
+          >
+            {attachmentNotice}
+          </div>
+        )}
+        {onRemoveAttachment && (
+          <AttachmentChips
+            attachments={attachments}
+            onRemove={onRemoveAttachment}
+            style={{ marginBottom: 10 }}
+          />
+        )}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div className="chat-composer field-shell">
+          <div
+            className="chat-composer field-shell"
+            style={draggingFile ? { outline: '1.5px dashed var(--accent-ink)', outlineOffset: 2 } : undefined}
+          >
             <span className="chat-composer__mark" aria-hidden="true">✽</span>
             <input
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
-              placeholder={disabled ? 'ensemble is working…' : 'refine, add a node, or ask anything'}
+              placeholder={
+                draggingFile
+                  ? 'drop file to attach'
+                  : disabled
+                    ? 'ensemble is working…'
+                    : 'refine, add a node, or ask anything'
+              }
               disabled={disabled}
             />
           </div>
@@ -1005,7 +1077,7 @@ export function ChatPanel({
             <button
               type="submit"
               className="text-btn"
-              disabled={!draft.trim() || disabled}
+              disabled={(!draft.trim() && attachments.length === 0) || disabled}
             >
               send
             </button>

@@ -103,11 +103,18 @@ export const api = {
     text: string,
     onEvent: (ev: OrchestratorEvent) => void,
     signal?: AbortSignal,
+    attachments?: { dataUrl: string; filename: string }[],
   ): Promise<void> => {
     const res = await fetch(`/api/sessions/${sid}/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...settingsHeaders('orchestrator') },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({
+        text,
+        attachments: (attachments ?? []).map((a) => ({
+          data_url: a.dataUrl,
+          filename: a.filename,
+        })),
+      }),
       signal,
     });
     if (!res.ok || !res.body) {
