@@ -370,6 +370,21 @@ def get_model(provider_id: str, model_id: str) -> Optional[CatalogModel]:
     return p.models.get(model_id)
 
 
+def supports_image_input(model: Optional[CatalogModel]) -> bool:
+    """Whether the model accepts image input, per the catalog's ``modalities``.
+    Only an explicit input-modality list without "image" blocks; a catalog
+    miss or an entry with no modality metadata (e.g. the synthetic codex
+    provider's models) counts as capable — the provider enforces its own
+    limits. The ``attachment`` flag is no signal here: it dataclass-defaults
+    to False precisely when metadata is absent."""
+    if model is None:
+        return True
+    mod_in = (model.modalities or {}).get("input")
+    if isinstance(mod_in, list):
+        return "image" in mod_in
+    return True
+
+
 def start_background_refresh() -> None:
     """Start a daemon thread that refreshes the catalog hourly. Idempotent;
     called once from the FastAPI lifespan."""

@@ -15,7 +15,7 @@ import threading
 from pathlib import Path
 from typing import Callable
 
-from app.runner.tools import MCP_NAMESPACES, REGISTRY
+from app.runner.tools import MCP_NAMESPACES, REGISTRY, strip_attachment_data
 from app.runner import llm as llm_mod
 
 
@@ -91,7 +91,11 @@ class _ToolsProxy:
             entry: dict = {"name": name, "args": call_args, "via": "direct"}
             try:
                 result = fn(*args, **kwargs)
-                entry["result"] = result
+                # The caller gets the full result (a node may want the bytes);
+                # the run record and event stream get a copy with attachment
+                # base64 replaced by a size note.
+                recorded = strip_attachment_data(result)
+                entry["result"] = recorded
                 with self._lock:
                     self._recorder.append(entry)
                 self._on_event(
@@ -99,7 +103,7 @@ class _ToolsProxy:
                         "type": "tool_call_finished",
                         "tool": name,
                         "args": call_args,
-                        "result": result,
+                        "result": recorded,
                         "via": "direct",
                         "call_id": tc_id,
                     }

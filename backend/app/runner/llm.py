@@ -25,7 +25,7 @@ from typing import Callable
 
 from app import compaction
 from app.catalog import models_dev as md
-from app.runner.tools import REGISTRY, TOOL_SCHEMAS
+from app.runner.tools import REGISTRY, TOOL_SCHEMAS, prepare_tool_result
 
 
 def call_llm(
@@ -111,6 +111,7 @@ def call_llm(
     ctx_limit = model_obj.limit.context if model_obj else 0
     out_limit = model_obj.limit.output if model_obj else 0
     in_limit = model_obj.limit.input if model_obj else None
+    accepts_images = md.supports_image_input(model_obj)
 
     def _summarize(head: list[dict], prompt: str) -> str:
         """Run one non-tool model round to summarize ``head`` into an anchor."""
@@ -260,20 +261,30 @@ def call_llm(
                     # the LLM only sees the brief error string.
                     traceback.print_exc(file=sys.stderr)
                     result = {"error": f"{type(e).__name__}: {e}"}
-            tool_calls_made.append({"name": fn_name, "args": fn_args, "result": result})
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tc.get("id"),
-                    "content": json.dumps(result, default=str),
-                }
+            # Attachments (image bytes from read_file) ride on the message
+            # itself for the protocol adapters to render as native content
+            # blocks; the recorded result and the JSON the model reads carry
+            # only a size note, so events/persistence never haul base64. On a
+            # text-only model the result becomes a clean error instead — beats
+            # a provider 400 that would kill the whole call_llm round.
+            recorded, attachments = prepare_tool_result(
+                result, tool=fn_name, model=model, accepts_images=accepts_images
             )
+            tool_calls_made.append({"name": fn_name, "args": fn_args, "result": recorded})
+            tool_msg = {
+                "role": "tool",
+                "tool_call_id": tc.get("id"),
+                "content": json.dumps(recorded, default=str),
+            }
+            if attachments:
+                tool_msg["attachments"] = attachments
+            messages.append(tool_msg)
             _emit(
                 {
                     "type": "tool_call_finished",
                     "tool": fn_name,
                     "args": fn_args,
-                    "result": result,
+                    "result": recorded,
                     "via": "llm",
                     "tc_index": tc_idx,
                     "round": round_idx,

@@ -130,10 +130,27 @@ def _lower_messages(messages: list[dict]) -> tuple[list[dict], list[dict]]:
                 push_user_block(block)
             continue
         if role == "tool":
+            # tool_result.content natively accepts text + image blocks, so
+            # attachments (image bytes from read_file) render in place — the
+            # model sees the pixels, not base64 text.
+            tr_content: str | list = _as_text(m.get("content"))
+            atts = m.get("attachments") or []
+            if atts:
+                blocks = [{"type": "text", "text": tr_content}] if tr_content else []
+                for a in atts:
+                    blocks.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": a.get("mime") or "",
+                            "data": a.get("data") or "",
+                        },
+                    })
+                tr_content = blocks
             push_user_block({
                 "type": "tool_result",
                 "tool_use_id": m.get("tool_call_id") or "",
-                "content": _as_text(m.get("content")),
+                "content": tr_content,
             })
             continue
         if role == "assistant":

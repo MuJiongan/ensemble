@@ -380,4 +380,7 @@ def prune_messages(messages: list[dict], *, protect: int = PRUNE_PROTECT, minimu
         return 0
     for m in to_prune:
         m["content"] = TOOL_OUTPUT_PRUNED
+        # Attachments (image/PDF base64) dwarf the text output being pruned —
+        # a pruned result must not keep hauling them through the context.
+        m.pop("attachments", None)
     return len(to_prune)

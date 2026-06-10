@@ -14,6 +14,28 @@ from app.runner import tools as _runtime_tools
 # in sync with the implementations in app/runner/tools.py.
 _NODE_TOOL_RETURN_SHAPES = {
     "shell": "{stdout: str, stderr: str, returncode: int}",
+    "read_file": (
+        "{path: str, type: 'file', content: str, offset: int, "
+        "lines_returned: int, total_lines: int | None, truncated: bool, "
+        "next_offset?: int} for text files; "
+        "{path: str, type: 'directory', entries: list[str], total_entries: int, "
+        "offset: int, truncated: bool} for directories; "
+        "{path: str, type: 'image', mime: str, message: str, "
+        "attachments: list} for images (png/jpeg/gif/webp)  "
+        "— text `content` is raw (no line-number prefixes; slices work as "
+        "edit_file old_string); when `truncated`, re-call with "
+        "offset=next_offset; image attachments are delivered to the inner "
+        "LLM as native visual content when called via ctx.call_llm(tools=[...]), "
+        "so a node that needs to *look at* an image should wrap the tool "
+        "in an agent rather than call it directly. (or {error: str} on missing "
+        "path / PDF or other binary / out-of-range offset)"
+    ),
+    "write_file": "{path: str, bytes_written: int}  (or {error: str} on OS failure)",
+    "edit_file": (
+        "{path: str, replacements: int}  "
+        "(or {error: str} when old_string is missing, matches more than once "
+        "without replace_all, or the file isn't valid UTF-8)"
+    ),
     "web_search": (
         "{search_id: str, results: list[{url: str, title: str, "
         "publish_date: str | None, excerpts: list[str]}]}  "
@@ -79,9 +101,9 @@ Two distinct sets of callables live in this system:
 
 2. **Node-runtime tools** — [[NODE_TOOL_NAMES]]. The node's Python code decides which of these it uses, either by passing them to `ctx.call_llm(..., tools=[...])` (let the inner LLM call them) or by invoking `ctx.tools.X(...)` directly (no LLM round-trip). Picking the right runtime tools for each node is part of your job.
 
-`web_search` discovers URLs for a query (parallel.ai); `web_fetch` reads one or more known URLs as LLM-clean markdown, handling JS-rendered pages and PDFs (parallel.ai Extract).
+`web_search` discovers URLs for a query (parallel.ai); `web_fetch` reads one or more known URLs as LLM-clean markdown, handling JS-rendered pages and PDFs (parallel.ai Extract). `read_file` / `write_file` / `edit_file` are the file primitives — paged reads, whole-file writes, and exact-string edits — so file work doesn't need to go through `shell`. `read_file` also reads images: handed to an inner LLM via `ctx.call_llm(tools=["read_file"])`, the model *sees* the actual image, so build a vision node that way rather than via a direct call.
 
-When the user asks "what tools do you have?", lead with the graph-shaping set and `run_workflow`, then note that nodes you build can use `shell` / `web_search` / `web_fetch` at runtime.
+When the user asks "what tools do you have?", lead with the graph-shaping set and `run_workflow`, then note that nodes you build can use [[NODE_TOOL_NAMES]] at runtime.
 
 # when you need to explore, build a research node
 
@@ -91,7 +113,7 @@ A research node looks like any other node — it just exists to gather informati
 
 - a node that runs `ctx.tools.shell("ls -la /path")` and returns the listing, so you can see what files are actually there before designing the rest of the graph;
 - a node that calls `ctx.tools.web_fetch([api_doc_url], objective="...", full_content=True)` and returns the spec, so you can write the next node's request shape correctly;
-- a node that reads a file the user pointed at and returns a sample of its contents.
+- a node that calls `ctx.tools.read_file(path)` on a file the user pointed at and returns a sample of its contents.
 
 Workflow:
 
@@ -139,8 +161,8 @@ def run(inputs, ctx):
 
 `ctx` provides:
 
-- `ctx.call_llm(prompt, tools=[...])` — runs an LLM inside the node. Pass tool names (`"shell"`, `"web_search"`, `"web_fetch"`) in the `tools` list; the LLM running inside the node decides when to invoke them. Returns a dict with keys `content` (str), `tool_calls_made` (list), `usage`, `cost`. Omit the `model` arg (see *# design conventions*).
-- `ctx.tools.shell(...)` / `ctx.tools.web_search(...)` / `ctx.tools.web_fetch(...)` — direct (non-LLM) tool calls, returning the same dicts the LLM-mediated form would produce. Skip the LLM round-trip when the call is fully determined by the node's inputs and there's nothing for a model to decide.
+- `ctx.call_llm(prompt, tools=[...])` — runs an LLM inside the node. Pass tool names ([[NODE_TOOL_NAMES]]) in the `tools` list; the LLM running inside the node decides when to invoke them. Returns a dict with keys `content` (str), `tool_calls_made` (list), `usage`, `cost`. Omit the `model` arg (see *# design conventions*).
+- `ctx.tools.shell(...)` / `ctx.tools.read_file(...)` / `ctx.tools.web_fetch(...)` / … — direct (non-LLM) tool calls, same names, returning the same dicts the LLM-mediated form would produce. Skip the LLM round-trip when the call is fully determined by the node's inputs and there's nothing for a model to decide.
 - `ctx.log("...")` — appends a visible line to the run log.
 - `ctx.workdir` — `pathlib.Path` to a per-run scratch directory.
 
@@ -160,7 +182,7 @@ direct calls feel safe and cheap, so they're easy to reach for first. *resist th
 
 ## node-runtime tool signatures
 
-These are the canonical signatures for `shell`, `web_search`, `web_fetch`. They apply to both forms — direct (`ctx.tools.X(...)`) and LLM-mediated (`ctx.call_llm(tools=[...])`) — so write call sites that match exactly. All params are keyword-or-positional; both styles work.
+These are the canonical signatures for the node-runtime tools. They apply to both forms — direct (`ctx.tools.X(...)`) and LLM-mediated (`ctx.call_llm(tools=[...])`) — so write call sites that match exactly. All params are keyword-or-positional; both styles work.
 
 [[NODE_TOOL_SIGNATURES]]
 
@@ -230,7 +252,7 @@ plan the graph before mutating. break the request into focused steps, and branch
 - snake_case node names: `transcribe_audio`, `extract_actions`, `send_email`.
 - one-line italic-feel `description`, e.g. *scans the input folder for .m4a files*.
 - *never assume model names.* Omit the `model` arg on `ctx.call_llm`, `add_node`, and `configure_node` so every node falls back to the user's configured default. Only pass a model string when the user *specifically named* one in this conversation — don't reach into memory for a model id. If a run fails with a rate-limit, model-not-found, or invalid-model error, that's not a graph problem: tell the user to switch the default model in Settings rather than patching `model=` on the node.
-- only reach for tools a node actually needs. `shell` is dangerous — use it deliberately.
+- only reach for tools a node actually needs. `shell`, `write_file`, and `edit_file` mutate the user's machine — use them deliberately.
 
 # your tool surface
 
@@ -348,7 +370,7 @@ def mcp_tools_message() -> dict | None:
         "[available MCP tools]",
         "The user has connected external Model Context Protocol (MCP) servers "
         "in Settings. Their tools are available to node code this turn, "
-        "alongside shell / web_search / web_fetch. Call one directly with the "
+        f"alongside the built-in {_format_node_tool_names()}. Call one directly with the "
         "dotted form `ctx.tools.<server>.<tool>(arg=...)` (keyword args only), "
         "or name it in `ctx.call_llm(tools=[...])` to let the inner LLM call it "
         "— in that case use the flat tool name shown in parentheses. Each "
