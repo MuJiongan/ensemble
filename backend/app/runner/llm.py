@@ -25,12 +25,7 @@ from typing import Callable
 
 from app import compaction
 from app.catalog import models_dev as md
-from app.runner.tools import (
-    REGISTRY,
-    TOOL_SCHEMAS,
-    reject_image_attachments,
-    strip_attachment_data,
-)
+from app.runner.tools import REGISTRY, TOOL_SCHEMAS, prepare_tool_result
 
 
 def call_llm(
@@ -269,16 +264,12 @@ def call_llm(
             # Attachments (image bytes from read_file) ride on the message
             # itself for the protocol adapters to render as native content
             # blocks; the recorded result and the JSON the model reads carry
-            # only a size note, so events/persistence never haul base64.
-            attachments = (
-                result.get("attachments") if isinstance(result, dict) else None
+            # only a size note, so events/persistence never haul base64. On a
+            # text-only model the result becomes a clean error instead — beats
+            # a provider 400 that would kill the whole call_llm round.
+            recorded, attachments = prepare_tool_result(
+                result, tool=fn_name, model=model, accepts_images=accepts_images
             )
-            if attachments and not accepts_images:
-                # Text-only model: a clean tool-result error beats a provider
-                # 400 that would kill the whole call_llm round.
-                result = reject_image_attachments(fn_name, model)
-                attachments = None
-            recorded = strip_attachment_data(result)
             tool_calls_made.append({"name": fn_name, "args": fn_args, "result": recorded})
             tool_msg = {
                 "role": "tool",

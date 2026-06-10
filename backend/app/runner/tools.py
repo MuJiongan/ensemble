@@ -89,6 +89,20 @@ def strip_attachment_data(result):
     return {**result, "attachments": stripped}
 
 
+def prepare_tool_result(result, *, tool: str, model: str, accepts_images: bool):
+    """Split a tool result for the agent loops: returns ``(recorded,
+    attachments)``. ``recorded`` is what events, run records, and the JSON the
+    model reads carry (never base64); ``attachments`` ride the tool message
+    for the protocol adapters, or None when the model can't accept images —
+    in which case ``recorded`` is the replacement error result."""
+    attachments = result.get("attachments") if isinstance(result, dict) else None
+    if not attachments:
+        return result, None
+    if not accepts_images:
+        return reject_image_attachments(tool, model), None
+    return strip_attachment_data(result), attachments
+
+
 def _looks_binary(p: Path, sample: bytes) -> bool:
     if p.suffix.lower() in _BINARY_EXTENSIONS:
         return True
@@ -167,6 +181,15 @@ def read_file(file_path: str, offset: int = 1, limit: int = 2000) -> dict:
             raw = p.read_bytes()
         except OSError as e:
             return {"error": f"{type(e).__name__}: {e}"}
+        if len(raw) > _IMAGE_MAX_BYTES:
+            # The stat() pre-check raced a growing file — verify what we
+            # actually read.
+            return {
+                "error": (
+                    f"image is {len(raw)} bytes, over the {_IMAGE_MAX_BYTES} "
+                    "byte attachment limit; downsample the image"
+                )
+            }
         return {
             "path": str(p),
             "type": "image",
@@ -195,13 +218,18 @@ def read_file(file_path: str, offset: int = 1, limit: int = 2000) -> dict:
     raw: list[str] = []
     total = 0
     bytes_used = 0
-    byte_capped = False
+    capped = False  # stopped before EOF (window full or byte cap)
     try:
         with p.open("r", encoding="utf-8", errors="replace") as f:
             for i, line in enumerate(f):
                 total = i + 1
-                if i < start or len(raw) >= limit:
-                    continue  # keep counting total_lines past the window
+                if i < start:
+                    continue
+                if len(raw) >= limit:
+                    # Window full and at least one more line exists — stop
+                    # rather than decode the rest of the file just to count it.
+                    capped = True
+                    break
                 line = line.rstrip("\n")
                 if len(line) > _READ_MAX_LINE_CHARS:
                     line = (
@@ -210,7 +238,7 @@ def read_file(file_path: str, offset: int = 1, limit: int = 2000) -> dict:
                     )
                 size = len(line.encode("utf-8")) + (1 if raw else 0)
                 if bytes_used + size > _READ_MAX_BYTES:
-                    byte_capped = True
+                    capped = True
                     break
                 raw.append(line)
                 bytes_used += size
@@ -222,19 +250,18 @@ def read_file(file_path: str, offset: int = 1, limit: int = 2000) -> dict:
             "error": f"offset {offset} is out of range for this file ({total} lines)"
         }
 
-    truncated = byte_capped or start + len(raw) < total
     result = {
         "path": str(p),
         "type": "file",
         "content": "\n".join(raw),
         "offset": offset,
         "lines_returned": len(raw),
-        # Unknown when the byte cap stopped the scan early — counting the
-        # rest would mean decoding the whole file we just refused to return.
-        "total_lines": None if byte_capped else total,
-        "truncated": truncated,
+        # Unknown when the scan stopped early — counting the rest would mean
+        # decoding the whole file we just declined to return.
+        "total_lines": None if capped else total,
+        "truncated": capped,
     }
-    if truncated:
+    if capped:
         result["next_offset"] = offset + len(raw)
     return result
 
@@ -268,9 +295,24 @@ def edit_file(
     if not old_string:
         return {"error": "old_string must not be empty"}
     try:
-        text = p.read_text(encoding="utf-8", errors="replace")
+        raw = p.read_bytes()
     except OSError as e:
         return {"error": f"{type(e).__name__}: {e}"}
+    # Strict decode: errors="replace" here would rewrite every undecodable
+    # byte in the whole file as U+FFFD on write-back — silent corruption far
+    # from the edited string. It also doubles as the binary-file guard.
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return {"error": f"cannot edit non-UTF-8 or binary file: {file_path}"}
+    # Match on LF (read_file's content is newline-translated, so old_string
+    # slices arrive LF-only) and restore CRLF on write so one edit doesn't
+    # rewrite every line ending. Mixed-endings files come out uniformly CRLF.
+    crlf = "\r\n" in text
+    if crlf:
+        text = text.replace("\r\n", "\n")
+        old_string = old_string.replace("\r\n", "\n")
+        new_string = new_string.replace("\r\n", "\n")
     count = text.count(old_string)
     if count == 0:
         return {"error": "old_string not found in file"}
@@ -281,8 +323,11 @@ def edit_file(
                 "make it unique, or pass replace_all=True"
             )
         }
+    new_text = text.replace(old_string, new_string)
+    if crlf:
+        new_text = new_text.replace("\n", "\r\n")
     try:
-        p.write_text(text.replace(old_string, new_string), encoding="utf-8")
+        p.write_bytes(new_text.encode("utf-8"))
     except OSError as e:
         return {"error": f"{type(e).__name__}: {e}"}
     return {"path": str(p), "replacements": count}

@@ -150,7 +150,7 @@ def _attachment_part(att: dict) -> dict:
     }
 
 
-def _lower_attachments(messages: list[dict]) -> list[dict]:
+def lower_attachments(messages: list[dict]) -> list[dict]:
     """Chat completions can't carry binary content on ``role: "tool"``
     messages, so attachments (image bytes from read_file) move to a user
     message inserted right after the contiguous tool-result run — keeping the
@@ -185,7 +185,7 @@ def _lower_attachments(messages: list[dict]) -> list[dict]:
 
 
 def _build_payload(model, messages, tool_schemas, base_url, variant_opts, streaming, extra_body):
-    messages = _lower_attachments(messages)
+    messages = lower_attachments(messages)
     if not _is_openrouter(base_url):
         messages = _strip_reasoning_details(messages)
     payload: dict[str, Any] = {"model": model, "messages": messages}

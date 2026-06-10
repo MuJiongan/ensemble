@@ -33,8 +33,8 @@ _NODE_TOOL_RETURN_SHAPES = {
     "write_file": "{path: str, bytes_written: int}  (or {error: str} on OS failure)",
     "edit_file": (
         "{path: str, replacements: int}  "
-        "(or {error: str} when old_string is missing or matches more than once "
-        "without replace_all)"
+        "(or {error: str} when old_string is missing, matches more than once "
+        "without replace_all, or the file isn't valid UTF-8)"
     ),
     "web_search": (
         "{search_id: str, results: list[{url: str, title: str, "

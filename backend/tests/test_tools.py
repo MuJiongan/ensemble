@@ -53,9 +53,9 @@ def test_gemini_adapter_renders_attachments_as_inline_data():
 
 
 def test_openai_adapter_moves_attachments_to_user_message():
-    from app.llm.openai_chat import _lower_attachments
+    from app.llm.openai_chat import lower_attachments
 
-    lowered = _lower_attachments([dict(_TOOL_MSG_WITH_ATTACHMENT)])
+    lowered = lower_attachments([dict(_TOOL_MSG_WITH_ATTACHMENT)])
     tool_msg, user_msg = lowered
     assert tool_msg["role"] == "tool" and "attachments" not in tool_msg
     assert user_msg["role"] == "user"
@@ -74,6 +74,34 @@ def test_codex_adapter_moves_attachments_to_input_image():
     assert user_item["type"] == "message" and user_item["role"] == "user"
     image_part = user_item["content"][1]
     assert image_part == {"type": "input_image", "image_url": "data:image/png;base64,QUJD"}
+
+
+def test_prepare_tool_result_paths():
+    """The single split point both agent loops (runner/llm.py, codex_api.py)
+    feed tool results through — covers the loop-level reject/strip behavior."""
+    from app.runner.tools import prepare_tool_result
+
+    image_result = {
+        "type": "image",
+        "attachments": [{"type": "file", "mime": "image/png", "bytes": 3, "data": "QUJD"}],
+    }
+    # vision model: attachments ride separately, recorded JSON has no base64
+    recorded, atts = prepare_tool_result(
+        image_result, tool="read_file", model="m", accepts_images=True
+    )
+    assert atts == image_result["attachments"]
+    assert "QUJD" not in json.dumps(recorded)
+    assert recorded["attachments"][0]["bytes"] == 3
+    # text-only model: replacement error, nothing attached
+    recorded, atts = prepare_tool_result(
+        image_result, tool="read_file", model="text-only-m", accepts_images=False
+    )
+    assert atts is None
+    assert "does not accept image input" in recorded["error"]
+    assert "QUJD" not in json.dumps(recorded)
+    # plain results pass through untouched regardless of capability
+    plain = {"content": "x"}
+    assert prepare_tool_result(plain, tool="t", model="m", accepts_images=False) == (plain, None)
 
 
 def test_supports_image_input():
@@ -140,10 +168,15 @@ def test_read_file_offset_and_limit(tmp_path):
     p.write_text("\n".join(f"line{i}" for i in range(1, 11)))
     out = read_file(str(p), offset=3, limit=2)
     assert out["content"] == "line3\nline4"
-    assert out["total_lines"] == 10
+    # the scan stops once the window fills — total is unknown, not paid for
+    assert out["total_lines"] is None
     assert out["lines_returned"] == 2
     assert out["truncated"] is True
     assert out["next_offset"] == 5
+    # a window reaching EOF exactly is not truncated and knows the total
+    out = read_file(str(p), offset=9, limit=2)
+    assert out["truncated"] is False
+    assert out["total_lines"] == 10
 
 
 def test_read_file_offset_out_of_range(tmp_path):
@@ -296,3 +329,24 @@ def test_edit_file_error_contract(tmp_path):
     assert "error" in edit_file(str(p), "content", "content")
     assert "error" in edit_file(str(p), "", "x")
     assert "error" in edit_file(str(tmp_path / "nope.txt"), "a", "b")
+
+
+def test_edit_file_refuses_non_utf8(tmp_path):
+    p = tmp_path / "f.txt"
+    blob = b"match this\xff\xfe and some latin-1 caf\xe9\n"
+    p.write_bytes(blob)
+    out = edit_file(str(p), "match this", "changed")
+    assert "non-UTF-8" in out["error"]
+    assert p.read_bytes() == blob, "file must be untouched — no U+FFFD rewrite"
+
+
+def test_edit_file_preserves_crlf(tmp_path):
+    p = tmp_path / "f.txt"
+    p.write_bytes(b"DEBUG = False\r\nNAME = 'x'\r\n")
+    out = edit_file(str(p), "DEBUG = False", "DEBUG = True")
+    assert out["replacements"] == 1
+    assert p.read_bytes() == b"DEBUG = True\r\nNAME = 'x'\r\n"
+    # old_string spanning lines matches even when pasted with LF endings
+    out = edit_file(str(p), "DEBUG = True\nNAME", "DEBUG = True\nLABEL")
+    assert out["replacements"] == 1
+    assert p.read_bytes() == b"DEBUG = True\r\nLABEL = 'x'\r\n"

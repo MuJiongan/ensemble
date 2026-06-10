@@ -28,8 +28,8 @@ import httpx
 
 from app import compaction
 from app.catalog import models_dev as md
-from app.llm.openai_chat import _lower_attachments
-from app.runner.tools import reject_image_attachments, strip_attachment_data
+from app.llm.openai_chat import lower_attachments
+from app.runner.tools import prepare_tool_result
 
 
 CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
@@ -91,7 +91,7 @@ def _to_responses_input(messages: list[dict]) -> tuple[Optional[str], list[dict]
     # function_call_output is text-only — relocate tool-result attachments
     # (image bytes from read_file) into a user message of OpenAI-style
     # parts, which _user_input_parts lowers to input_image.
-    messages = _lower_attachments(messages)
+    messages = lower_attachments(messages)
 
     instructions_parts: list[str] = []
     items: list[dict] = []
@@ -557,15 +557,9 @@ def call_codex_chat(
             # recorded result carry a size note; the binary payload rides on
             # the message for _to_responses_input to re-deliver as
             # input_image parts in a follow-up user message.
-            attachments = (
-                result.get("attachments") if isinstance(result, dict) else None
+            recorded, attachments = prepare_tool_result(
+                result, tool=fn_name, model=model, accepts_images=accepts_images
             )
-            if attachments and not accepts_images:
-                # Text-only model: a clean tool-result error beats a provider
-                # 400 that would kill the whole call.
-                result = reject_image_attachments(fn_name, model)
-                attachments = None
-            recorded = strip_attachment_data(result)
             tool_calls_made.append({"name": fn_name, "args": fn_args, "result": recorded})
             tool_msg = {
                 "role": "tool",
