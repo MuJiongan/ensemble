@@ -84,12 +84,12 @@ def test_supports_image_input():
     base = CatalogModel(id="m", name="m", provider_id="p", api_id="m", npm="", api_url="")
     # catalog miss → assume capable, the provider enforces its own limits
     assert supports_image_input(None) is True
-    # modalities is authoritative when present
+    # explicit modalities is the only blocking signal
     assert supports_image_input(replace(base, modalities={"input": ["text", "image"]})) is True
     assert supports_image_input(replace(base, modalities={"input": ["text"]})) is False
-    # fall back to the coarser attachment flag
-    assert supports_image_input(replace(base, attachment=True)) is True
-    assert supports_image_input(replace(base, attachment=False)) is False
+    # no modality metadata (synthetic codex entries default attachment=False)
+    # is absence of information, not a text-only signal — must pass through
+    assert supports_image_input(replace(base, attachment=False, modalities=None)) is True
 
 
 def test_reject_image_attachments_states_fact_without_remedy():
