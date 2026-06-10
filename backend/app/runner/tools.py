@@ -135,7 +135,13 @@ def read_file(file_path: str, offset: int = 1, limit: int = 2000) -> dict:
     and react. ``content`` is the file's raw text — no line-number prefixes —
     so slices can be passed straight to ``edit_file`` as ``old_string``."""
     p = Path(file_path)
-    start = max(offset - 1, 0)
+    # Clamp the paging params: offset=0 means line 1, and a non-positive
+    # limit would otherwise return an empty window whose next_offset never
+    # advances — an LLM following the continuation contract would loop on
+    # identical calls forever.
+    offset = max(offset, 1)
+    limit = max(limit, 1)
+    start = offset - 1
 
     if p.is_dir():
         try:
@@ -145,7 +151,7 @@ def read_file(file_path: str, offset: int = 1, limit: int = 2000) -> dict:
         except OSError as e:
             return {"error": f"{type(e).__name__}: {e}"}
         chunk = entries[start : start + limit]
-        return {
+        listing = {
             "path": str(p),
             "type": "directory",
             "entries": chunk,
@@ -153,6 +159,9 @@ def read_file(file_path: str, offset: int = 1, limit: int = 2000) -> dict:
             "offset": offset,
             "truncated": start + len(chunk) < len(entries),
         }
+        if listing["truncated"]:
+            listing["next_offset"] = offset + len(chunk)
+        return listing
 
     if not p.is_file():
         err = f"file not found: {file_path}"

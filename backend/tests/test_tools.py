@@ -209,6 +209,28 @@ def test_read_file_directory_listing(tmp_path):
     assert out["entries"] == ["a.txt", "b.txt", "sub/"]
     assert out["total_entries"] == 3
     assert out["truncated"] is False
+    # truncated listings carry the same continuation handle files do
+    out = read_file(str(tmp_path), limit=2)
+    assert out["entries"] == ["a.txt", "b.txt"]
+    assert out["truncated"] is True
+    assert out["next_offset"] == 3
+    assert read_file(str(tmp_path), offset=3)["entries"] == ["sub/"]
+
+
+def test_read_file_paging_params_clamped(tmp_path):
+    p = tmp_path / "f.txt"
+    p.write_text("one\ntwo\nthree\n")
+    # limit=0 must not produce a non-advancing next_offset (infinite loop
+    # for a caller following the continuation contract)
+    out = read_file(str(p), limit=0)
+    assert out["lines_returned"] == 1
+    assert out["next_offset"] == 2
+    # offset=0 means line 1, and the reported offset/continuation agree
+    out = read_file(str(p), offset=0, limit=2)
+    assert out["offset"] == 1
+    assert out["content"] == "one\ntwo"
+    assert out["next_offset"] == 3
+    assert read_file(str(p), offset=out["next_offset"])["content"] == "three"
 
 
 def test_read_file_rejects_binary(tmp_path):
