@@ -545,50 +545,105 @@ def test_view_tools_work_during_active_run(db, workflow):
     assert d["id"] == nid
 
 
-def test_view_run_returns_run_level_summary_by_default(db, workflow):
-    """No `node_id` → run-level summary: outputs, node_errors, error, total_cost."""
-    nid = orch_tools.add_node(db, workflow.id, name="summariser")["node_id"]
+def test_view_run_requires_node_id(db, workflow):
+    """There is no run-level summary — omitting `node_id` is an error that
+    points at `view_graph` for node ids."""
     run = models.Run(
-        workflow_id=workflow.id,
-        kind="user",
-        status="error",
-        inputs={"q": "hi"},
-        outputs={"summary": "partial"},
-        error="downstream blew up",
-        total_cost=0.42,
+        workflow_id=workflow.id, kind="user", status="success",
+        inputs={}, outputs={"summary": "hi"},
+    )
+    db.add(run); db.commit(); db.refresh(run)
+
+    res = orch_tools.view_run(db, workflow.id, run_id=run.id)
+    assert "error" in res
+    assert "node_id" in res["error"]
+    assert "outputs" not in res
+
+
+def test_view_run_requires_fields(db, workflow):
+    """`fields` is mandatory alongside `node_id` — no implicit all-three dump."""
+    nid = orch_tools.add_node(db, workflow.id, name="loader")["node_id"]
+    run = models.Run(
+        workflow_id=workflow.id, kind="user", status="success",
+        inputs={}, outputs={},
     )
     db.add(run); db.commit(); db.refresh(run)
     db.add(
         models.NodeRun(
-            run_id=run.id,
-            node_id=nid,
-            status="error",
-            inputs={"q": "hi"},
-            outputs={},
-            logs=["loaded", "boom"],
-            error="ValueError: bad input",
-            duration_ms=42,
-            cost=0.01,
+            run_id=run.id, node_id=nid, status="success",
+            inputs={"a": 1}, outputs={"b": 2}, logs=["hi"],
+            duration_ms=1, cost=0.0,
         )
     )
     db.commit()
 
-    res = orch_tools.view_run(db, workflow.id, run_id=run.id)
-    assert res["run_id"] == run.id
+    res = orch_tools.view_run(db, workflow.id, run_id=run.id, node_id=nid)
+    assert "error" in res
+    assert "fields" in res["error"]
+    assert "inputs" not in res
+    assert "outputs" not in res
+    assert "logs" not in res
+
+
+def test_wait_for_run_includes_node_errors_on_failure(db, workflow):
+    """On a non-success status the `run_workflow` result (via `wait_for_run`)
+    names the failing node(s) — that replaces the old run-level `view_run`
+    summary as the failure signal."""
+    from app.runner import events as ev_mod
+
+    nid = orch_tools.add_node(db, workflow.id, name="summariser")["node_id"]
+    snapshot = {"nodes": [{"id": nid, "name": "summariser"}], "edges": []}
+    run = models.Run(
+        workflow_id=workflow.id, kind="orchestrator", status="running",
+        inputs={}, workflow_snapshot=snapshot,
+    )
+    db.add(run); db.commit(); db.refresh(run)
+
+    ev_mod.append_event(run.id, {
+        "type": "node_finished", "node_id": nid, "status": "error",
+        "inputs": {"q": "hi"}, "outputs": {}, "logs": ["boom"],
+        "error": "ValueError: bad input", "duration_ms": 42, "cost": 0.01,
+    })
+    ev_mod.append_event(run.id, {
+        "type": "run_finished", "status": "error",
+        "outputs": {}, "error": "ValueError: bad input", "total_cost": 0.01,
+    })
+
+    res = orch_tools.wait_for_run(db, workflow.id, run.id)
     assert res["status"] == "error"
-    assert res["outputs"] == {"summary": "partial"}
-    assert res["error"] == "downstream blew up"
-    assert res["total_cost"] == 0.42
+    assert res["error"] == "ValueError: bad input"
     assert res["node_errors"] == [
         {"node_id": nid, "node_name": "summariser", "error": "ValueError: bad input"}
     ]
-    # Summary form must NOT carry per-node logs/inputs.
-    assert "logs" not in res
-    assert "node_id" not in res
+    # The failure shape stays lean — no outputs relayed.
+    assert "outputs" not in res
+    ev_mod.discard(run.id)
+
+
+def test_wait_for_run_stays_lean_on_success(db, workflow):
+    """A successful run returns only {run_id, status, total_cost} — no
+    outputs, no error fields."""
+    from app.runner import events as ev_mod
+
+    run = models.Run(
+        workflow_id=workflow.id, kind="orchestrator", status="running",
+        inputs={}, workflow_snapshot={"nodes": [], "edges": []},
+    )
+    db.add(run); db.commit(); db.refresh(run)
+
+    ev_mod.append_event(run.id, {
+        "type": "run_finished", "status": "success",
+        "outputs": {"summary": "hi"}, "error": None, "total_cost": 0.05,
+    })
+
+    res = orch_tools.wait_for_run(db, workflow.id, run.id)
+    assert res == {"run_id": run.id, "status": "success", "total_cost": 0.05}
+    ev_mod.discard(run.id)
 
 
 def test_view_run_with_node_id_returns_node_inputs_outputs_logs(db, workflow):
-    """`node_id` → per-node record: inputs, outputs, logs, status, error, etc."""
+    """`node_id` + all three fields → per-node record: inputs, outputs, logs,
+    status, error, etc."""
     nid = orch_tools.add_node(db, workflow.id, name="loader")["node_id"]
     run = models.Run(
         workflow_id=workflow.id,
@@ -614,7 +669,10 @@ def test_view_run_with_node_id_returns_node_inputs_outputs_logs(db, workflow):
     )
     db.commit()
 
-    res = orch_tools.view_run(db, workflow.id, run_id=run.id, node_id=nid)
+    res = orch_tools.view_run(
+        db, workflow.id, run_id=run.id, node_id=nid,
+        fields=["inputs", "outputs", "logs"], ports=["path", "items"],
+    )
     assert res == {
         "run_id": run.id,
         "node_id": nid,
@@ -653,7 +711,9 @@ def test_view_run_with_node_id_uses_snapshot_name_after_rename(db, workflow):
 
     orch_tools.rename_node(db, workflow.id, node_id=nid, new_name="loader_v2")
 
-    res = orch_tools.view_run(db, workflow.id, run_id=run.id, node_id=nid)
+    res = orch_tools.view_run(
+        db, workflow.id, run_id=run.id, node_id=nid, fields=["logs"]
+    )
     assert res["node_name"] == "loader"
 
 
@@ -676,14 +736,17 @@ def test_view_run_with_unknown_node_id_returns_error(db, workflow):
     )
     db.commit()
 
-    res = orch_tools.view_run(db, workflow.id, run_id=run.id, node_id=skipped)
+    res = orch_tools.view_run(
+        db, workflow.id, run_id=run.id, node_id=skipped,
+        fields=["outputs"], ports=["whatever"],
+    )
     assert "error" in res
     assert skipped in res["error"]
     assert "did not execute" in res["error"]
 
 
 def test_view_run_node_id_dispatches_via_execute(db, workflow):
-    """`execute()` must forward the optional `node_id` arg through to the tool."""
+    """`execute()` must forward `node_id` and `fields` through to the tool."""
     nid = orch_tools.add_node(db, workflow.id, name="n")["node_id"]
     run = models.Run(
         workflow_id=workflow.id, kind="user", status="success",
@@ -700,7 +763,13 @@ def test_view_run_node_id_dispatches_via_execute(db, workflow):
     db.commit()
 
     res = orch_tools.execute(
-        db, workflow.id, "view_run", {"run_id": run.id, "node_id": nid}
+        db, workflow.id, "view_run",
+        {
+            "run_id": run.id,
+            "node_id": nid,
+            "fields": ["inputs", "outputs", "logs"],
+            "ports": ["a", "b"],
+        },
     )
     assert res["node_id"] == nid
     assert res["inputs"] == {"a": 1}
@@ -708,14 +777,17 @@ def test_view_run_node_id_dispatches_via_execute(db, workflow):
     assert res["logs"] == ["hi"]
 
 
-def test_view_run_schema_advertises_optional_node_id_and_fields():
-    """The OpenRouter tool schema must expose `node_id` and `fields` as
-    optional parameters — required list stays as just `run_id`. `fields` is
-    an array of enum constrained to {inputs, outputs, logs}."""
+def test_view_run_schema_requires_node_id_and_fields():
+    """The OpenRouter tool schema must require run_id/node_id/fields — there
+    is no run-level form. `ports` stays out of the static required list only
+    because its requirement is conditional (logs-only reads have no dicts to
+    filter); the runtime enforces it. `fields` is an array of enum
+    constrained to {inputs, outputs, logs}."""
     spec = orch_tools.TOOL_SCHEMAS["view_run"]
     params = spec["function"]["parameters"]
-    assert set(params["properties"].keys()) == {"run_id", "node_id", "fields"}
-    assert params["required"] == ["run_id"]
+    assert set(params["properties"].keys()) == {"run_id", "node_id", "fields", "ports"}
+    assert params["required"] == ["run_id", "node_id", "fields"]
+    assert "REQUIRED" in params["properties"]["ports"]["description"]
     fields_spec = params["properties"]["fields"]
     assert fields_spec["type"] == "array"
     assert fields_spec["items"]["enum"] == ["inputs", "outputs", "logs"]
@@ -773,7 +845,7 @@ def test_view_run_node_fields_accepts_multiple_and_dedupes(db, workflow):
 
     res = orch_tools.view_run(
         db, workflow.id, run_id=run.id, node_id=nid,
-        fields=["inputs", "outputs", "inputs"],
+        fields=["inputs", "outputs", "inputs"], ports=["a", "b"],
     )
     assert res["inputs"] == {"a": 1}
     assert res["outputs"] == {"b": 2}
@@ -800,6 +872,82 @@ def test_view_run_node_fields_rejects_unknown_field(db, workflow):
     )
     assert "error" in res
     assert "bogus" in res["error"]
+
+
+def _run_with_node(db, workflow, *, inputs, outputs, logs=None):
+    nid = orch_tools.add_node(db, workflow.id, name="n")["node_id"]
+    run = models.Run(
+        workflow_id=workflow.id, kind="user", status="success",
+        inputs={}, outputs={},
+    )
+    db.add(run); db.commit(); db.refresh(run)
+    db.add(
+        models.NodeRun(
+            run_id=run.id, node_id=nid, status="success",
+            inputs=inputs, outputs=outputs, logs=logs or [],
+            duration_ms=1, cost=0.0,
+        )
+    )
+    db.commit()
+    return run, nid
+
+
+def test_view_run_ports_required_when_reading_dicts(db, workflow):
+    """Reading `inputs`/`outputs` without naming ports is an error — no
+    whole-dict dumps."""
+    run, nid = _run_with_node(db, workflow, inputs={"a": 1}, outputs={"b": 2})
+
+    res = orch_tools.view_run(
+        db, workflow.id, run_id=run.id, node_id=nid, fields=["outputs"]
+    )
+    assert "error" in res
+    assert "ports" in res["error"]
+    assert "outputs" not in res
+
+
+def test_view_run_ports_filters_dicts_to_named_keys(db, workflow):
+    """`ports` trims both `inputs` and `outputs` to just the named keys."""
+    run, nid = _run_with_node(
+        db, workflow,
+        inputs={"q": "hi", "limit": 5},
+        outputs={"summary": "short", "raw_html": "<huge>"},
+    )
+
+    res = orch_tools.view_run(
+        db, workflow.id, run_id=run.id, node_id=nid,
+        fields=["inputs", "outputs"], ports=["q", "summary"],
+    )
+    assert res["inputs"] == {"q": "hi"}
+    assert res["outputs"] == {"summary": "short"}
+
+
+def test_view_run_ports_rejects_unknown_port(db, workflow):
+    """A port name that exists on none of the selected dicts is a typo —
+    error and list what's available."""
+    run, nid = _run_with_node(db, workflow, inputs={"a": 1}, outputs={"b": 2})
+
+    res = orch_tools.view_run(
+        db, workflow.id, run_id=run.id, node_id=nid,
+        fields=["outputs"], ports=["bogus"],
+    )
+    assert "error" in res
+    assert "bogus" in res["error"]
+    assert "b" in res["error"]
+
+
+def test_view_run_ports_rejected_on_logs_only_read(db, workflow):
+    """`ports` has nothing to filter on a logs-only read — reject rather
+    than silently ignore."""
+    run, nid = _run_with_node(
+        db, workflow, inputs={}, outputs={}, logs=["hi"],
+    )
+
+    res = orch_tools.view_run(
+        db, workflow.id, run_id=run.id, node_id=nid,
+        fields=["logs"], ports=["a"],
+    )
+    assert "error" in res
+    assert "logs-only" in res["error"]
 
 
 def test_list_runs_returns_recent_first_with_lean_shape(db, workflow):
@@ -934,8 +1082,8 @@ def test_list_runs_works_during_active_run(db, workflow):
 
 
 def test_view_run_fields_without_node_id_is_an_error(db, workflow):
-    """`fields` only makes sense for the per-node form — reject otherwise
-    instead of silently ignoring it."""
+    """`fields` alone doesn't name a node — the missing `node_id` is the
+    error, not a fallback to some run-level read."""
     run = models.Run(
         workflow_id=workflow.id, kind="user", status="success",
         inputs={}, outputs={},

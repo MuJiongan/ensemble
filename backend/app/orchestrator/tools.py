@@ -452,80 +452,6 @@ def run_workflow(
     return {"run_id": run_id, "status": "running"}
 
 
-def _materialise_run(
-    db: DbSession,
-    wid: str,
-    run_id: str,
-    *,
-    full: bool = False,
-) -> dict:
-    """Read a run's current state from the DB into a result dict. Works for
-    any status — running, success, error, cancelled — so this is shared
-    between the post-completion read in :func:`wait_for_run` and the
-    on-demand inspection in :func:`view_run`.
-
-    When ``full=False`` (the default, used by ``run_workflow``), only
-    ``{run_id, status, total_cost}`` is returned — the user inspects the
-    actual outputs in the run panel; the orchestrator doesn't relay them.
-    When ``full=True`` (used by ``view_run``), the full state is returned —
-    ``outputs``, ``node_errors``, and the top-level ``error`` field — so the
-    orchestrator can drill in on failure paths or answer follow-up
-    questions about a specific run."""
-    import time
-    from app.runner import events as ev_mod
-
-    db.expire_all()
-    run = db.get(models.Run, run_id)
-    if run is None or run.workflow_id != wid:
-        return {"error": f"run {run_id} not found in workflow {wid}"}
-
-    # Persist race: the runner appends `run_finished` (which sets
-    # `finished_event`) *before* `_execute_run` materialises and commits the
-    # final state to the DB. If the orchestrator calls `view_run` right
-    # after `run_workflow` returns on a fast run, we can land here while
-    # the in-memory stream says finished but the row still says "running".
-    # Briefly poll for the persist to catch up (bounded; we'd rather return
-    # stale than hang).
-    st = ev_mod.get(run_id)
-    if st is not None and st.finished and run.status == "running":
-        for _ in range(50):  # up to ~5s
-            time.sleep(0.1)
-            db.expire_all()
-            run = db.get(models.Run, run_id)
-            if run is None or run.status != "running":
-                break
-
-    if run is None:
-        return {"error": f"run {run_id} produced no result row"}
-
-    if not full:
-        return {
-            "run_id": run_id,
-            "status": run.status,
-            "total_cost": run.total_cost or 0.0,
-        }
-
-    node_names = {n.id: n.name for n in _get_workflow(db, wid).nodes}
-    node_errors: list[dict] = []
-    for nr in run.node_runs or []:
-        if nr.status == "error":
-            node_errors.append(
-                {
-                    "node_id": nr.node_id,
-                    "node_name": node_names.get(nr.node_id, nr.node_id),
-                    "error": nr.error or "unknown error",
-                }
-            )
-    return {
-        "run_id": run_id,
-        "status": run.status,
-        "outputs": run.outputs or {},
-        "node_errors": node_errors,
-        "error": run.error,
-        "total_cost": run.total_cost or 0.0,
-    }
-
-
 def wait_for_run(
     db: DbSession,
     wid: str,
@@ -536,6 +462,9 @@ def wait_for_run(
 ) -> dict:
     """Block until the given run finishes, then return the lean
     ``{run_id, status, total_cost}`` shape ``run_workflow`` exposes to the LLM.
+    On a non-success status, ``error`` and ``node_errors`` (which node failed,
+    with what message) are included too — that's the orchestrator's failure
+    signal; per-node detail beyond the message goes through :func:`view_run`.
 
     Reads the terminal state from the in-memory event stream — *not* the DB.
     The runner's ``finished_event`` fires the instant ``run_finished`` is
@@ -567,11 +496,28 @@ def wait_for_run(
         st.finished_event.wait(timeout=poll_interval)
 
     result = materialize_run_result(run_id)
-    return {
+    status = result.get("status") or "error"
+    out = {
         "run_id": run_id,
-        "status": result.get("status") or "error",
+        "status": status,
         "total_cost": float(result.get("total_cost") or 0.0),
     }
+    if status != "success":
+        # Name the failing node(s) using the snapshot the run executed against,
+        # so a later rename doesn't mislabel the failure.
+        snap_nodes = (run.workflow_snapshot or {}).get("nodes") or []
+        node_names = {sn.get("id"): sn.get("name") for sn in snap_nodes}
+        out["error"] = result.get("error")
+        out["node_errors"] = [
+            {
+                "node_id": nr.get("node_id"),
+                "node_name": node_names.get(nr.get("node_id")) or nr.get("node_id"),
+                "error": nr.get("error") or "unknown error",
+            }
+            for nr in result.get("node_runs") or []
+            if nr.get("status") == "error"
+        ]
+    return out
 
 
 _NODE_FIELDS: tuple[str, ...] = ("inputs", "outputs", "logs")
@@ -631,48 +577,91 @@ def view_run(
     run_id: str,
     node_id: str | None = None,
     fields: list[str] | None = None,
+    ports: list[str] | None = None,
 ) -> dict:
-    """Return a run's state from the DB.
+    """Return one node's record within a run. There is no run-level dump —
+    both ``node_id`` and ``fields`` are required, so every read names the
+    node and the slice it's after.
 
-    Without ``node_id`` (the default), returns the run-level summary:
-    ``{run_id, status, outputs, node_errors, error, total_cost}``. Use this on
-    error/cancelled paths where ``run_workflow`` deliberately omits details,
-    on a run that was interrupted (e.g. the orchestrator turn was cancelled
-    while waiting), or to answer follow-up questions about a specific run.
-
-    With ``node_id``, returns the per-node record for that node within the
-    run. Always includes the lightweight metadata
+    Always includes the lightweight metadata
     ``{run_id, node_id, node_name, status, error, duration_ms, cost}``; the
-    heavy fields ``inputs``, ``outputs``, ``logs`` are gated by ``fields``.
+    heavy fields ``inputs``, ``outputs``, ``logs`` are gated by ``fields`` —
+    a non-empty subset of ``["inputs", "outputs", "logs"]``. The workflow's
+    result lives on the output node: ``node_id=<output node id>,
+    fields=["outputs"]``.
 
-    ``fields`` is the per-node selector — any subset of
-    ``["inputs", "outputs", "logs"]``. When omitted, all three are returned
-    (back-compat with the unfiltered call). Pass a strict subset to drill in
-    on just what you need — e.g. ``fields=["logs"]`` to read only the
-    captured ``ctx.log(...)`` lines without paying for big ``outputs``.
-    Only valid alongside ``node_id``.
+    ``ports`` narrows further: the returned ``inputs``/``outputs`` dicts are
+    filtered to just those port names, so a read never pays for ports it
+    doesn't need. It's *required* whenever ``fields`` includes ``inputs`` or
+    ``outputs`` (and rejected on a logs-only read, where there's nothing to
+    filter). Errors if a named port exists on none of the selected dicts
+    (typo guard).
     """
-    if fields is not None and node_id is None:
-        return {"error": "`fields` is only valid together with `node_id`"}
+    if not node_id:
+        return {
+            "error": (
+                "`node_id` is required — view_run reads one node's record. "
+                "Get node ids from view_graph; use the output node's id to "
+                "read the workflow's result."
+            )
+        }
+    if not isinstance(fields, list) or not fields:
+        return {
+            "error": (
+                f"`fields` is required — pass a non-empty subset of "
+                f"{list(_NODE_FIELDS)}"
+            )
+        }
+    bad = [f for f in fields if f not in _NODE_FIELDS]
+    if bad:
+        return {
+            "error": (
+                f"unknown field(s) {bad}; allowed: {list(_NODE_FIELDS)}"
+            )
+        }
+    selected: tuple[str, ...] = tuple(dict.fromkeys(fields))  # dedupe, preserve order
 
-    if node_id is None:
-        return _materialise_run(db, wid, run_id, full=True)
-
-    if fields is not None:
-        if not isinstance(fields, list) or not fields:
-            return {"error": "`fields` must be a non-empty list"}
-        bad = [f for f in fields if f not in _NODE_FIELDS]
-        if bad:
+    wants_dicts = any(f in ("inputs", "outputs") for f in selected)
+    if wants_dicts:
+        if not isinstance(ports, list) or not ports:
             return {
                 "error": (
-                    f"unknown field(s) {bad}; allowed: {list(_NODE_FIELDS)}"
+                    "`ports` is required when reading `inputs`/`outputs` — "
+                    "name the port(s) you need (declared on the node; see "
+                    "view_graph)"
                 )
             }
-        selected: tuple[str, ...] = tuple(dict.fromkeys(fields))  # dedupe, preserve order
-    else:
-        selected = _NODE_FIELDS
+    elif ports is not None:
+        return {
+            "error": (
+                "`ports` filters the `inputs`/`outputs` dicts — it doesn't "
+                "apply to a logs-only read"
+            )
+        }
 
-    return _materialise_node_run(db, wid, run_id, node_id, selected)
+    out = _materialise_node_run(db, wid, run_id, node_id, selected)
+    # Bare error dicts (run/node not found) have no node_id; the per-node
+    # record always does — and its `error` key is None on success, so the
+    # key's presence can't distinguish the two shapes.
+    if not wants_dicts or "node_id" not in out:
+        return out
+
+    available: set[str] = set()
+    for f in ("inputs", "outputs"):
+        if isinstance(out.get(f), dict):
+            available |= set(out[f].keys())
+    missing = [p for p in ports if p not in available]
+    if missing:
+        return {
+            "error": (
+                f"unknown port(s) {missing} on node {node_id} in run {run_id}; "
+                f"available: {sorted(available)}"
+            )
+        }
+    for f in ("inputs", "outputs"):
+        if isinstance(out.get(f), dict):
+            out[f] = {k: v for k, v in out[f].items() if k in ports}
+    return out
 
 
 def _materialise_node_run(
@@ -687,10 +676,32 @@ def _materialise_node_run(
     are populated; the lightweight metadata is always included.
     Returns ``{error: ...}`` if the run isn't in this workflow or the node
     didn't execute (e.g. upstream failed before reaching it)."""
+    import time
+    from app.runner import events as ev_mod
+
     db.expire_all()
     run = db.get(models.Run, run_id)
     if run is None or run.workflow_id != wid:
         return {"error": f"run {run_id} not found in workflow {wid}"}
+
+    # Persist race: the runner appends `run_finished` (which sets
+    # `finished_event`) *before* `_execute_run` materialises and commits the
+    # final state to the DB. If the orchestrator calls `view_run` right
+    # after `run_workflow` returns on a fast run, we can land here while
+    # the in-memory stream says finished but the NodeRun rows aren't
+    # committed yet. Briefly poll for the persist to catch up (bounded;
+    # we'd rather return stale than hang).
+    st = ev_mod.get(run_id)
+    if st is not None and st.finished and run.status == "running":
+        for _ in range(50):  # up to ~5s
+            time.sleep(0.1)
+            db.expire_all()
+            run = db.get(models.Run, run_id)
+            if run is None or run.status != "running":
+                break
+
+    if run is None:
+        return {"error": f"run {run_id} produced no result row"}
 
     nr = next((x for x in (run.node_runs or []) if x.node_id == node_id), None)
     if nr is None:
@@ -1008,11 +1019,12 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 "Trigger a workflow run with explicit inputs. The call returns once the run "
                 "finishes — you wait, and the user sees live progress + the actual outputs in "
                 "the run panel. Returns ONLY {run_id, status, total_cost} — outputs are not "
-                "relayed back to you. The user is the audience for outputs; on success, point "
-                "them at the run panel rather than summarising. Call only when you can "
-                "confidently supply the input node's required inputs from the conversation; "
-                "otherwise leave running to the user. Refuses if another run is already in "
-                "flight for this workflow."
+                "relayed back to you; on a non-success status, `error` and `node_errors` "
+                "(which node failed, with what message) are included too. The user is the "
+                "audience for outputs; on success, point them at the run panel rather than "
+                "summarising. Call only when you can confidently supply the input node's "
+                "required inputs from the conversation; otherwise leave running to the user. "
+                "Refuses if another run is already in flight for this workflow."
             ),
             "parameters": {
                 "type": "object",
@@ -1066,21 +1078,21 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "function": {
             "name": "view_run",
             "description": (
-                "Return a run's state from the DB. *Default: don't call this.* Use it ONLY "
-                "when you absolutely cannot proceed without the run's contents — diagnosing a "
-                "failure (`status: \"error\"` or `\"cancelled\"`), reading a research node's "
-                "findings before continuing the build, handing off between stages of a "
-                "multi-workflow solve where the previous run's outputs are the input to "
-                "designing the next graph, or checking on an interrupted run. On a successful "
-                "end-user run, do NOT call this just to summarise — the user reads outputs in "
-                "the run panel.\n\n"
-                "Without `node_id`, returns the run-level summary: {run_id, status, outputs, "
-                "node_errors, error, total_cost}.\n\n"
-                "With `node_id`, returns the per-node record for that node within the run. "
-                "Always includes the lightweight metadata {run_id, node_id, node_name, "
-                "status, error, duration_ms, cost}; the heavy fields (`inputs`, `outputs`, "
-                "`logs`) are gated by `fields`. Use this to localise a failure or inspect "
-                "intermediate state when the run-level summary isn't enough."
+                "Return one node's record within a run. *Default: don't call this.* Use it "
+                "ONLY when you absolutely cannot proceed without the run's contents — "
+                "diagnosing a failure (the `run_workflow` result already names the failing "
+                "node(s) in `node_errors`), reading a research node's findings before "
+                "continuing the build, handing off between stages of a multi-workflow solve "
+                "where the previous run's outputs are the input to designing the next graph, "
+                "or checking on an interrupted run. On a successful end-user run, do NOT "
+                "call this just to summarise — the user reads outputs in the run panel.\n\n"
+                "There is no run-level dump: every call names the node (`node_id`), the "
+                "slice it needs (`fields`), and — when reading `inputs`/`outputs` — the "
+                "specific port names (`ports`). Always includes the lightweight metadata "
+                "{run_id, node_id, node_name, status, error, duration_ms, cost}; the heavy "
+                "fields (`inputs`, `outputs`, `logs`) are gated by `fields`. The workflow's "
+                "result lives on the output node — `node_id=<output node id>, "
+                "fields=[\"outputs\"], ports=[<the output port(s) you need>]`."
             ),
             "parameters": {
                 "type": "object",
@@ -1089,8 +1101,9 @@ TOOL_SCHEMAS: dict[str, dict] = {
                     "node_id": {
                         "type": "string",
                         "description": (
-                            "Optional. If set, return the per-node record for this node "
-                            "within the run instead of the run-level summary."
+                            "The node to inspect — ids come from `view_graph` or "
+                            "`node_errors`. Use the output node's id to read the "
+                            "workflow's result."
                         ),
                     },
                     "fields": {
@@ -1102,15 +1115,27 @@ TOOL_SCHEMAS: dict[str, dict] = {
                         "minItems": 1,
                         "uniqueItems": True,
                         "description": (
-                            "Per-node selector — only valid alongside `node_id`. Pick any "
-                            "subset of [\"inputs\", \"outputs\", \"logs\"] to drill in on "
-                            "just what you need (e.g. `[\"logs\"]` to read only the "
-                            "`ctx.log(...)` lines without paying for big outputs). When "
-                            "omitted, all three are returned."
+                            "Which heavy fields to return — the smallest subset of "
+                            "[\"inputs\", \"outputs\", \"logs\"] that answers your "
+                            "question (e.g. `[\"logs\"]` to read only the `ctx.log(...)` "
+                            "lines without paying for big outputs)."
+                        ),
+                    },
+                    "ports": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "uniqueItems": True,
+                        "description": (
+                            "Which port names to return from the `inputs`/`outputs` "
+                            "dicts — REQUIRED whenever `fields` includes `inputs` or "
+                            "`outputs`; omit for a logs-only read. Port names are the "
+                            "node's declared inputs/outputs (see `view_graph`). Name "
+                            "just the port(s) you need."
                         ),
                     },
                 },
-                "required": ["run_id"],
+                "required": ["run_id", "node_id", "fields"],
             },
         },
     },
