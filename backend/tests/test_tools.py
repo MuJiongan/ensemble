@@ -212,7 +212,9 @@ def test_read_file_pdf_errors_with_extraction_hint(tmp_path):
     p.write_bytes(b"%PDF-1.4 fake pdf body")
     out = read_file(str(p))
     assert "cannot read PDF" in out["error"]
-    assert "pdftotext" in out["error"]
+    assert "extract its text" in out["error"]
+    # no specific extraction library named — the model would fixate on it
+    assert "pdftotext" not in out["error"]
 
 
 def test_read_file_oversized_image_errors(tmp_path, monkeypatch):

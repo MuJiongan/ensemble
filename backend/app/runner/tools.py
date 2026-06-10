@@ -185,8 +185,8 @@ def read_file(file_path: str, offset: int = 1, limit: int = 2000) -> dict:
     if sample.startswith(b"%PDF-"):
         return {
             "error": (
-                f"cannot read PDF: {file_path}; extract its text instead "
-                "(e.g. `shell` with pdftotext), or use web_fetch for remote PDFs"
+                f"cannot read PDF: {file_path}; extract its text instead, "
+                "or use web_fetch for remote PDFs"
             )
         }
     if _looks_binary(p, sample):
