@@ -164,23 +164,19 @@ def run(inputs, ctx):
 `ctx` provides:
 
 - `ctx.call_llm(prompt, tools=[...])` — runs an LLM inside the node. Pass tool names ([[NODE_TOOL_NAMES]]) in the `tools` list; the LLM running inside the node decides when to invoke them. Returns a dict with keys `content` (str), `tool_calls_made` (list), `usage`, `cost`. Omit the `model` arg (see *# design conventions*).
-- `ctx.tools.shell(...)` / `ctx.tools.read_file(...)` / `ctx.tools.web_fetch(...)` / … — direct (non-LLM) tool calls, same names, returning the same dicts the LLM-mediated form would produce. Skip the LLM round-trip when the call is fully determined by the node's inputs and there's nothing for a model to decide.
+- `ctx.tools.shell(...)` / `ctx.tools.read_file(...)` / `ctx.tools.web_fetch(...)` / … — direct (non-LLM) tool calls, same names, returning the same dicts the LLM-mediated form would produce. The agentic form above is the default; reserve direct calls for when there's nothing for a model to decide (see *# direct calls vs wrapping the tool in an agent*).
 - `ctx.log("...")` — appends a visible line to the run log.
 - `ctx.workdir` — `pathlib.Path` to a per-run scratch directory.
 
 ## direct calls vs wrapping the tool in an agent
 
-Each node-runtime tool has two call sites; the choice is a structural design decision, not a style call. Make it deliberately for every tool a node touches.
+Each node-runtime tool has two call sites. The default is agentic; a direct call is a deliberate structural decision, not a style call.
 
-- *Direct* (`ctx.tools.X(...)`): use when the call's arguments are already determined by the node's inputs and the raw return dict is what the next step needs. No LLM cost, no round-trip latency, deterministic.
+- *Wrapped in an agent* (`ctx.call_llm(prompt, tools=[...])`): the default — the inner LLM decides *whether*, *when*, *how many times*, and *with what arguments* to call, and reacts to what each call returns. An agentic loop with tools is almost always the right shape for a node.
 
-- *Wrapped in an agent* (`ctx.call_llm(prompt, tools=[...])`): use when iteration or judgment is the node's reason to exist — the inner LLM decides *whether*, *when*, *how many times*, and *with what arguments* to call.
+- *Direct* (`ctx.tools.X(...)`): the exception — the arguments are already fixed by the node's inputs, the raw return dict is the whole answer, and no judgment happens between calls. No LLM cost, no round-trip latency, deterministic.
 
-The heuristic: if you'd write essentially the same prompt every time and expect the same single tool call back, you don't need an agent — call the tool directly. If the node's value comes from the model's reasoning *between* and *around* the calls, wrap it.
-
-## don't overrely on direct calls
-
-direct calls feel safe and cheap, so they're easy to reach for first. *resist that pull when judgment is the point of the node.* if the next step depends on what the tool actually returned — what to fetch next, whether the result is enough, how to phrase the follow-up, which of several calls to make — hand the tools to an inner agent via `ctx.call_llm(prompt, tools=[...])` and let it decide. one extra round-trip is small next to the value of a node that can read and react.
+The heuristic: if you'd write essentially the same prompt every time and expect the same single tool call back, a direct call is fine. If the next step depends on what the call actually returned — what to fetch next, whether the result is enough, how to phrase the follow-up, which of several calls to make — wrap it. Direct calls feel safe and cheap, so they're easy to reach for first; when in doubt, wrap. One extra round-trip is small next to the value of a node that can read and react.
 
 ## node-runtime tool signatures
 
