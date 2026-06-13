@@ -513,6 +513,10 @@ interface McpRow {
 let _mcpUid = 0;
 const nextUid = () => ++_mcpUid;
 
+// How often the open Settings panel re-probes remote servers to keep their
+// connected / needs-relogin badges current.
+const REMOTE_REPROBE_INTERVAL_MS = 30_000;
+
 function asStr(v: unknown): string {
   return typeof v === 'string' ? v : '';
 }
@@ -683,6 +687,40 @@ function McpServersEditor({
       void runProbeAll(value);
     }
   }, [value, runProbeAll]);
+
+  // Keep remote-server badges honest while the panel is open: re-probe them
+  // on an interval so "connected" flips to "needs authorization" when a token
+  // expires (and back after a re-login), without waiting for a panel reopen.
+  // Remote probes are one HTTP request each; local servers spawn a child
+  // process per probe, so they stay on explicit-moment probes only.
+  useEffect(() => {
+    const tick = () => {
+      const remote = rows.filter((r) => r.type === 'remote' && r.enabled && r.name.trim());
+      if (remote.length === 0) return;
+      probeStatus(serializeServers(remote))
+        .then((res) => setStatus((prev) => ({ ...prev, ...res })))
+        .catch(() => {
+          /* leave prior status intact */
+        });
+    };
+    const id = window.setInterval(tick, REMOTE_REPROBE_INTERVAL_MS);
+    return () => window.clearInterval(id);
+  }, [rows]);
+
+  // Enabled = user intent AND authenticated. When a probe reports a server
+  // needs sign-in, force its toggle off so nothing (chat, runs) attempts it.
+  // The user re-enables it themselves after signing in below; flipping the
+  // toggle on while still signed out just probes and lands back here — the
+  // oauth row underneath explains why.
+  useEffect(() => {
+    if (!rows.some((r) => r.enabled && status[r.name]?.status === 'needs_auth')) return;
+    commit(
+      rows.map((r) =>
+        status[r.name]?.status === 'needs_auth' ? { ...r, enabled: false } : r,
+      ),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, rows]);
 
   const commit = (next: McpRow[]) => {
     setRows(next);
@@ -865,10 +903,8 @@ function McpServerRow({
   onRemove: () => void;
 }) {
   const canViewTools = probe?.status === 'connected' && (probe?.tool_count ?? 0) > 0;
-  const isConnected = probe?.status === 'connected';
   return (
     <div
-      className={isConnected ? 'settings-row--connected' : undefined}
       style={{
         border: '1px solid var(--rule)',
         borderRadius: 4,
@@ -904,7 +940,12 @@ function McpServerRow({
           </div>
           <McpStatusRow probe={probe} disabledCount={row.disabledTools.length} />
         </div>
-        <EnabledToggle value={row.enabled} onChange={(v) => onPatch({ enabled: v })} />
+        <EnabledToggle
+          value={row.enabled}
+          onChange={(v) => onPatch({ enabled: v })}
+          locked={probe?.status === 'needs_auth'}
+          lockedTitle="sign in below to enable this server"
+        />
         {canViewTools && (
           <button className="text-btn" type="button" onClick={onViewTools}>
             view tools
@@ -1157,7 +1198,9 @@ function McpStatusRow({
           </span>
         )}
       </span>
-      {probe?.error && (
+      {/* needs_auth's error is always "authentication required" — the label
+          already says it, so showing it twice is just noise. */}
+      {probe?.error && probe.status !== 'needs_auth' && (
         <span
           className="mono"
           style={{ fontSize: 11, color: 'var(--ink-4)', maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
@@ -1403,75 +1446,51 @@ function McpOAuthControl({
     }
   };
 
-  // The probe is the source of truth for whether sign-in is actually required.
-  // When the server answered 401 and we hold no usable token, surface a loud,
-  // unmissable prompt instead of the quiet "not authorized" line.
-  const needsAuth = probe?.status === 'needs_auth' && status !== 'signed_in' && status !== 'pending';
-
-  if (needsAuth) {
-    return (
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 12,
-          flexWrap: 'wrap',
-          padding: '10px 12px',
-          border: '1px solid var(--state-warn, #b5852a)',
-          borderRadius: 4,
-          background: 'color-mix(in srgb, var(--state-warn, #b5852a) 10%, transparent)',
-        }}
-      >
-        <span className="serif" style={{ fontSize: 12.5, color: 'var(--ink-2)' }}>
-          this server requires sign-in to use its tools.
-          {status === 'error' && error && (
-            <span style={{ color: 'var(--state-err, #b04030)', fontStyle: 'italic' }}> {error}</span>
-          )}
-        </span>
-        <button
-          type="button"
-          onClick={onSignIn}
-          disabled={busy}
-          className="serif"
-          style={{
-            marginLeft: 'auto',
-            background: 'var(--ink)',
-            color: 'var(--paper)',
-            border: 0,
-            padding: '6px 16px',
-            borderRadius: 3,
-            fontSize: 12.5,
-            cursor: busy ? 'default' : 'pointer',
-            opacity: busy ? 0.6 : 1,
-          }}
-        >
-          {status === 'error' ? 're-authenticate' : 'log in'} →
-        </button>
-      </div>
-    );
-  }
+  // The probe is the source of truth for whether sign-in is actually required —
+  // it wins even when a stored credential row reports signed_in, since that row
+  // can hold an expired/revoked token the server no longer accepts. One quiet
+  // status-line + text-button row, like every other row in Settings — the
+  // status badge above already carries the warning color.
+  const needsAuth = probe?.status === 'needs_auth' && status !== 'pending';
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
       <span className="serif" style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>
-        {status === 'signed_in' && <span style={{ color: 'var(--accent-ink)' }}>authorized.</span>}
-        {status === 'pending' && <span style={{ fontStyle: 'italic' }}>waiting for browser authorization…</span>}
-        {status === 'error' && (
-          <span style={{ fontStyle: 'italic', color: 'var(--state-err, #b04030)' }}>{error || 'authorization failed.'}</span>
+        {status === 'pending' ? (
+          <span style={{ fontStyle: 'italic' }}>waiting for browser authorization…</span>
+        ) : status === 'error' ? (
+          <span style={{ fontStyle: 'italic', color: 'var(--state-err, #b04030)' }}>
+            {error || 'authorization failed.'}
+          </span>
+        ) : needsAuth ? (
+          <span style={{ fontStyle: 'italic', color: 'var(--state-warn, #b5852a)' }}>
+            {status === 'signed_in'
+              ? 'session expired — sign in again.'
+              : 'sign in to use its tools.'}
+          </span>
+        ) : status === 'signed_in' ? (
+          <span style={{ color: 'var(--accent-ink)' }}>authorized.</span>
+        ) : (
+          <span style={{ fontStyle: 'italic' }}>not authorized.</span>
         )}
-        {status === 'signed_out' && <span style={{ fontStyle: 'italic' }}>not authorized.</span>}
       </span>
-      {status === 'signed_in' ? (
-        <button className="text-btn" type="button" onClick={onSignOut} disabled={busy} style={{ marginLeft: 'auto' }}>
-          log out
-        </button>
-      ) : status === 'pending' ? (
+      {status === 'pending' ? (
         <button className="text-btn" type="button" onClick={onCancel} style={{ marginLeft: 'auto' }}>
           cancel
         </button>
+      ) : status === 'signed_in' && !needsAuth ? (
+        <button className="text-btn" type="button" onClick={onSignOut} disabled={busy} style={{ marginLeft: 'auto' }}>
+          log out
+        </button>
       ) : (
-        <button className="text-btn" type="button" onClick={onSignIn} disabled={busy} style={{ marginLeft: 'auto' }}>
-          {status === 'error' ? 're-authenticate' : 'log in'} →
+        <button
+          className="text-btn text-btn--accent"
+          type="button"
+          onClick={onSignIn}
+          disabled={busy}
+          style={{ marginLeft: 'auto' }}
+        >
+          {status === 'error' || status === 'signed_in' ? 're-authenticate' : 'log in'} →
         </button>
       )}
     </div>
@@ -1582,7 +1601,9 @@ function McpServerCard({
             />
           </SubField>
           {row.oauthOn && <McpOAuthClientFields row={row} onPatch={onPatch} />}
-          {!draft && row.oauthOn && <McpOAuthControl row={row} probe={probe} onReprobe={onReprobe} />}
+          {!draft && row.oauthOn && (
+            <McpOAuthControl row={row} probe={probe} onReprobe={onReprobe} />
+          )}
         </>
       )}
 
@@ -1609,7 +1630,12 @@ function McpServerCard({
         </div>
       ) : (
         <div style={{ display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap' }}>
-          <EnabledToggle value={row.enabled} onChange={(v) => onPatch({ enabled: v })} />
+          <EnabledToggle
+            value={row.enabled}
+            onChange={(v) => onPatch({ enabled: v })}
+            locked={probe?.status === 'needs_auth'}
+            lockedTitle="sign in below to enable this server"
+          />
         </div>
       )}
     </div>
@@ -1619,9 +1645,15 @@ function McpServerCard({
 function EnabledToggle({
   value,
   onChange,
+  locked,
+  lockedTitle,
 }: {
   value: boolean;
   onChange: (v: boolean) => void;
+  /** Render the switch inert (e.g. a server that needs sign-in can't be
+   * enabled). */
+  locked?: boolean;
+  lockedTitle?: string;
 }) {
   const trackOn = 'var(--accent)';
   const trackOff = 'var(--ink-5, #b8b3a8)';
@@ -1630,9 +1662,16 @@ function EnabledToggle({
       type="button"
       role="switch"
       aria-checked={value}
+      disabled={locked}
       onClick={() => onChange(!value)}
       className="serif"
-      title={value ? 'click to disable this server' : 'click to enable this server'}
+      title={
+        locked
+          ? lockedTitle ?? 'unavailable'
+          : value
+            ? 'click to disable this server'
+            : 'click to enable this server'
+      }
       style={{
         display: 'inline-flex',
         alignItems: 'center',
@@ -1641,7 +1680,8 @@ function EnabledToggle({
         border: 0,
         background: 'transparent',
         color: value ? 'var(--ink-2)' : 'var(--ink-4)',
-        cursor: 'pointer',
+        cursor: locked ? 'default' : 'pointer',
+        opacity: locked ? 0.5 : 1,
         fontStyle: 'italic',
         fontSize: 12.5,
       }}

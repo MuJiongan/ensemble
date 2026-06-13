@@ -31,6 +31,7 @@ from app.runner.mcp import (
     _format_connect_error,
     build_oauth_provider,
     effective_redirect_uri,
+    invalidate_discovery_cache,
 )
 
 
@@ -103,6 +104,9 @@ def _login_worker(
 ) -> None:
     try:
         asyncio.run(_run_login(cfg, db_factory, server, url_box))
+        # Cached discovery may have run while this server was signed out
+        # (zero tools) — drop it so the orchestrator re-advertises next turn.
+        invalidate_discovery_cache()
         login_state.update_if_owner(key, owner, status="complete", label=cfg.name)
     except Exception as e:
         # If we failed before producing the authorize URL, unblock /start.
@@ -175,6 +179,7 @@ def start_login(
 
 
 def logout(server_name: str, db: Session) -> bool:
+    invalidate_discovery_cache()
     row = db.query(models.McpCredential).filter_by(server_name=server_name).first()
     if row is None:
         login_state.clear(state_key(server_name))

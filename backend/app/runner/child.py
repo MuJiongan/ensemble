@@ -7,6 +7,7 @@ whole run.
 
 Event types (all on a single line, JSON):
 
+  {"type": "mcp_status",   "servers": {"<name>": {"status": "...", ...}}}
   {"type": "run_started",  "node_count": N, "order": [...]}
   {"type": "node_started", "node_id": "...", "inputs": {...}}
   {"type": "log",          "node_id": "...", "msg": "..."}
@@ -88,11 +89,18 @@ def _load_mcp_tools():
         from app.runner import tools as tools_mod
 
         manager = mcp_mod.register_runtime_tools(
-            raw, tools_mod.REGISTRY, tools_mod.TOOL_SCHEMAS, tools_mod.MCP_NAMESPACES
+            raw,
+            tools_mod.REGISTRY,
+            tools_mod.TOOL_SCHEMAS,
+            tools_mod.MCP_NAMESPACES,
+            tools_mod.MCP_SERVER_STATUS,
         )
         if manager is not None:
             for name, st in manager.status().items():
                 print(f"[mcp] {name}: {st}", file=sys.stderr)
+            # Surface per-server connection state to the run UI so it can
+            # prompt for re-login when a configured server needs auth.
+            _emit({"type": "mcp_status", "servers": manager.status()})
         return manager
     except Exception as e:
         print(f"[mcp] failed to load MCP tools: {type(e).__name__}: {e}", file=sys.stderr)

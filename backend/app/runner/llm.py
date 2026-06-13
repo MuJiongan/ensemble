@@ -25,7 +25,7 @@ from typing import Callable
 
 from app import compaction
 from app.catalog import models_dev as md
-from app.runner.tools import REGISTRY, TOOL_SCHEMAS, prepare_tool_result
+from app.runner.tools import REGISTRY, TOOL_SCHEMAS, mcp_unavailable_error, prepare_tool_result
 
 
 def call_llm(
@@ -251,7 +251,12 @@ def call_llm(
             )
             fn = REGISTRY.get(fn_name)
             if fn is None:
-                result = {"error": f"unknown tool {fn_name}"}
+                # An MCP tool whose server didn't connect never lands in the
+                # registry — report the server's state (and the needs_auth
+                # marker the run UI keys off) instead of "unknown tool".
+                result = mcp_unavailable_error(fn_name) or {
+                    "error": f"unknown tool {fn_name}"
+                }
             else:
                 try:
                     result = fn(**fn_args)

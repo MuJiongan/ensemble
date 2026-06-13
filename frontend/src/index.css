@@ -1382,12 +1382,6 @@ button.port-card:hover .port-card__open {
 /* settings — sage section marks */
 .settings-kicker { color: var(--accent-ink); }
 .settings-section-label { color: var(--accent-ink); }
-.settings-row--connected {
-  border-color: color-mix(in oklch, var(--accent) 28%, var(--rule));
-  border-left: 2px solid var(--accent);
-  background: var(--surface-chip);
-}
-
 .snapshot-action-btn {
   background: transparent;
   border: 1px solid var(--rule);

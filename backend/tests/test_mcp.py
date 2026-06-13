@@ -303,3 +303,204 @@ def test_format_connect_error_trims_long_single_line():
     msg = mcp_mod._format_connect_error(RuntimeError("x" * 1000))
     assert len(msg) <= 500
     assert msg.endswith("…")
+
+
+# --- auth-failure surfacing (re-login popup plumbing) ------------------------
+
+
+def test_classify_error_oauth_flow_error_is_needs_auth():
+    # The SDK raises this when stored tokens can't refresh and no interactive
+    # redirect handler is attached (probe / call paths).
+    class OAuthFlowError(Exception):
+        pass
+
+    err = OAuthFlowError("No redirect handler provided for authorization code grant")
+    assert mcp_mod._classify_error(err) == "needs_auth"
+
+
+@pytest.fixture()
+def server_status():
+    from app.runner import tools as tools_mod
+
+    tools_mod.MCP_SERVER_STATUS.clear()
+    yield tools_mod.MCP_SERVER_STATUS
+    tools_mod.MCP_SERVER_STATUS.clear()
+
+
+def test_mcp_unavailable_error_needs_auth_marker(server_status):
+    from app.runner.tools import mcp_unavailable_error
+
+    server_status["my_slack"] = {
+        "server": "my-slack",
+        "status": "needs_auth",
+        "error": "authentication required",
+    }
+    # Both the flat tool name and the bare server attr resolve.
+    for name in ("my_slack_send_message", "my_slack"):
+        out = mcp_unavailable_error(name)
+        assert out is not None
+        assert out["error_type"] == "needs_auth"
+        assert out["server"] == "my-slack"
+        assert "authentication" in out["error"]
+
+
+def test_mcp_unavailable_error_failed_server_has_no_auth_marker(server_status):
+    from app.runner.tools import mcp_unavailable_error
+
+    server_status["srv"] = {"server": "srv", "status": "failed", "error": "boom"}
+    out = mcp_unavailable_error("srv_tool")
+    assert out is not None
+    assert "error_type" not in out
+    assert "boom" in out["error"]
+
+
+def test_mcp_unavailable_error_connected_or_unknown_is_none(server_status):
+    from app.runner.tools import mcp_unavailable_error
+
+    server_status["ok"] = {"server": "ok", "status": "connected", "tool_count": 3}
+    assert mcp_unavailable_error("ok_tool") is None
+    assert mcp_unavailable_error("unrelated_tool") is None
+
+
+def test_manager_call_unconnected_needs_auth_server_carries_marker():
+    mgr = mcp_mod.MCPManager()
+    mgr._status["s"] = {"status": "needs_auth", "error": "authentication required"}
+    out = mgr.call("s", "tool", {})
+    assert out["isError"] is True
+    assert out["error_type"] == "needs_auth"
+    assert out["server"] == "s"
+
+
+def test_manager_call_unconnected_failed_server_has_no_marker():
+    mgr = mcp_mod.MCPManager()
+    mgr._status["s"] = {"status": "failed", "error": "boom"}
+    out = mgr.call("s", "tool", {})
+    assert out["isError"] is True
+    assert "error_type" not in out
+
+
+def test_login_status_expired_unrefreshable_reports_signed_out(db_factory):
+    from app.api.mcp import login_status
+
+    _store_cred(db_factory, "s", "https://x/mcp", "stale", datetime.utcnow() - timedelta(hours=1))
+    db = db_factory()
+    try:
+        assert login_status("s", db=db).status == "signed_out"
+    finally:
+        db.close()
+
+
+def test_login_status_expired_but_refreshable_reports_signed_in(db_factory):
+    from app.api.mcp import login_status
+
+    _store_cred(
+        db_factory,
+        "s",
+        "https://x/mcp",
+        "stale",
+        datetime.utcnow() - timedelta(hours=1),
+        refresh="r1",
+    )
+    db = db_factory()
+    try:
+        assert login_status("s", db=db).status == "signed_in"
+    finally:
+        db.close()
+
+
+def test_login_status_fresh_token_reports_signed_in(db_factory):
+    from app.api.mcp import login_status
+
+    _store_cred(db_factory, "s", "https://x/mcp", "tok", datetime.utcnow() + timedelta(hours=1))
+    db = db_factory()
+    try:
+        assert login_status("s", db=db).status == "signed_in"
+    finally:
+        db.close()
+
+
+# --- fail-fast connect against an unauthenticated server ---------------------
+
+
+def test_probe_unauthenticated_server_fails_fast_as_needs_auth():
+    """A server answering 401 must classify as needs_auth within seconds.
+
+    Regression: the connect used to enter the SDK transport's cancel scopes in
+    a detached asyncio.wait_for task, so the 401 couldn't cancel anything —
+    every probe/discover/run-start hung for the full 60s connect timeout and
+    came back 'failed: TimeoutError' instead of needs_auth.
+    """
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def _reply(self):
+            body = b'{"error":"unauthorized"}'
+            self.send_response(401)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        do_GET = do_POST = _reply
+
+        def log_message(self, *args):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        raw = json.dumps(
+            {"s": {"type": "remote", "url": f"http://127.0.0.1:{srv.server_address[1]}/mcp"}}
+        )
+        start = time.time()
+        out = mcp_mod.probe(raw)
+        elapsed = time.time() - start
+        assert out["s"]["status"] == "needs_auth", out
+        assert elapsed < 10, f"probe took {elapsed:.1f}s — connect is blocking again"
+    finally:
+        srv.shutdown()
+
+
+# --- fast-fail on a server known to be down (no read-timeout hang) -----------
+
+
+def test_call_fast_fails_when_status_needs_auth():
+    """A server marked needs_auth (mid-run 401, or transport teardown) makes
+    every later call return immediately with the auth marker — never waiting
+    out the read timeout."""
+    mgr = mcp_mod.MCPManager()
+    mgr._status["s"] = {"status": "needs_auth", "error": "authentication required"}
+    # A live session is present, but the guard short-circuits before using it.
+    mgr._sessions["s"] = object()
+    out = mgr.call("s", "tool", {})
+    assert out["isError"] is True
+    assert out["error_type"] == "needs_auth"
+    assert "authenticated" in out["error"]
+    assert out["server"] == "s"
+
+
+def test_call_fast_fails_when_status_failed():
+    mgr = mcp_mod.MCPManager()
+    mgr._status["s"] = {"status": "failed", "error": "no response within 120s — it may be disconnected"}
+    mgr._sessions["s"] = object()
+    out = mgr.call("s", "tool", {})
+    assert out["isError"] is True
+    assert "error_type" not in out
+    assert "unavailable" in out["error"]
+    assert "disconnected" in out["error"]
+
+
+def test_call_connected_status_does_not_short_circuit():
+    """A healthy server isn't fast-failed — the guard returns None so the call
+    proceeds (and here errors only because there's no real loop/session)."""
+    mgr = mcp_mod.MCPManager()
+    mgr._status["s"] = {"status": "connected", "tool_count": 3}
+    assert mgr._down_result("s") is None
+    # No session/loop wired up, so the call falls through to "not connected"
+    # rather than the down-guard.
+    out = mgr.call("s", "tool", {})
+    assert out["error"] == "MCP server 's' not connected"

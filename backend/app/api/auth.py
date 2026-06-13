@@ -73,10 +73,18 @@ def start(provider: str) -> StartResponse:
 
 @router.get("/{provider}/status", response_model=StatusResponse)
 def status(provider: str, db: Session = Depends(get_db)) -> StatusResponse:
-    _provider_or_404(provider)
+    mod = _provider_or_404(provider)
     cred = db.query(models.Credential).filter_by(provider=provider).first()
     if cred is not None:
-        return StatusResponse(status="signed_in", label=cred.label)
+        # Row existence isn't enough — the stored token may be expired with a
+        # refresh that no longer works (revoked, signed out elsewhere).
+        # get_active_credential refreshes when near expiry and returns None
+        # when the credential is unusable, so the UI can prompt for re-login
+        # instead of reporting a stale "signed in".
+        active = mod.get_active_credential(db)
+        if active is not None:
+            return StatusResponse(status="signed_in", label=active.label)
+        return StatusResponse(status="signed_out", error="session expired — sign in again")
     s = login_state.get(provider)
     if s is None:
         return StatusResponse(status="signed_out")

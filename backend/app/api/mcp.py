@@ -10,6 +10,8 @@ OAuth login endpoints mirror ``app/api/auth.py`` (start/status/cancel/logout),
 keyed by server name.
 """
 from __future__ import annotations
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -131,7 +133,12 @@ def login_start(server: str, req: LoginStartRequest) -> LoginStartResponse:
 def login_status(server: str, db: Session = Depends(get_db)) -> LoginStatusResponse:
     row = db.query(models.McpCredential).filter_by(server_name=server).first()
     if row is not None and row.access_token:
-        return LoginStatusResponse(status="signed_in")
+        # An expired token with no refresh token is unusable — report it as
+        # signed-out so the UI prompts for re-login instead of "authorized".
+        expired = row.expires_at is not None and row.expires_at <= datetime.utcnow()
+        if not expired or row.refresh_token:
+            return LoginStatusResponse(status="signed_in")
+        return LoginStatusResponse(status="signed_out")
     s = login_state.get(mcp_oauth.state_key(server))
     if s is None:
         return LoginStatusResponse(status="signed_out")
