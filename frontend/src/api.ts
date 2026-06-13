@@ -1,6 +1,6 @@
 import type {
   Workflow, WorkflowDetail, WFNode, WFEdge, Run, IOPort, NodeConfig,
-  OrchestratorSession, ChatHistory, OrchestratorEvent,
+  OrchestratorSession, ChatHistory, OrchestratorEvent, FsFile,
 } from './types';
 import { settingsHeaders, type LlmTarget } from './localSettings';
 
@@ -89,6 +89,13 @@ export const api = {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     return `${proto}//${window.location.host}/api/runs/${rid}/events`;
   },
+
+  // --- file viewer ---------------------------------------------------------
+  readFile: (path: string) =>
+    request<FsFile>('GET', `/api/files?path=${encodeURIComponent(path)}`),
+  /** Open the path in the OS default app, or reveal it in the file manager. */
+  openFileExternally: (path: string, reveal = false) =>
+    request<{ ok: true }>('POST', '/api/files/open', { path, reveal }),
 
   // --- orchestrator sessions ----------------------------------------------
   createSession: (wid: string) =>

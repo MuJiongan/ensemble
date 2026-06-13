@@ -3,6 +3,7 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
+import { FilePathLink, childText, linkifyNodes, looksLikePath } from './FilePathLink';
 
 /**
  * Renders markdown using the editorial palette: serif body for prose, mono
@@ -23,7 +24,7 @@ export function Markdown({ children, large = false }: { children: string; large?
         remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
         rehypePlugins={[rehypeKatex]}
         components={{
-          p: ({ children }) => <p style={{ margin: large ? '0 0 12px' : '0 0 8px' }}>{children}</p>,
+          p: ({ children }) => <p style={{ margin: large ? '0 0 12px' : '0 0 8px' }}>{linkifyNodes(children)}</p>,
           h1: ({ children }) => (
             <h1
               className="serif"
@@ -109,7 +110,7 @@ export function Markdown({ children, large = false }: { children: string; large?
             </ol>
           ),
           li: ({ children }) => (
-            <li style={{ marginBottom: 2, paddingLeft: 2 }}>{children}</li>
+            <li style={{ marginBottom: 2, paddingLeft: 2 }}>{linkifyNodes(children)}</li>
           ),
           blockquote: ({ children }) => (
             <blockquote
@@ -135,6 +136,10 @@ export function Markdown({ children, large = false }: { children: string; large?
           ),
           code: ({ inline, children, className }: any) => {
             if (inline) {
+              const text = childText(children);
+              if (looksLikePath(text)) {
+                return <FilePathLink path={text.trim()} className="file-path-link--mono" />;
+              }
               return (
                 <code
                   className="mono"

@@ -2,6 +2,7 @@ from __future__ import annotations
 import os
 import sys
 import traceback
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
@@ -185,10 +186,32 @@ def fork_run_snapshot(
 
 
 @router.post("/runs/{rid}/cancel")
-def cancel_run(rid: str):
-    """SIGTERM the run's subprocess, if any. Idempotent."""
-    ok = run_service.cancel(rid)
-    return {"cancelled": ok}
+def cancel_run(rid: str, db: Session = Depends(get_db)):
+    """Cancel a run. SIGTERMs the live subprocess if there is one — its worker
+    thread then writes the final 'cancelled' status back to the DB on exit.
+
+    If no live subprocess got the signal but the DB row still reads
+    running/pending *and* no in-memory state tracks it, the run is orphaned
+    (its worker died, or this is a within-session leftover the startup sweep
+    didn't catch). Reconcile it to 'cancelled' here so it doesn't stay stuck —
+    un-cancellable and un-deletable. The `has_state` guard keeps us from racing
+    a worker that's mid-writeback, since its state lives until `discard`.
+    Idempotent."""
+    if run_service.cancel(rid):
+        return {"cancelled": True}
+    run = db.get(models.Run, rid)
+    if (
+        run
+        and run.status in ("running", "pending")
+        and not run_service.has_state(rid)
+    ):
+        run.status = "cancelled"
+        run.error = run.error or "cancelled (run was no longer active)"
+        run.ended_at = run.ended_at or datetime.utcnow()
+        db.commit()
+        run_service.discard(rid)
+        return {"cancelled": True}
+    return {"cancelled": False}
 
 
 @router.delete("/runs/{rid}")

@@ -11,7 +11,9 @@ from app.api import settings as settings_api
 from app.api import auth as auth_api
 from app.api import mcp as mcp_api
 from app.api import catalog as catalog_api
+from app.api import files as files_api
 from app.catalog import models_dev
+from app.runner import service as run_service
 
 
 # Settings live client-side in localStorage; the frontend forwards them on every
@@ -68,6 +70,10 @@ async def lifespan(app: FastAPI):
         settings_api.apply_settings_to_env(db)
     finally:
         db.close()
+    # Heal any runs left reading 'running'/'pending' by a previous crash/restart
+    # — their subprocess is long gone, so without this they'd be stuck forever
+    # (un-cancellable, un-deletable, and blocking their workflow's deletion).
+    run_service.reconcile_interrupted_runs()
     # Prime + keep the models.dev catalog fresh in the background.
     models_dev.start_background_refresh()
     yield
@@ -137,3 +143,4 @@ app.include_router(settings_api.router)
 app.include_router(auth_api.router)
 app.include_router(mcp_api.router)
 app.include_router(catalog_api.router)
+app.include_router(files_api.router)

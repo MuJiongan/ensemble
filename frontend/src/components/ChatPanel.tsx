@@ -9,13 +9,14 @@ import { api, ApiError } from '../api';
 import type { Run } from '../types';
 import { CloseButton } from './CloseButton';
 import { AttachmentChips, FileTile, type PendingAttachment } from './ImageAttachments';
+import { FilePathLink, childText, linkifyNodes, looksLikePath } from './FilePathLink';
 
 export type ChatToolStatus = 'pending' | 'ok' | 'err';
 
 // Markdown components — keeps assistant prose inside the paper-and-ink palette
 // instead of inheriting browser defaults (giant h1s, bold serifs etc.).
 const MD_COMPONENTS: Components = {
-  p: ({ children }) => <p style={{ margin: '0 0 10px' }}>{children}</p>,
+  p: ({ children }) => <p style={{ margin: '0 0 10px' }}>{linkifyNodes(children)}</p>,
   strong: ({ children }) => (
     <strong style={{ color: 'var(--ink)', fontWeight: 500 }}>{children}</strong>
   ),
@@ -35,21 +36,27 @@ const MD_COMPONENTS: Components = {
       {children}
     </a>
   ),
-  code: ({ children, ...props }) => (
-    <code
-      {...props}
-      style={{
-        fontFamily: 'var(--mono)',
-        fontSize: '0.86em',
-        background: 'var(--muted-fill-2)',
-        padding: '0.1em 0.4em',
-        borderRadius: 2,
-        overflowWrap: 'anywhere',
-      }}
-    >
-      {children}
-    </code>
-  ),
+  code: ({ children, ...props }) => {
+    const text = childText(children);
+    if (looksLikePath(text)) {
+      return <FilePathLink path={text.trim()} className="file-path-link--mono" />;
+    }
+    return (
+      <code
+        {...props}
+        style={{
+          fontFamily: 'var(--mono)',
+          fontSize: '0.86em',
+          background: 'var(--muted-fill-2)',
+          padding: '0.1em 0.4em',
+          borderRadius: 2,
+          overflowWrap: 'anywhere',
+        }}
+      >
+        {children}
+      </code>
+    );
+  },
   pre: ({ children }) => (
     <pre
       style={{
@@ -92,7 +99,7 @@ const MD_COMPONENTS: Components = {
     </ol>
   ),
   li: ({ children }) => (
-    <li style={{ marginBottom: 3, paddingLeft: 2 }}>{children}</li>
+    <li style={{ marginBottom: 3, paddingLeft: 2 }}>{linkifyNodes(children)}</li>
   ),
   h1: ({ children }) => (
     <h1

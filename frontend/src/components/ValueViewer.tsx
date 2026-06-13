@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom';
 import { JsonView } from './JsonView';
 import { Markdown } from './Markdown';
 import { CloseButton } from './CloseButton';
+import { FileViewerOverlay } from './FileViewerOverlay';
+import { looksLikePath } from './FilePathLink';
 
 /**
  * Compact, clickable row for a single named value (e.g. a node input/output
@@ -33,6 +35,7 @@ function formatBytes(n: number): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
+
 
 interface PreviewInfo {
   text: string;        // one-line preview (already truncated)
@@ -248,10 +251,31 @@ export function PortRow({
 }: PortRowProps) {
   const [open, setOpen] = useState(false);
   const info = describe(value);
+  // A path value always opens the file viewer (even when short enough to render
+  // inline), so its content — not just the path string — is one click away.
+  const isPath = looksLikePath(value, typeHint === 'path');
+  const inline = info.inline && !isPath;
+
+  const overlay = open && (
+    isPath ? (
+      <FileViewerOverlay
+        path={String(value)}
+        subtitle={viewerSubtitle}
+        onClose={() => setOpen(false)}
+      />
+    ) : (
+      <ViewerOverlay
+        title={viewerTitle}
+        subtitle={viewerSubtitle}
+        value={value}
+        onClose={() => setOpen(false)}
+      />
+    )
+  );
 
   if (variant === 'card') {
     const cardClass = `port-card${portCardAccentClass(cardAccent) ? ` ${portCardAccentClass(cardAccent)}` : ''}`;
-    const showMeta = !info.inline || statusBadge || live;
+    const showMeta = !inline || statusBadge || live;
     const head = (
       <div className="port-card__head">
         <div className="port-card__label">
@@ -270,9 +294,9 @@ export function PortRow({
                 {statusBadge.label}
               </span>
             )}
-            {!info.inline && (
+            {!inline && (
               <span className="port-card__open" aria-hidden>
-                open <span className="ed-btn__mark">⤢</span>
+                {isPath ? 'view' : 'open'} <span className="ed-btn__mark">⤢</span>
               </span>
             )}
           </div>
@@ -281,13 +305,13 @@ export function PortRow({
     );
     const body = (
       <div
-        className={`port-card__value${info.inline ? ' port-card__value--inline' : ''}`}
+        className={`port-card__value${inline ? ' port-card__value--inline' : ''}`}
       >
         {info.text}
       </div>
     );
 
-    if (info.inline) {
+    if (inline) {
       return (
         <div className={cardClass}>
           {head}
@@ -306,14 +330,7 @@ export function PortRow({
           {head}
           {body}
         </button>
-        {open && (
-          <ViewerOverlay
-            title={viewerTitle}
-            subtitle={viewerSubtitle}
-            value={value}
-            onClose={() => setOpen(false)}
-          />
-        )}
+        {overlay}
       </>
     );
   }
@@ -334,7 +351,7 @@ export function PortRow({
     </>
   );
 
-  if (info.inline) {
+  if (inline) {
     return (
       <div
         style={{
@@ -415,14 +432,7 @@ export function PortRow({
           ⤢
         </span>
       </button>
-      {open && (
-        <ViewerOverlay
-          title={viewerTitle}
-          subtitle={viewerSubtitle}
-          value={value}
-          onClose={() => setOpen(false)}
-        />
-      )}
+      {overlay}
     </>
   );
 }

@@ -52,6 +52,39 @@ def discard(run_id: str) -> None:
     ev_mod.discard(run_id)
 
 
+def reconcile_interrupted_runs() -> int:
+    """Mark runs the DB still thinks are in flight as interrupted.
+
+    No run outlives the backend process — its subprocess dies when the process
+    does, but the row may still read ``running``/``pending`` and the in-memory
+    event state (the only thing that tracks the live subprocess) is gone. Left
+    alone, such a row is a ghost: it can't be cancelled (cancel only signals a
+    live subprocess) and can't be deleted (delete refuses in-flight runs),
+    which in turn blocks deleting its parent workflow. Called once at startup
+    to heal any such rows left behind by a crash/restart.
+
+    Returns the number of rows reconciled.
+    """
+    db = SessionLocal()
+    try:
+        stale = (
+            db.query(models.Run)
+            .filter(models.Run.status.in_(("running", "pending")))
+            .all()
+        )
+        for run in stale:
+            run.status = "error"
+            run.error = run.error or (
+                "interrupted: the backend restarted while this run was in flight"
+            )
+            run.ended_at = run.ended_at or datetime.utcnow()
+        if stale:
+            db.commit()
+        return len(stale)
+    finally:
+        db.close()
+
+
 def has_state(run_id: str) -> bool:
     """True when in-memory event state exists for a run."""
     return ev_mod.get(run_id) is not None

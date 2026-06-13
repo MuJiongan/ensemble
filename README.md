@@ -120,6 +120,7 @@ The orchestrator never executes MCP tools itself. Instead, each orchestrator tur
 - **Concurrent runs.** Multiple runs can be in flight on one project at once; each has its own cancel control, and the execute button stays available while one is running.
 - **Snapshots.** Every run freezes a full copy of the graph (nodes, code, edges, input/output boundaries) at creation. Clicking a run in the history enters a read-only **snapshot view** that renders exactly the graph that executed, even after the live graph has changed.
 - **Three ways to branch.** Fork the *live* project (`POST /api/workflows/{wid}/fork`), fork a *run's snapshot* into a new project (`POST /api/runs/{rid}/fork`), or re-run a snapshot in place against the frozen graph (`POST /api/runs/{rid}/rerun`).
+- **File viewer.** Any path shown in the UI — a run input/output, a JSON leaf, an inline path in chat — is clickable and opens a side panel that resolves it on the backend (`GET /api/files`) and renders it by type: text/code, Markdown or HTML (with a rendered/source toggle), image, or PDF. From there you can copy the contents, or open the file in your OS default app / reveal it in the file manager (`POST /api/files/open`). A path that points at a directory isn't browsed in-app — it's revealed in the file manager directly. The renderer tab has no disk access, so a path that isn't a real file simply falls back to its raw text.
 - **Attachments.** Drag-and-drop or paste images, PDFs, or text files anywhere in the window; they reach the LLM as native content parts (gated by the model's image support) and are validated and downscaled before sending.
 - **Theme.** A light/dark toggle; the interface uses a paper-and-ink editorial aesthetic.
 - **Cost.** Per-turn and per-run cost is shown in USD where the provider reports it (currently OpenRouter).
@@ -179,6 +180,7 @@ backend/
     api/
       workflows.py nodes.py edges.py   # Graph CRUD + live-workflow fork
       runs.py          # Run lifecycle, rerun/fork-from-snapshot, WebSocket event stream
+      files.py         # File-viewer endpoint: resolve a path, classify + return contents; OS open/reveal
       orchestrator.py  # Chat sessions + SSE turn streaming
       settings.py      # DB-backed settings (backward-compat hydration)
       auth.py          # Subscription-OAuth login (codex, xai)
@@ -202,7 +204,7 @@ backend/
       ctx.py tools.py                  # Injected node context + built-in tool registry
       llm.py mcp.py                    # Node-side call_llm + MCP client
       events.py                        # In-memory run event pub/sub → WebSocket
-  tests/               # pytest: runner, orchestrator, mcp, llm transport, catalog, compaction, images
+  tests/               # pytest: runner, orchestrator, mcp, llm transport, catalog, compaction, images, run recovery
 frontend/
   src/
     App.tsx            # Top-level shell and app state
@@ -215,5 +217,6 @@ frontend/
     components/
       TopBar.tsx ChatPanel.tsx Canvas.tsx Hero.tsx NodePanel.tsx RunPanel.tsx
       Settings.tsx ProviderDialogs.tsx ImageAttachments.tsx ExecutionStats.tsx
+      FilePathLink.tsx FileViewerOverlay.tsx   # Clickable paths + the file-viewer side panel
       ThemeToggle.tsx SnapshotBanner.tsx SnapshotRunPanel.tsx Markdown.tsx ...
 ```

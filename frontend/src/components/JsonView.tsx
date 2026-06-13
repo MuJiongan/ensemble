@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Markdown } from './Markdown';
+import { FilePathLink, looksLikePath } from './FilePathLink';
 
 /**
  * Editorial JSON viewer — used for run inputs/outputs/logs/llm_calls/tool_calls.
@@ -63,6 +64,9 @@ function StringValue({ value, large = false }: { value: string; large?: boolean 
         {value}
       </pre>
     );
+  }
+  if (looksLikePath(value)) {
+    return <FilePathLink path={value} className="file-path-link--mono" />;
   }
   return (
     <span
@@ -324,6 +328,9 @@ function PanelString({ value }: { value: string }) {
   if (value.includes('\n')) {
     return <pre className="viewer-block mono">{value}</pre>;
   }
+  if (looksLikePath(value)) {
+    return <FilePathLink path={value} className="file-path-link--mono" />;
+  }
   return <span className="viewer-primitive">{value}</span>;
 }
 
@@ -331,9 +338,13 @@ function PanelPrimitiveList({ items, compact = false }: { items: unknown[]; comp
   if (compact) {
     return (
       <div className="viewer-tags">
-        {items.map((item, i) => (
-          <span key={i} className="viewer-tag">{formatPrimitive(item)}</span>
-        ))}
+        {items.map((item, i) =>
+          looksLikePath(item) ? (
+            <FilePathLink key={i} path={item} className="file-path-link--mono" />
+          ) : (
+            <span key={i} className="viewer-tag">{formatPrimitive(item)}</span>
+          ),
+        )}
       </div>
     );
   }
@@ -346,7 +357,13 @@ function PanelPrimitiveList({ items, compact = false }: { items: unknown[]; comp
         {items.map((item, i) => (
           <div key={i} className="viewer-list__row">
             <span className="viewer-list__idx">[{i}]</span>
-            <span className="viewer-list__val">{formatPrimitive(item)}</span>
+            <span className="viewer-list__val">
+              {looksLikePath(item) ? (
+                <FilePathLink path={item} className="file-path-link--mono" />
+              ) : (
+                formatPrimitive(item)
+              )}
+            </span>
           </div>
         ))}
       </div>
@@ -452,6 +469,11 @@ function PanelArray({ value, nested = false }: { value: unknown[]; nested?: bool
 }
 
 function PanelValue({ value, nested = false }: { value: unknown; nested?: boolean }) {
+  // Path strings get the clickable file affordance before the generic
+  // primitive renderer claims them.
+  if (looksLikePath(value)) {
+    return <FilePathLink path={value} className="file-path-link--mono" />;
+  }
   if (isPrimitiveValue(value)) {
     return <PanelPrimitive value={value} />;
   }
