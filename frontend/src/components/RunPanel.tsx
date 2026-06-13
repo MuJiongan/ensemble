@@ -20,15 +20,19 @@ function runStatusColor(status: RunStatus): string {
 
 interface Props {
   workflow: WorkflowDetail;
+  /** Latest attached run for this workflow — drives the status chip. Other
+   * in-flight runs surface (and are cancelled) through the history list. */
   currentRun: CurrentRun | null;
   onStart: (inputs: Record<string, unknown>) => void;
-  onCancel: () => void;
   /** Optional close handler. When omitted, the panel is treated as the
    * always-on default surface and the close button is hidden. */
   onClose?: () => void;
   /** When set, the history list shows a "view on canvas" affordance per run.
    * The host (App) handles fetching the snapshot and swapping the canvas. */
   onViewRunOnCanvas?: (runId: string) => void;
+  /** Called after a run is deleted, so the host can drop any live-run
+   * state (open WS, status chips) still keyed to it. */
+  onRunDeleted?: (runId: string) => void;
   /** True while an orchestrator turn is streaming for this workflow. The
    * graph may be mid-build (added nodes, no edges yet) or about to mutate
    * again — manual runs are blocked until the turn settles. */
@@ -48,9 +52,9 @@ export function RunPanel({
   workflow,
   currentRun,
   onStart,
-  onCancel,
   onClose,
   onViewRunOnCanvas,
+  onRunDeleted,
   orchestrating,
 }: Props) {
   const inputNode = workflow.nodes.find((n) => n.id === workflow.input_node_id);
@@ -221,6 +225,14 @@ export function RunPanel({
                 e.stopPropagation();
                 setDialog({ kind: 'confirm-delete-run', runId: h.id });
               };
+              const onCancelRow = async (e: React.MouseEvent) => {
+                e.stopPropagation();
+                try { await api.cancelRun(h.id); } catch { /* ignore */ }
+                // Cancellation lands asynchronously (the runner gets a
+                // signal); refresh now for quick feedback and let the
+                // in-flight poller flip the status once it's terminal.
+                api.listRuns(workflow.id).then(setHistory).catch(() => {});
+              };
               return (
                 <div
                   key={h.id}
@@ -263,6 +275,33 @@ export function RunPanel({
                   >
                     {h.status}
                   </span>
+                  {rowRunning && (
+                    <button
+                      type="button"
+                      onClick={onCancelRow}
+                      title="cancel this run"
+                      aria-label="cancel run"
+                      className="smallcaps"
+                      style={{
+                        background: 'transparent',
+                        border: '1px solid var(--rule)',
+                        borderRadius: 3,
+                        padding: '1px 7px',
+                        cursor: 'pointer',
+                        color: 'var(--state-err)',
+                        fontSize: 9,
+                        lineHeight: 1.5,
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.borderColor = 'var(--state-err)';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.borderColor = 'var(--rule)';
+                      }}
+                    >
+                      cancel
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={onDelete}
@@ -367,23 +406,18 @@ export function RunPanel({
           </div>
         </div>
         <div className="run-compose__actions">
-          {running ? (
-            <button
-              type="button"
-              className="snapshot-action-btn snapshot-action-btn--secondary run-compose__go"
-              onClick={onCancel}
-            >
-              cancel
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="snapshot-action-btn run-compose__go"
-              onClick={start}
-              disabled={!inputNode || !!orchestrating}
-              title={
-                orchestrating
-                  ? 'wait until the orchestrator finishes its turn'
+          {/* Runs can stack — execute stays available while one is in
+              flight; each running row in the list carries its own cancel. */}
+          <button
+            type="button"
+            className="snapshot-action-btn run-compose__go"
+            onClick={start}
+            disabled={!inputNode || !!orchestrating}
+            title={
+              orchestrating
+                ? 'wait until the orchestrator finishes its turn'
+                : running
+                  ? 'start another run alongside the one in flight'
                   : status === 'error'
                     ? 'last run failed — adjust and try again'
                     : status === 'cancelled'
@@ -391,16 +425,17 @@ export function RunPanel({
                       : status === 'success'
                         ? 'tweak inputs and rerun'
                         : undefined
-              }
-            >
-              {status === 'error' || status === 'cancelled'
+            }
+          >
+            {running
+              ? 'execute'
+              : status === 'error' || status === 'cancelled'
                 ? 'try again'
                 : status === 'success'
                   ? 'rerun'
                   : 'execute'}{' '}
-              →
-            </button>
-          )}
+            →
+          </button>
         </div>
       </div>
 
@@ -434,6 +469,7 @@ export function RunPanel({
             try {
               await api.deleteRun(runId);
               setHistory((prev) => prev.filter((r) => r.id !== runId));
+              onRunDeleted?.(runId);
             } catch (err) {
               setDialog({
                 kind: 'alert',

@@ -25,7 +25,7 @@ import { useOrchestratorStream } from './orchestratorStream';
 import { useImageAttachments } from './components/ImageAttachments';
 import { useRunWebSocket } from './runWebSocket';
 import type {
-  Workflow, WorkflowDetail, NodeRunStatus, Run,
+  Workflow, WorkflowDetail, NodeRunStatus, Run, CurrentRun,
 } from './types';
 
 type View = 'workflow' | 'settings';
@@ -107,7 +107,28 @@ export default function App() {
     }
   };
 
-  const { currentRun, setCurrentRun, attachToRun, closeWs } = useRunWebSocket(workflows);
+  const { runs: liveRuns, attachToRun, dropRun, dropWorkflowRuns, closeAllSockets } =
+    useRunWebSocket(workflows);
+
+  // Several runs can be attached at once (across workflows, or stacked on
+  // one). Most surfaces care about "the latest run on this workflow" —
+  // canvas dots, the run panel's status chip, the top-bar state.
+  const latestRunFor = (
+    wid: string | null | undefined,
+    opts?: { liveGraphOnly?: boolean },
+  ): CurrentRun | null => {
+    if (!wid) return null;
+    let best: CurrentRun | null = null;
+    for (const r of Object.values(liveRuns)) {
+      if (r.workflow_id !== wid) continue;
+      if (opts?.liveGraphOnly && r.executesOnSnapshot) continue;
+      if (!best || r.startedAt > best.startedAt) best = r;
+    }
+    return best;
+  };
+  const currentRun = latestRunFor(activeId);
+  // The live stream for the run being viewed in snapshot view, if attached.
+  const viewingRunLive = viewingRun ? liveRuns[viewingRun.id] ?? null : null;
 
   const attachToRunRef = useRef(attachToRun);
   useEffect(() => { attachToRunRef.current = attachToRun; });
@@ -133,12 +154,13 @@ export default function App() {
       // node panel's trace tab streams events. For terminal runs, the
       // historical NodeRun rows are enough — no WS needed.
       const isRunning = run.status === 'running' || run.status === 'pending';
-      if (isRunning && (!currentRun || currentRun.id !== run.id)) {
+      if (isRunning) {
         // We don't know whether this run executes on live or on a divergent
         // snapshot (the click came from the recent-runs list, which doesn't
         // distinguish). Mark it `executesOnSnapshot` so leaving snapshot
         // view to live doesn't overlay potentially-mismatched dots there;
-        // snapshot view itself overlays correctly via id lookup.
+        // snapshot view itself overlays correctly via id lookup. Attaching
+        // is a no-op if this run's stream is already open.
         attachToRunRef.current(run.id, run.workflow_id, run.status, /* executesOnSnapshot */ true);
       }
     } catch {
@@ -157,27 +179,44 @@ export default function App() {
   }, [activeId]);
 
   // viewingRun is captured at the moment snapshot view opens, so for an
-  // in-flight run its outputs/node_runs/total_cost are empty. currentRun
+  // in-flight run its outputs/node_runs/total_cost are empty. viewingRunLive
   // streams the live deltas, but the SnapshotRunPanel reads its display
-  // fields off viewingRun. When the bound run finishes, refetch it once so
-  // the panel picks up the final outputs, completed node_runs, and total
-  // cost in a single update.
+  // fields off viewingRun. When the bound run finishes, refetch it so the
+  // panel picks up the final outputs, completed node_runs, and total cost.
+  // The runner broadcasts `run_finished` over the WS *before* it commits the
+  // final Run/NodeRun rows (the persist waits for the subprocess to exit),
+  // so the first refetch can race the persist and read a row still marked
+  // running — keep retrying until the row turns terminal.
   useEffect(() => {
-    if (!viewingRun || !currentRun || currentRun.id !== viewingRun.id) return;
+    if (!viewingRun || !viewingRunLive) return;
     const terminal =
-      currentRun.status === 'success' ||
-      currentRun.status === 'error' ||
-      currentRun.status === 'cancelled';
+      viewingRunLive.status === 'success' ||
+      viewingRunLive.status === 'error' ||
+      viewingRunLive.status === 'cancelled';
     if (!terminal) return;
     let cancelled = false;
-    api.getRun(viewingRun.id)
-      .then((fresh) => {
-        if (cancelled) return;
-        setViewingRun((cur) => (cur && cur.id === fresh.id ? fresh : cur));
-      })
-      .catch(() => { /* leave viewingRun stale; user can exit and re-enter */ });
-    return () => { cancelled = true; };
-  }, [viewingRun?.id, currentRun?.id, currentRun?.status]);
+    let timer: number | undefined;
+    const refetch = (attemptsLeft: number) => {
+      api.getRun(viewingRun.id)
+        .then((fresh) => {
+          if (cancelled) return;
+          const persisted = fresh.status !== 'running' && fresh.status !== 'pending';
+          if (persisted) {
+            setViewingRun((cur) => (cur && cur.id === fresh.id ? fresh : cur));
+          } else if (attemptsLeft > 0) {
+            timer = window.setTimeout(() => refetch(attemptsLeft - 1), 500);
+          }
+          // Retries exhausted: leave viewingRun stale; user can exit and
+          // re-enter to pick up the persisted row.
+        })
+        .catch(() => { /* leave viewingRun stale; user can exit and re-enter */ });
+    };
+    refetch(20);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [viewingRun?.id, viewingRunLive?.status]);
 
   // Mirror localStorage's orchestrator-model setting so the chat header reflects
   // what's actually being sent over the wire. Refreshed on save (custom event)
@@ -234,10 +273,12 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
 
+  // Live-run sockets stay open across workflow switches so background runs
+  // keep streaming; only tear them down when the app unmounts.
   useEffect(() => {
-    return () => closeWs();
+    return () => closeAllSockets();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId]);
+  }, []);
 
   const activeWorkflow = workflows.find((w) => w.id === activeId) ?? null;
   const messages = activeId ? chatByWorkflow[activeId] ?? [] : [];
@@ -309,7 +350,6 @@ export default function App() {
     setDetail(null);
     setView('workflow');
     setSelectedNodeId(null);
-    setCurrentRun(null);
   };
 
   const handleDelete = async (id: string) => {
@@ -317,8 +357,8 @@ export default function App() {
     if (id === activeId) {
       setActiveId(null);
       setDetail(null);
-      setCurrentRun(null);
     }
+    dropWorkflowRuns(id);
     setChatByWorkflow((prev) => {
       const { [id]: _, ...rest } = prev;
       return rest;
@@ -345,7 +385,6 @@ export default function App() {
     setSelectedNodeId(null);
     setSelectedSnapshotNodeId(null);
     setViewingRun(null);
-    setCurrentRun(null);
     setChatByWorkflow((prev) => ({ ...prev, [workflow.id]: [] }));
     try {
       const d = await api.getWorkflow(workflow.id);
@@ -404,11 +443,6 @@ export default function App() {
     }
   };
 
-  const cancelRun = async () => {
-    if (!currentRun) return;
-    try { await api.cancelRun(currentRun.id); } catch { /* ignore */ }
-  };
-
   /** Forward an error from a run/node into the orchestrator chat as a user message. */
   const sendErrorToOrchestrator = (message: string) => {
     setRightPanelMode('chat');
@@ -464,9 +498,7 @@ export default function App() {
         ...Object.fromEntries(
           viewingRun.node_runs.map((nr) => [nr.node_id, nr.status]),
         ),
-        ...(currentRun && currentRun.id === viewingRun.id
-          ? currentRun.nodeStates
-          : {}),
+        ...(viewingRunLive ? viewingRunLive.nodeStates : {}),
       }
     : {};
 
@@ -488,7 +520,6 @@ export default function App() {
           setActiveId(id);
           setView('workflow');
           setSelectedNodeId(null);
-          setCurrentRun(null);
         }}
         onNew={handleNew}
         onRename={handleRename}
@@ -591,18 +622,14 @@ export default function App() {
                       setSelectedNodeId(id);
                       if (id !== null) setRightPanelMode('workspace');
                     }}
-                    // Overlay live node states for runs that execute on the
-                    // live graph (manual run, orchestrator-triggered run).
-                    // Skip for snapshot reruns — their snapshot can diverge
-                    // from live, so dots may apply to wrong nodes or miss
-                    // entirely. Snapshot view is the right place to watch
-                    // those; the rerun handler keeps the user there.
+                    // Overlay live node states for the latest run executing
+                    // on the live graph (manual run, orchestrator-triggered
+                    // run). Snapshot reruns are excluded — their snapshot can
+                    // diverge from live, so dots may apply to wrong nodes or
+                    // miss entirely. Snapshot view is the right place to
+                    // watch those; the rerun handler keeps the user there.
                     nodeStates={
-                      currentRun &&
-                      currentRun.workflow_id === detail.id &&
-                      !currentRun.executesOnSnapshot
-                        ? currentRun.nodeStates
-                        : undefined
+                      latestRunFor(detail.id, { liveGraphOnly: true })?.nodeStates
                     }
                     headerActions={
                       <button
@@ -659,6 +686,15 @@ export default function App() {
                 <RightPanelTabs
                   mode={rightPanelMode}
                   setMode={setRightPanelMode}
+                  onWorkspaceTab={() => {
+                    // The workspace tab always lands on the run list, no
+                    // matter what surface was left behind — a node config
+                    // panel or a snapshot run view would otherwise stick
+                    // around and greet the user instead of the runs.
+                    setRightPanelMode('workspace');
+                    setSelectedNodeId(null);
+                    exitSnapshotView();
+                  }}
                   showChatActivityDot={isOrchestrating && rightPanelMode !== 'chat'}
                 />
                 <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
@@ -707,13 +743,14 @@ export default function App() {
                               onChange={() => {}}
                               readOnly
                               pinnedRun={viewingRun}
-                              // Pass currentRun so the trace tab streams live
-                              // events when this snapshot view is bound to an
-                              // in-flight run (rerun-from-snapshot, or recent-run
-                              // click on a running run). Without it, the trace
-                              // would fall back to viewingRun.node_runs — empty
-                              // for runs that haven't materialised yet.
-                              currentRun={currentRun}
+                              // Pass the viewed run's live stream so the trace
+                              // tab streams events when this snapshot view is
+                              // bound to an in-flight run (rerun-from-snapshot,
+                              // or recent-run click on a running run). Without
+                              // it, the trace would fall back to
+                              // viewingRun.node_runs — empty for runs that
+                              // haven't materialised yet.
+                              currentRun={viewingRunLive}
                               onSendErrorToOrchestrator={sendErrorToOrchestrator}
                             />
                           );
@@ -721,17 +758,8 @@ export default function App() {
                         return (
                           <SnapshotRunPanel
                             run={viewingRun}
-                            currentRun={currentRun}
+                            currentRun={viewingRunLive}
                             onExit={exitSnapshotView}
-                            // Block rerun while any run on this workflow is in
-                            // flight — server has no guard yet, so we hold the
-                            // line in the UI to avoid stacking parallel runs.
-                            runInProgress={
-                              !!currentRun &&
-                              currentRun.workflow_id === viewingRun.workflow_id &&
-                              (currentRun.status === 'running' ||
-                                currentRun.status === 'pending')
-                            }
                             onRerun={async (inputs) => {
                               const newRun = await api.rerunFromSnapshot(
                                 viewingRun.id,
@@ -772,8 +800,8 @@ export default function App() {
                           workflow={detail}
                           currentRun={currentRun}
                           onStart={startRun}
-                          onCancel={cancelRun}
                           onViewRunOnCanvas={enterSnapshotView}
+                          onRunDeleted={dropRun}
                           orchestrating={isOrchestrating}
                         />
                       )}
@@ -850,10 +878,15 @@ export default function App() {
 function RightPanelTabs({
   mode,
   setMode,
+  onWorkspaceTab,
   showChatActivityDot,
 }: {
   mode: 'workspace' | 'chat';
   setMode: (m: 'workspace' | 'chat') => void;
+  /** Clicking the workspace tab resets the workspace to its default surface
+   * (the run list) rather than just toggling visibility, so the handler
+   * differs from a plain setMode('workspace'). */
+  onWorkspaceTab: () => void;
   /** When true, paint a small accent dot on the chat tab to signal that
    * the orchestrator is doing work the user can't currently see. */
   showChatActivityDot: boolean;
@@ -872,7 +905,7 @@ function RightPanelTabs({
     >
       <PanelTabButton
         active={mode === 'workspace'}
-        onClick={() => setMode('workspace')}
+        onClick={onWorkspaceTab}
       >
         workspace
       </PanelTabButton>

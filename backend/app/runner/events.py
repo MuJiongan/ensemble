@@ -64,9 +64,27 @@ def set_proc(run_id: str, proc: subprocess.Popen) -> None:
 
 
 def discard(run_id: str) -> None:
-    """Forget any in-memory state for a finished run. No-op if absent."""
+    """Forget any in-memory state for a finished run. No-op if absent.
+
+    Live subscribers (an open WebSocket on a run the user just deleted) get
+    a synthetic ``run_deleted`` event so their generators terminate instead
+    of waiting forever on a state object nothing will ever append to again.
+    """
     with _REGISTRY_LOCK:
-        _RUNS.pop(run_id, None)
+        st = _RUNS.pop(run_id, None)
+    if st is None:
+        return
+    with st.lock:
+        st.finished = True
+        subs = list(st.subscribers)
+    for loop, q in subs:
+        try:
+            loop.call_soon_threadsafe(
+                q.put_nowait, {"type": "run_deleted", "run_id": run_id}
+            )
+        except Exception:
+            pass
+    st.finished_event.set()
 
 
 def is_active(run_id: str) -> bool:
@@ -102,7 +120,8 @@ async def subscribe(run_id: str):
     """Async generator yielding events for a run.
 
     Yields the existing backlog first, then live events. Returns when the run
-    finishes (i.e. a `run_finished` event has been observed).
+    finishes (a `run_finished` event) or is deleted out from under the
+    subscriber (a synthetic `run_deleted` event from :func:`discard`).
     """
     st = get_or_create(run_id)
     loop = asyncio.get_running_loop()
@@ -119,7 +138,7 @@ async def subscribe(run_id: str):
         while True:
             ev = await q.get()
             yield ev
-            if ev.get("type") == "run_finished":
+            if ev.get("type") in ("run_finished", "run_deleted"):
                 return
     finally:
         with st.lock:

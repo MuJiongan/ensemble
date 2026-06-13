@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { IOSection } from './IOSection';
 import type { CurrentRun, Run, RunStatus } from '../types';
+import { api } from '../api';
 import { modelStatsForRun, summariseRun, toolCallCountForRun } from '../appHelpers';
 import { ExecutionStats } from './ExecutionStats';
 
@@ -8,23 +9,36 @@ export function SnapshotRunPanel({
   run,
   onExit,
   onRerun,
-  runInProgress,
   currentRun,
 }: {
   run: Run;
   onExit: () => void;
   onRerun: (inputs: Record<string, unknown>) => Promise<void>;
-  /** True when another run on this workflow is still executing. The UI
-   * blocks rerun in that case so we don't stack parallel runs against
-   * one workflow. */
-  runInProgress?: boolean;
   /** When set and bound to this run, live llm_call_finished events are
    * folded into model stats before node_runs are persisted. */
   currentRun?: CurrentRun | null;
 }) {
   const errored = run.node_runs.filter((nr) => nr.status === 'error');
   const inputs = Object.entries(run.inputs ?? {});
-  const outputs = Object.entries(run.outputs ?? {});
+
+  // The viewed run's live status when its WS is attached, else the status
+  // frozen into the Run row at fetch time. The live stream leads the DB —
+  // `run_finished` arrives over the WS before the Run row is persisted (and
+  // before the parent's refetch lands) — so prefer it for everything that
+  // should flip the moment the run ends: the status line, the in-flight
+  // cancel, and the final outputs.
+  const liveStatus: RunStatus =
+    currentRun && currentRun.id === run.id ? currentRun.status : run.status;
+  const liveOutputs =
+    currentRun && currentRun.id === run.id ? currentRun.finalOutputs : null;
+  const outputs = Object.entries(liveOutputs ?? run.outputs ?? {});
+  const inFlight = liveStatus === 'running' || liveStatus === 'pending';
+  const [cancelling, setCancelling] = useState(false);
+  useEffect(() => { setCancelling(false); }, [run.id]);
+  const cancelThisRun = async () => {
+    setCancelling(true);
+    try { await api.cancelRun(run.id); } catch { /* ignore */ }
+  };
 
   // Re-run form state. The snapshot's input node defines the port shape;
   // we pre-fill each field with the prior run's value (JSON-stringified)
@@ -59,6 +73,7 @@ export function SnapshotRunPanel({
   useEffect(() => {
     setFormOpen(false);
     setFormValues(initialFormValues);
+    setSubmitting(false);
     setSubmitError(null);
     // See note on initialFormValues: reset only when the bound run id changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -80,6 +95,11 @@ export function SnapshotRunPanel({
       await onRerun(parsed);
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : String(e));
+    } finally {
+      // On success the parent swaps `run` to the new run, which also resets
+      // the form via the run.id effect — but the same SnapshotRunPanel
+      // instance keeps its state, so clear `submitting` here too or the
+      // execute button stays stuck on "starting…" for the next rerun.
       setSubmitting(false);
     }
   };
@@ -175,8 +195,8 @@ export function SnapshotRunPanel({
               }}
             >
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                <StatusDot status={run.status} />
-                <span style={{ color: runStatusColor(run.status) }}>{run.status}</span>
+                <StatusDot status={liveStatus} />
+                <span style={{ color: runStatusColor(liveStatus) }}>{liveStatus}</span>
               </span>
               <span className="asterisk" style={{ margin: '0 10px' }}>·</span>
               <span className="mono" style={{ color: 'var(--ink-2)' }}>
@@ -258,7 +278,7 @@ export function SnapshotRunPanel({
       <IOSection
         title="outputs"
         emptyText={
-          run.status === 'success'
+          liveStatus === 'success'
             ? 'this run produced no outputs.'
             : 'no outputs recorded.'
         }
@@ -271,34 +291,40 @@ export function SnapshotRunPanel({
         }))}
       />
 
+      {/* in-flight cancel — this run is still executing; stopping it is the
+          one action that makes sense here, so it takes the rerun's spot. */}
+      {inFlight && (
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+          <button
+            type="button"
+            onClick={cancelThisRun}
+            disabled={cancelling}
+            className="snapshot-action-btn snapshot-action-btn--secondary"
+            style={{ color: 'var(--state-err)' }}
+            title="stop this run"
+          >
+            {cancelling ? 'cancelling…' : 'cancel run'}
+          </button>
+        </div>
+      )}
+
       {/* rerun affordance — visible whenever the snapshot is runnable
           (has a designated input node). When the input node has no input
           ports, the form skips field rendering and just confirms execute. */}
-      {run.workflow_snapshot?.input_node_id && !formOpen && (
+      {!inFlight && run.workflow_snapshot?.input_node_id && !formOpen && (
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
           <button
             type="button"
             onClick={() => setFormOpen(true)}
-            disabled={!!runInProgress}
             className="snapshot-action-btn"
             title={
-              runInProgress
-                ? 'a run is already in progress on this project — wait for it to finish'
-                : inputPorts.length > 0
-                  ? 'run this exact graph again with edited inputs'
-                  : 'run this exact graph again'
+              inputPorts.length > 0
+                ? 'run this exact graph again with edited inputs'
+                : 'run this exact graph again'
             }
           >
             {inputPorts.length > 0 ? 'rerun with new inputs →' : 'rerun →'}
           </button>
-          {runInProgress && (
-            <span
-              className="serif"
-              style={{ fontStyle: 'italic', color: 'var(--ink-4)', fontSize: 11.5 }}
-            >
-              a run is already in flight
-            </span>
-          )}
         </div>
       )}
 
@@ -353,23 +379,13 @@ export function SnapshotRunPanel({
           {submitError && (
             <div className="snapshot-rerun-form__error">{submitError}</div>
           )}
-          {runInProgress && (
-            <div className="snapshot-rerun-form__error">
-              another run is in flight on this project — wait for it to finish.
-            </div>
-          )}
 
           <div className="snapshot-rerun-form__actions">
             <button
               type="button"
               onClick={submitRerun}
-              disabled={submitting || !!runInProgress}
+              disabled={submitting}
               className="ed-btn ed-btn--primary ed-btn--mini"
-              title={
-                runInProgress
-                  ? 'a run is already in progress on this project'
-                  : undefined
-              }
             >
               {submitting ? 'starting…' : 'execute'}{' '}
               <span className="ed-btn__mark">→</span>

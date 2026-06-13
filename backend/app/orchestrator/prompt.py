@@ -269,7 +269,6 @@ After you've built or refined the graph, decide whether to call `run_workflow` f
 - *On `status: "success"`*: call `view_run(run_id, node_id=<output node id>, fields=["outputs"], ports=[...])` — naming just the output port(s) you need — then share what's relevant to the user's ask in one short paragraph and point them to the run panel for the full detail.
 - *On `status: "error"` or `"cancelled"`*: the run result already names the failing node(s) and their error messages in `node_errors` — relay that so the user has an actionable signal, drilling into a node with `view_run(run_id, node_id=..., fields=["logs"])` only when the message alone isn't enough. Decide if there's a clear graph fix, and either propose it or hand back (model-level failures go to Settings, not a node patch — see *# design conventions*). Don't loop on failures — never kick off another run on the same inputs hoping for a different result.
 - *Before building on a run's output*: research nodes (see *# when you need to explore*) and multi-workflow stage transitions (see *# multiple workflows in one session*) both feed a prior run's outputs into your next design — read the actual findings via `view_run` on the relevant node *before* continuing the build or running `clean_canvas`. If you only need to confirm a stage produced *something*, the lean `status` from `run_workflow` is enough.
-- Only one run can be in flight per workflow. If `run_workflow` returns `another run … is already in progress`, don't retry — wait for the user.
 
 # editing existing nodes
 

@@ -5,7 +5,7 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import type { Components } from 'react-markdown';
 import 'katex/dist/katex.min.css';
-import { api } from '../api';
+import { api, ApiError } from '../api';
 import type { Run } from '../types';
 import { CloseButton } from './CloseButton';
 import { AttachmentChips, FileTile, type PendingAttachment } from './ImageAttachments';
@@ -455,28 +455,51 @@ function RunWorkflowCard({
   // card is clickable while still pending; fall back to the run_id in the
   // tool result once the call completes.
   const runId = earlyRunId ?? r.run_id;
-  const canOpen = !!runId && !!onViewRun;
-  const openRun = () => {
-    if (runId && onViewRun) onViewRun(runId);
-  };
   const [snapshot, setSnapshot] = useState<Run | null>(null);
+  // Flipped when the run row 404s — the run was deleted. Terminal: the card
+  // stops tracking and drops its open affordance (there's nothing to open).
+  const [deleted, setDeleted] = useState(false);
+  const canOpen = !!runId && !!onViewRun && !deleted;
+  const openRun = () => {
+    if (runId && onViewRun && !deleted) onViewRun(runId);
+  };
 
+  // Track the run row. Once the tool call has resolved, a single fetch is
+  // enough (the result payload carries the outcome). While the block is
+  // still `pending`, poll instead: the tool result may never arrive (turn
+  // aborted, page reloaded mid-turn), so the card follows the run itself —
+  // settling when it ends, or when it turns out to have been deleted.
   useEffect(() => {
-    if (!runId || status === 'pending') return;
+    if (!runId || deleted) return;
     let cancelled = false;
-    api
-      .getRun(runId)
-      .then((run) => {
-        if (!cancelled) setSnapshot(run);
-      })
-      .catch(() => {
-        // Snapshot fetch failures are non-fatal — the card still renders the
-        // live `result` payload, just without per-node detail.
-      });
+    let timer: number | undefined;
+    const track = async () => {
+      try {
+        const run = await api.getRun(runId);
+        if (cancelled) return;
+        setSnapshot(run);
+        const inFlight = run.status === 'running' || run.status === 'pending';
+        if (status === 'pending' && inFlight) {
+          timer = window.setTimeout(track, 3000);
+        }
+      } catch (err) {
+        if (cancelled) return;
+        if (err instanceof ApiError && err.status === 404) {
+          setDeleted(true);
+          return;
+        }
+        // Other fetch failures (offline, server hiccup) are non-fatal — the
+        // card still renders the live `result` payload, just without
+        // per-node detail. Retry only while the block is unresolved.
+        if (status === 'pending') timer = window.setTimeout(track, 3000);
+      }
+    };
+    track();
     return () => {
       cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [runId, status]);
+  }, [runId, status, deleted]);
 
   const wfSnap = snapshot?.workflow_snapshot ?? null;
   const nodeRuns = snapshot?.node_runs ?? [];
@@ -484,14 +507,37 @@ function RunWorkflowCard({
   const inputName = wfSnap?.input_node_id ? nodeNamesById.get(wfSnap.input_node_id) : undefined;
   const outputName = wfSnap?.output_node_id ? nodeNamesById.get(wfSnap.output_node_id) : undefined;
 
-  const isPending = status === 'pending';
-  const isErr = status === 'err' || !!r.error || (r.node_errors?.length ?? 0) > 0;
-  const statusColor = isPending
-    ? 'var(--ink-4)'
-    : isErr
-      ? 'var(--state-err)'
-      : 'var(--state-ok)';
-  const statusLabel = isPending ? 'running' : isErr ? 'failed' : 'ran';
+  // While the block is unresolved, the fetched row leads: hydrated chat
+  // history can carry `pending` forever for a turn that died mid-run, but
+  // the run itself has long since settled (or been deleted).
+  const snapStatus = snapshot?.status;
+  const settled =
+    status === 'pending' && snapStatus && snapStatus !== 'running' && snapStatus !== 'pending'
+      ? snapStatus
+      : null;
+  const isPending = !deleted && status === 'pending' && !settled;
+  const isErr =
+    !deleted &&
+    (status === 'err' ||
+      !!r.error ||
+      (r.node_errors?.length ?? 0) > 0 ||
+      settled === 'error');
+  const isCancelled = !deleted && settled === 'cancelled';
+  const statusColor =
+    deleted || isCancelled || isPending
+      ? 'var(--ink-4)'
+      : isErr
+        ? 'var(--state-err)'
+        : 'var(--state-ok)';
+  const statusLabel = deleted
+    ? 'deleted'
+    : isPending
+      ? 'running'
+      : isCancelled
+        ? 'cancelled'
+        : isErr
+          ? 'failed'
+          : 'ran';
   const cost = r.total_cost ?? 0;
 
   return (
@@ -530,7 +576,15 @@ function RunWorkflowCard({
           className="smallcaps"
           style={{ color: statusColor, fontSize: 9 }}
         >
-          {isPending ? '… running' : isErr ? '× failed' : '✓ ran'}
+          {deleted
+            ? 'deleted'
+            : isPending
+              ? '… running'
+              : isCancelled
+                ? 'cancelled'
+                : isErr
+                  ? '× failed'
+                  : '✓ ran'}
         </span>
         <span style={{ flex: 1 }} />
         {cost > 0 && (
@@ -583,6 +637,18 @@ function RunWorkflowCard({
           }}
         >
           {args}
+        </div>
+      )}
+
+      {/* the run row no longer exists — say so instead of leaving a card
+          that looks live but opens nothing. The result payload above stays:
+          it's the chat's historical record of what the run reported. */}
+      {deleted && (
+        <div
+          className="serif"
+          style={{ color: 'var(--ink-4)', fontSize: 11.5, fontStyle: 'italic' }}
+        >
+          this run was deleted — its trace is no longer available.
         </div>
       )}
 
@@ -714,7 +780,7 @@ function RunWorkflowCard({
 
       {/* footer: view-on-canvas action — duplicates the card-level click but
           keeps a visible affordance so the click target reads as actionable. */}
-      {runId && onViewRun && (
+      {runId && onViewRun && !deleted && (
         <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
           <button
             type="button"

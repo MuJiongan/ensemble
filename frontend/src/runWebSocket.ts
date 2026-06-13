@@ -1,4 +1,4 @@
-import { useRef, useState, type SetStateAction } from 'react';
+import { useRef, useState } from 'react';
 import { api } from './api';
 import { ensureNotificationPermission, notifyRunFinished } from './notify';
 import type { CurrentRun, NodeRunStatus, RunEvent, RunStatus, Workflow } from './types';
@@ -86,26 +86,27 @@ export function applyRunEvent(cur: CurrentRun, ev: RunEvent): CurrentRun {
   };
 }
 
-/** Hook that owns the live-run WebSocket: opening the socket, applying
- * incoming events to `currentRun`, and surfacing the desktop notification
- * when a run finishes. Caller is responsible for closing the socket on
- * workflow switch (via `closeWs`). */
+function isTerminal(status: RunStatus): boolean {
+  return status === 'success' || status === 'error' || status === 'cancelled';
+}
+
+/** Hook that owns the live-run WebSockets. Multiple runs — across workflows
+ * or stacked on one workflow — can be attached at once; each gets its own
+ * socket and its own `CurrentRun` entry in the returned map, so switching
+ * workflows mid-run never drops the stream. Sockets are closed when their
+ * workflow is dropped (deletion) or on unmount via `closeAllSockets`. */
 export function useRunWebSocket(workflows: Workflow[]) {
-  const [currentRun, setCurrentRun] = useState<CurrentRun | null>(null);
-  const currentRunRef = useRef<CurrentRun | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+  const [runs, setRuns] = useState<Record<string, CurrentRun>>({});
+  const runsRef = useRef<Record<string, CurrentRun>>({});
+  const socketsRef = useRef<Map<string, WebSocket>>(new Map());
   // Held as a ref so the WS message handler always sees the latest list
   // without forcing a reconnect when the user renames a workflow mid-run.
   const workflowsRef = useRef<Workflow[]>(workflows);
   workflowsRef.current = workflows;
 
-  const commitCurrentRun = (next: SetStateAction<CurrentRun | null>) => {
-    const value =
-      typeof next === 'function'
-        ? (next as (prev: CurrentRun | null) => CurrentRun | null)(currentRunRef.current)
-        : next;
-    currentRunRef.current = value;
-    setCurrentRun(value);
+  const commitRuns = (next: Record<string, CurrentRun>) => {
+    runsRef.current = next;
+    setRuns(next);
   };
 
   const attachToRun = (
@@ -114,11 +115,14 @@ export function useRunWebSocket(workflows: Workflow[]) {
     initialStatus: RunStatus = 'running',
     executesOnSnapshot: boolean = false,
   ) => {
+    // Already streaming this run — re-attaching would clobber its
+    // accumulated events with an empty state.
+    if (socketsRef.current.has(runId)) return;
     ensureNotificationPermission();
     const workflowName =
       workflowsRef.current.find((w) => w.id === workflowId)?.name ?? 'project';
     const startedAt = Date.now();
-    commitCurrentRun({
+    const fresh: CurrentRun = {
       id: runId,
       workflow_id: workflowId,
       status: initialStatus,
@@ -129,13 +133,33 @@ export function useRunWebSocket(workflows: Workflow[]) {
       error: null,
       totalCost: 0,
       executesOnSnapshot,
-    });
-    wsRef.current?.close();
+    };
+    // Finished runs on the same workflow are superseded by the new
+    // attachment — pruning them keeps the map (and its event buffers) from
+    // growing without bound over a long session. In-flight runs stay.
+    const kept = Object.fromEntries(
+      Object.entries(runsRef.current).filter(
+        ([, r]) => !(r.workflow_id === workflowId && isTerminal(r.status)),
+      ),
+    );
+    commitRuns({ ...kept, [runId]: fresh });
     const ws = new WebSocket(api.runEventsUrl(runId));
-    wsRef.current = ws;
+    socketsRef.current.set(runId, ws);
     ws.onmessage = (e) => {
       let ev: RunEvent;
       try { ev = JSON.parse(e.data) as RunEvent; } catch { return; }
+      if (ev.type === 'run_deleted') {
+        // The run's row is gone (deleted server-side, or we attached to a
+        // run that no longer exists). Drop the entry entirely — every
+        // surface keyed off this map must stop showing a run that doesn't
+        // exist. The server closes the socket after sending this.
+        if (runId in runsRef.current) {
+          const { [runId]: _, ...rest } = runsRef.current;
+          commitRuns(rest);
+        }
+        ws.close();
+        return;
+      }
       if (ev.type === 'run_finished') {
         notifyRunFinished({
           runId,
@@ -146,20 +170,43 @@ export function useRunWebSocket(workflows: Workflow[]) {
           durationMs: Date.now() - startedAt,
         });
       }
-      const cur = currentRunRef.current;
-      if (!cur || cur.id !== runId) return;
-      const next = applyRunEvent(cur, ev);
-      currentRunRef.current = next;
-      setCurrentRun(next);
+      const cur = runsRef.current[runId];
+      if (!cur) return;
+      commitRuns({ ...runsRef.current, [runId]: applyRunEvent(cur, ev) });
     };
     ws.onerror = () => { /* keep state; close handler will fire */ };
-    ws.onclose = () => { if (wsRef.current === ws) wsRef.current = null; };
+    ws.onclose = () => {
+      if (socketsRef.current.get(runId) === ws) socketsRef.current.delete(runId);
+    };
   };
 
-  const closeWs = () => {
-    wsRef.current?.close();
-    wsRef.current = null;
+  /** Forget one run (used when the user deletes it from a run list). */
+  const dropRun = (runId: string) => {
+    socketsRef.current.get(runId)?.close();
+    socketsRef.current.delete(runId);
+    if (!(runId in runsRef.current)) return;
+    const { [runId]: _, ...rest } = runsRef.current;
+    commitRuns(rest);
   };
 
-  return { currentRun, setCurrentRun: commitCurrentRun, attachToRun, closeWs };
+  /** Forget all runs for a workflow (used when it's deleted). */
+  const dropWorkflowRuns = (workflowId: string) => {
+    for (const [rid, r] of Object.entries(runsRef.current)) {
+      if (r.workflow_id !== workflowId) continue;
+      socketsRef.current.get(rid)?.close();
+      socketsRef.current.delete(rid);
+    }
+    commitRuns(
+      Object.fromEntries(
+        Object.entries(runsRef.current).filter(([, r]) => r.workflow_id !== workflowId),
+      ),
+    );
+  };
+
+  const closeAllSockets = () => {
+    for (const ws of socketsRef.current.values()) ws.close();
+    socketsRef.current.clear();
+  };
+
+  return { runs, attachToRun, dropRun, dropWorkflowRuns, closeAllSockets };
 }

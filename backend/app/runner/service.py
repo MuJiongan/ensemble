@@ -48,8 +48,13 @@ def is_active(run_id: str) -> bool:
 
 
 def discard(run_id: str) -> None:
-    """Forget in-memory event/proc state for a run."""
+    """Forget in-memory event/proc state for a run, notifying subscribers."""
     ev_mod.discard(run_id)
+
+
+def has_state(run_id: str) -> bool:
+    """True when in-memory event state exists for a run."""
+    return ev_mod.get(run_id) is not None
 
 
 def subscribe(run_id: str):
