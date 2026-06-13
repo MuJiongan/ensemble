@@ -4,6 +4,15 @@ import type {
 } from './types';
 import { settingsHeaders, type LlmTarget } from './localSettings';
 
+/** Request failure carrying the HTTP status, so callers can branch on it
+ * (404 = the resource is gone, vs. transient/network-ish failures). */
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 async function request<T>(
   method: string,
   path: string,
@@ -19,7 +28,7 @@ async function request<T>(
   });
   if (!r.ok) {
     const text = await r.text();
-    throw new Error(`${method} ${path} → ${r.status}: ${text}`);
+    throw new ApiError(`${method} ${path} → ${r.status}: ${text}`, r.status);
   }
   if (r.status === 204) return undefined as T;
   return (await r.json()) as T;

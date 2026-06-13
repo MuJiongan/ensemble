@@ -225,6 +225,10 @@ export type RunEvent =
       error: string | null;
       total_cost: number;
     }
+  // Synthetic, not produced by the runner: sent when the run's row/state is
+  // deleted out from under a subscriber (or a subscriber attaches to a run
+  // that no longer exists). Terminal — the server closes the socket after.
+  | { type: 'run_deleted'; run_id: string }
   // Emitted by a node's ctx.call_llm loop when it summarized older history to
   // stay within the model's context window. `summarized` is the number of
   // messages folded into the anchor. Rendered as a marker in the node trace.

@@ -5,7 +5,7 @@ import traceback
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
-from app.db import get_db
+from app.db import SessionLocal, get_db
 from app import models, schemas
 from app.runner import service as run_service
 from app.services import graph as graph_service
@@ -226,11 +226,25 @@ def list_runs(wid: str, db: Session = Depends(get_db)):
     return [_run_to_out(r, r.node_runs) for r in rows]
 
 
+def _run_row_exists(rid: str) -> bool:
+    db = SessionLocal()
+    try:
+        return db.get(models.Run, rid) is not None
+    finally:
+        db.close()
+
+
 @router.websocket("/runs/{rid}/events")
 async def ws_run_events(websocket: WebSocket, rid: str):
     """Stream per-run events (backlog + live tail) until the run finishes."""
     await websocket.accept()
     try:
+        if not run_service.has_state(rid) and not _run_row_exists(rid):
+            # The run was deleted (or never existed): no event state, no DB
+            # row. Say so instead of subscribing — subscribe would create a
+            # fresh empty state and park the socket on it forever.
+            await websocket.send_json({"type": "run_deleted", "run_id": rid})
+            return
         async for event in run_service.subscribe(rid):
             await websocket.send_json(event)
     except WebSocketDisconnect:

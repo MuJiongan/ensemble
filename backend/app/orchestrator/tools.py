@@ -401,11 +401,6 @@ def run_workflow(
     if not w.output_node_id:
         return {"error": "workflow has no output node — designate one with set_output_node first"}
 
-    # Refuse to start a second run while one is in flight for this workflow.
-    active = _active_run_id(db, wid)
-    if active is not None:
-        return {"error": f"another run ({active}) is already in progress for this workflow; wait for it to finish or cancel it"}
-
     inputs = inputs or {}
     input_node = db.get(models.Node, w.input_node_id)
     if input_node is None:
@@ -1023,8 +1018,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 "(which node failed, with what message) are included too. The user is the "
                 "audience for outputs; on success, point them at the run panel rather than "
                 "summarising. Call only when you can confidently supply the input node's "
-                "required inputs from the conversation; otherwise leave running to the user. "
-                "Refuses if another run is already in flight for this workflow."
+                "required inputs from the conversation; otherwise leave running to the user."
             ),
             "parameters": {
                 "type": "object",
