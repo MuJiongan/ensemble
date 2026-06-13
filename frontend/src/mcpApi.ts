@@ -49,6 +49,33 @@ export async function probeStatus(configJson: string): Promise<McpProbeResult> {
   return (body.servers ?? {}) as McpProbeResult;
 }
 
+/** Probe only the *remote* servers in a config. Local servers spawn a child
+ * process per probe, so unsolicited checks (app startup, intervals) must skip
+ * them; remote probes are one HTTP request each. Returns {} when the config
+ * has no enabled remote servers. */
+export async function probeRemoteStatus(configJson: string): Promise<McpProbeResult> {
+  if (!configJson.trim()) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(configJson);
+  } catch {
+    return {};
+  }
+  const map =
+    parsed && typeof parsed === 'object' && 'mcp' in (parsed as object)
+      ? (parsed as { mcp: unknown }).mcp
+      : parsed;
+  if (!map || typeof map !== 'object') return {};
+  const remote: Record<string, unknown> = {};
+  for (const [name, cfg] of Object.entries(map as Record<string, unknown>)) {
+    if (!cfg || typeof cfg !== 'object') continue;
+    const entry = cfg as { type?: unknown; enabled?: unknown };
+    if (entry.type === 'remote' && entry.enabled !== false) remote[name] = cfg;
+  }
+  if (Object.keys(remote).length === 0) return {};
+  return probeStatus(JSON.stringify(remote));
+}
+
 export interface McpToolInfo {
   server: string;
   server_attr: string;

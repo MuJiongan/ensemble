@@ -9,6 +9,9 @@ import { Hero } from './components/Hero';
 import { SnapshotBanner } from './components/SnapshotBanner';
 import { SnapshotRunPanel } from './components/SnapshotRunPanel';
 import { AlertDialog, ConfirmDialog } from './components/ConfirmDialog';
+import { LlmAuthToast, McpAuthDialog } from './components/ReAuthDialogs';
+import { fetchStatus as fetchAuthStatus } from './auth';
+import { probeRemoteStatus } from './mcpApi';
 import { api } from './api';
 import {
   loadSettings,
@@ -29,6 +32,11 @@ import type {
 } from './types';
 
 type View = 'workflow' | 'settings';
+
+// How often to re-verify that OAuth LLM provider sessions are still alive
+// server-side. The status check also refreshes a near-expiry token, so this
+// doubles as proactive keep-alive.
+const LLM_AUTH_RECHECK_INTERVAL_MS = 5 * 60_000;
 
 /** True when the orchestrator has a usable config — a selected model whose
  * provider is connected (api key pasted, or oauth signed in). */
@@ -108,6 +116,105 @@ export default function App() {
   };
 
   const { currentRun, setCurrentRun, attachToRun, closeWs } = useRunWebSocket(workflows);
+
+  // Servers a run reported as needing authentication (null = no popup). Set
+  // at most once per run id so dismissing the dialog isn't immediately undone
+  // by the next streamed event.
+  const [mcpAuthServers, setMcpAuthServers] = useState<string[] | null>(null);
+  const mcpAuthPromptedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!currentRun || mcpAuthPromptedRef.current.has(currentRun.id)) return;
+    const needing = new Set<string>();
+    for (const ev of currentRun.events) {
+      if (ev.type === 'mcp_status') {
+        for (const [name, st] of Object.entries(ev.servers)) {
+          if (st.status === 'needs_auth') needing.add(name);
+        }
+      } else if (ev.type === 'tool_call_finished') {
+        // An MCP tool call that failed with an auth error mid-run (e.g. a
+        // token that expired after connect) carries this marker.
+        const r = ev.result as { error_type?: string; server?: string } | null | undefined;
+        if (r && r.error_type === 'needs_auth' && r.server) needing.add(r.server);
+      }
+    }
+    if (needing.size > 0) {
+      mcpAuthPromptedRef.current.add(currentRun.id);
+      // Merge into an already-open dialog (a second run can report more
+      // servers while the first popup is still up) instead of replacing it.
+      setMcpAuthServers((prev) =>
+        prev ? Array.from(new Set([...prev, ...needing])) : Array.from(needing),
+      );
+    }
+  }, [currentRun]);
+
+  // An MCP server can be enabled but signed out before any run surfaces it
+  // (fresh browser profile, revoked token). Probe the remote servers once at
+  // startup — they fail fast and cost one HTTP request each — and prompt if
+  // any need sign-in. Local servers are skipped: probing them spawns child
+  // processes, and they have no auth to check.
+  useEffect(() => {
+    let disposed = false;
+    (async () => {
+      try {
+        const res = await probeRemoteStatus(loadSettings().mcp_servers);
+        const needing = Object.entries(res)
+          .filter(([, st]) => st.status === 'needs_auth')
+          .map(([name]) => name);
+        if (disposed || needing.length === 0) return;
+        setMcpAuthServers((prev) =>
+          prev ? Array.from(new Set([...prev, ...needing])) : needing,
+        );
+      } catch {
+        /* backend unreachable — the run-driven prompt still covers it */
+      }
+    })();
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  // OAuth LLM providers store their tokens server-side; the localStorage
+  // "connected" marker can go stale (token expired with a dead refresh, or
+  // signed out elsewhere). Verify the providers the orchestrator/node
+  // selections actually use — on load and periodically — and prompt for
+  // re-login when the backend says the session is gone. Each provider is
+  // prompted at most once per app session so a dismissal sticks.
+  const [staleLlmProviders, setStaleLlmProviders] = useState<string[] | null>(null);
+  const llmAuthPromptedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    let disposed = false;
+    const check = async () => {
+      const s = loadSettings();
+      const ids = new Set<string>();
+      for (const sel of [s.orchestrator, s.node]) {
+        if (sel && s.connections[sel.providerID]?.method === 'oauth') ids.add(sel.providerID);
+      }
+      const candidates = Array.from(ids).filter((id) => !llmAuthPromptedRef.current.has(id));
+      if (candidates.length === 0) return;
+      const stale: string[] = [];
+      await Promise.all(
+        candidates.map(async (id) => {
+          try {
+            const st = await fetchAuthStatus(id);
+            if (st.status === 'signed_out' || st.status === 'error') stale.push(id);
+          } catch {
+            /* backend unreachable or unknown provider — don't false-alarm */
+          }
+        }),
+      );
+      if (disposed || stale.length === 0) return;
+      stale.forEach((id) => llmAuthPromptedRef.current.add(id));
+      setStaleLlmProviders((prev) =>
+        prev ? Array.from(new Set([...prev, ...stale])) : stale,
+      );
+    };
+    void check();
+    const timer = window.setInterval(() => void check(), LLM_AUTH_RECHECK_INTERVAL_MS);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   const attachToRunRef = useRef(attachToRun);
   useEffect(() => { attachToRunRef.current = attachToRun; });
@@ -841,6 +948,31 @@ export default function App() {
           variant="danger"
           onConfirm={doClearChatContext}
           onCancel={() => setDialog({ kind: 'none' })}
+        />
+      )}
+      {/* Re-auth prompts. The LLM one is a corner toast (non-blocking), the
+          MCP one a small modal, so they can coexist. Both are suppressed while
+          Settings is open: it has its own sign-in flows and shows the same
+          warnings inline, and two concurrent OAuth flows would contend for
+          the loopback callback. */}
+      {view !== 'settings' && staleLlmProviders && (
+        <LlmAuthToast
+          providers={staleLlmProviders}
+          onOpenSettings={() => {
+            setStaleLlmProviders(null);
+            setView('settings');
+          }}
+          onClose={() => setStaleLlmProviders(null)}
+        />
+      )}
+      {view !== 'settings' && mcpAuthServers && (
+        <McpAuthDialog
+          servers={mcpAuthServers}
+          onOpenSettings={() => {
+            setMcpAuthServers(null);
+            setView('settings');
+          }}
+          onClose={() => setMcpAuthServers(null)}
         />
       )}
     </div>

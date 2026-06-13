@@ -404,6 +404,40 @@ REGISTRY = {
 # qualified_registry_key}}.
 MCP_NAMESPACES: dict[str, dict[str, str]] = {}
 
+# Per-server connection status, keyed by server_attr (the identifier form used
+# in tool names). Populated at run start alongside MCP_NAMESPACES. Shape:
+# {server_attr: {"server": raw_name, "status": ..., "error": ...}}. Lets a
+# tool-name miss explain *why* (server needs auth / failed to connect) instead
+# of a bare "no tool in registry".
+MCP_SERVER_STATUS: dict[str, dict] = {}
+
+
+def mcp_unavailable_error(name: str) -> dict | None:
+    """If ``name`` (a flat tool name or a server attr) belongs to an MCP server
+    that didn't connect, return an error dict explaining the server's state —
+    including ``error_type: "needs_auth"`` + ``server`` when the failure is an
+    authentication one, so the UI can prompt for re-login. None when the name
+    doesn't match a known-unavailable server."""
+    for attr, st in MCP_SERVER_STATUS.items():
+        if name != attr and not name.startswith(attr + "_"):
+            continue
+        status = st.get("status")
+        if status == "connected":
+            return None
+        server = st.get("server", attr)
+        if status == "needs_auth":
+            return {
+                "error": (
+                    f"MCP server '{server}' needs authentication — "
+                    "the user must sign in to it from Settings, then re-run"
+                ),
+                "error_type": "needs_auth",
+                "server": server,
+            }
+        detail = st.get("error") or status or "not connected"
+        return {"error": f"MCP server '{server}' is not connected: {detail}", "server": server}
+    return None
+
 
 TOOL_SCHEMAS = {
     "shell": {

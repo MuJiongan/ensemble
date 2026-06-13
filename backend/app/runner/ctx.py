@@ -15,7 +15,12 @@ import threading
 from pathlib import Path
 from typing import Callable
 
-from app.runner.tools import MCP_NAMESPACES, REGISTRY, strip_attachment_data
+from app.runner.tools import (
+    MCP_NAMESPACES,
+    REGISTRY,
+    mcp_unavailable_error,
+    strip_attachment_data,
+)
 from app.runner import llm as llm_mod
 
 
@@ -59,6 +64,11 @@ class _ToolsProxy:
             return self._bind(name)
         if name in MCP_NAMESPACES:
             return _ServerProxy(self, name, MCP_NAMESPACES[name])
+        # The tool may belong to an MCP server that failed to connect (needs
+        # auth, unreachable) — explain that instead of a bare registry miss.
+        unavailable = mcp_unavailable_error(name)
+        if unavailable is not None:
+            raise RuntimeError(unavailable["error"])
         raise AttributeError(f"no tool '{name}' in registry")
 
     def _bind(self, name: str):

@@ -147,6 +147,13 @@ export type ToolVia = 'direct' | 'llm';
 export type LLMChunkKind = 'content' | 'reasoning' | 'tool_args';
 
 export type RunEvent =
+  // Emitted once at run start (before run_started) with the connection state
+  // of every configured MCP server, so the UI can prompt for re-login when a
+  // server the run may depend on needs authentication.
+  | {
+      type: 'mcp_status';
+      servers: Record<string, { status: string; tool_count?: number; error?: string }>;
+    }
   | { type: 'run_started'; node_count: number; order: string[] }
   | { type: 'node_started'; node_id: string; inputs: Record<string, unknown> }
   | { type: 'log'; node_id: string; msg: string }

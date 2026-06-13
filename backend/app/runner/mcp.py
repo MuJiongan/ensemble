@@ -610,31 +610,100 @@ class MCPManager:
         self, configs: dict[str, ServerConfig], ready: concurrent.futures.Future
     ) -> None:
         self._stop = asyncio.Event()
-        async with AsyncExitStack() as stack:
-            for name, cfg in configs.items():
+        # One lifecycle task per server, each owning its own AsyncExitStack.
+        # The anyio cancel scopes inside the SDK transports are task-bound:
+        # they must be entered, cancelled, and exited all on the same task.
+        # (The previous shape — asyncio.wait_for(connect) entering a shared
+        # stack — ran the connect in a detached inner task, so a server that
+        # answered 401 cancelled a scope with no live task: initialize() hung
+        # until the 60s timeout and the real error was lost. See _serve_one.)
+        settled = {name: asyncio.Event() for name in configs}
+        tasks = [
+            asyncio.create_task(self._serve_one(cfg, settled[name]))
+            for name, cfg in configs.items()
+        ]
+        for evt in settled.values():
+            await evt.wait()
+        if not ready.done():
+            ready.set_result(True)
+        await self._stop.wait()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _record_connect_failure(self, name: str, exc: BaseException) -> None:
+        if isinstance(exc, TimeoutError):
+            self._status[name] = {
+                "status": "failed",
+                "error": f"timed out connecting after {int(_CONNECT_TIMEOUT_S)}s",
+            }
+            return
+        status = _classify_error(exc)
+        self._status[name] = {
+            "status": status,
+            "error": (
+                "authentication required"
+                if status == "needs_auth"
+                else _format_connect_error(exc)
+            ),
+        }
+
+    async def _serve_one(self, cfg: ServerConfig, settled: asyncio.Event) -> None:
+        """Own one server's full connection lifecycle on a single task.
+
+        The SDK transport runs requests in task-group children; a child
+        failure (401, OAuth error) is reported by *cancelling* the host task's
+        current await, and the real exception only surfaces when the transport
+        contexts unwind. So on any connect failure we close our stack and
+        prefer the exception that teardown raises over the bare cancellation
+        we observed.
+        """
+        name = cfg.name
+        stack = AsyncExitStack()
+        try:
+            try:
+                async with asyncio.timeout(_CONNECT_TIMEOUT_S):
+                    session, descriptors = await self._connect_one(stack, cfg)
+            except BaseException as e:
+                real = e
                 try:
-                    session, descriptors = await asyncio.wait_for(
-                        self._connect_one(stack, cfg), timeout=_CONNECT_TIMEOUT_S
-                    )
-                    self._sessions[name] = session
-                    self._descriptors[name] = descriptors
-                    self._status[name] = {
-                        "status": "connected",
-                        "tool_count": len(descriptors),
-                    }
-                except Exception as e:
-                    status = _classify_error(e)
-                    self._status[name] = {
-                        "status": status,
-                        "error": (
-                            "authentication required"
-                            if status == "needs_auth"
-                            else _format_connect_error(e)
-                        ),
-                    }
-            if not ready.done():
-                ready.set_result(True)
-            await self._stop.wait()
+                    await stack.aclose()
+                except BaseException as close_e:
+                    # Keep a concrete error (timeout, connect refused) over
+                    # teardown noise; trade a bare cancellation for the task
+                    # group's real failure.
+                    if isinstance(e, asyncio.CancelledError):
+                        real = close_e
+                self._record_connect_failure(name, real)
+                return
+
+            self._sessions[name] = session
+            self._descriptors[name] = descriptors
+            self._status[name] = {"status": "connected", "tool_count": len(descriptors)}
+            settled.set()
+
+            assert self._stop is not None
+            try:
+                await self._stop.wait()
+            except BaseException as e:
+                # The transport died mid-life (e.g. token expired and the auth
+                # flow failed during a tool call) — its task group cancelled
+                # us out of the stop wait. Surface why and drop the session.
+                real = e
+                try:
+                    await stack.aclose()
+                except BaseException as close_e:
+                    if isinstance(e, asyncio.CancelledError):
+                        real = close_e
+                self._sessions.pop(name, None)
+                self._record_connect_failure(name, real)
+                return
+            await stack.aclose()
+        except BaseException as e:
+            # Never let a server task die without a recorded status.
+            self._status.setdefault(
+                name, {"status": "failed", "error": _format_connect_error(e)}
+            )
+        finally:
+            settled.set()
 
     async def _connect_one(
         self, stack: AsyncExitStack, cfg: ServerConfig
@@ -722,10 +791,52 @@ class MCPManager:
 
     # -- calls -------------------------------------------------------------
 
+    def _down_result(self, server: str) -> dict | None:
+        """If the server is already known unusable, the error dict a call should
+        return *immediately* — so a dead or de-authed server never makes tool
+        calls wait out the read timeout. Returns None when the server looks
+        usable and a call should be attempted."""
+        st = self._status.get(server) or {}
+        status = st.get("status")
+        if status == "needs_auth":
+            return {
+                "content": "",
+                "isError": True,
+                "server": server,
+                "error_type": "needs_auth",
+                "error": (
+                    f"MCP server '{server}' is not authenticated — "
+                    "sign in to it from Settings, then re-run"
+                ),
+            }
+        if status == "failed":
+            detail = st.get("error") or "connection lost"
+            return {
+                "content": "",
+                "isError": True,
+                "server": server,
+                "error": f"MCP server '{server}' is unavailable: {detail}",
+            }
+        return None
+
     def call(self, server: str, tool: str, arguments: dict) -> dict:
+        # Known-bad server: fail fast with a clear reason. This is what keeps a
+        # server that dropped or de-authed mid-run from making every later call
+        # hang for the full read timeout — the first failure marks status (or
+        # _serve_one does on transport teardown), and everything after returns
+        # here at once.
+        down = self._down_result(server)
+        if down is not None:
+            return down
+
         session = self._sessions.get(server)
         if session is None or self._loop is None:
-            return {"content": "", "isError": True, "error": f"MCP server '{server}' not connected"}
+            return {
+                "content": "",
+                "isError": True,
+                "server": server,
+                "error": f"MCP server '{server}' not connected",
+            }
         cfg = self._configs.get(server)
         timeout = cfg.call_timeout_s if cfg else _CALL_TIMEOUT_S
         coro = session.call_tool(
@@ -735,7 +846,36 @@ class MCPManager:
         try:
             res = fut.result(timeout=timeout + 10)
         except Exception as e:
-            return {"content": "", "isError": True, "error": f"{type(e).__name__}: {e}"}
+            leaf = _unwrap_exception_group(e)
+            # Auth failure (a token that expired mid-run, a 401): mark the
+            # server so the run UI can prompt for re-login and every later call
+            # fast-fails instead of re-hitting the wire.
+            if _classify_error(e) == "needs_auth":
+                self._status[server] = {"status": "needs_auth", "error": "authentication required"}
+                return {
+                    "content": "",
+                    "isError": True,
+                    "server": server,
+                    "error_type": "needs_auth",
+                    "error": (
+                        f"MCP server '{server}' is not authenticated — "
+                        "sign in to it from Settings, then re-run"
+                    ),
+                }
+            # Timed out or the connection died: treat the server as down for
+            # the rest of this run so subsequent calls fail fast (above) rather
+            # than each waiting out the timeout again.
+            if isinstance(e, concurrent.futures.TimeoutError):
+                detail = f"no response within {int(timeout)}s — it may be disconnected"
+            else:
+                detail = f"{type(leaf).__name__}: {leaf}"
+            self._status[server] = {"status": "failed", "error": detail}
+            return {
+                "content": "",
+                "isError": True,
+                "server": server,
+                "error": f"MCP server '{server}' is unavailable: {detail}",
+            }
         return _serialize_result(res)
 
 
@@ -760,6 +900,7 @@ def register_runtime_tools(
     registry: dict,
     schemas: dict,
     namespaces: dict | None = None,
+    statuses: dict | None = None,
 ) -> MCPManager | None:
     """Connect to configured MCP servers and inject their tools into the given
     runtime ``registry`` (name -> callable) and ``schemas`` (name -> JSON
@@ -771,6 +912,10 @@ def register_runtime_tools(
     the dotted form ``ctx.tools.<server_attr>.<tool_attr>(...)`` in addition to
     the flat ``ctx.tools.<qualified>(...)``.
 
+    When ``statuses`` is given, it is populated as ``{server_attr: {"server":
+    raw_name, "status": ..., "error": ...}}`` so tool lookups can explain an
+    unavailable server (see ``tools.mcp_unavailable_error``).
+
     Used by the runner subprocess at run start.
     """
     configs = parse_config(raw_config)
@@ -778,6 +923,9 @@ def register_runtime_tools(
         return None
     manager = MCPManager()
     manager.start(configs)
+    if statuses is not None:
+        for name, st in manager.status().items():
+            statuses[_ident(name)] = {"server": name, **st}
     for desc in manager.descriptors():
         cfg = configs.get(desc.server)
         if cfg and desc.tool in cfg.disabled_tools:
@@ -794,6 +942,14 @@ def register_runtime_tools(
 # config string so repeated turns with unchanged config don't reconnect.
 _DISCOVERY_LOCK = threading.Lock()
 _DISCOVERY_CACHE: dict[str, list[ToolDescriptor]] = {}
+
+
+def invalidate_discovery_cache() -> None:
+    """Drop cached discovery results. Called when a server's credentials
+    change (login / logout): a cached result may reflect the old auth state —
+    e.g. zero tools discovered while the server was signed out."""
+    with _DISCOVERY_LOCK:
+        _DISCOVERY_CACHE.clear()
 
 
 def discover(raw_config: str | None, db_factory: Callable | None = None) -> list[ToolDescriptor]:
