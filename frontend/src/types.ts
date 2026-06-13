@@ -4,6 +4,26 @@ export interface IOPort {
   required: boolean;
 }
 
+/** A file resolved by the backend file-viewer endpoint (GET /api/files). */
+export interface FsFile {
+  path: string;
+  name: string;
+  kind: 'text' | 'markdown' | 'html' | 'image' | 'pdf' | 'video' | 'binary' | 'directory';
+  mime?: string | null;
+  size?: number;
+  /** text / markdown / html */
+  content?: string;
+  truncated?: boolean;
+  total_lines?: number | null;
+  language?: string | null;
+  /** image / pdf, base64 data: URL */
+  data_url?: string;
+  /** directory listing */
+  entries?: { name: string; is_dir: boolean }[];
+  total_entries?: number;
+  note?: string;
+}
+
 export interface NodeConfig {
   model: string;
 }
