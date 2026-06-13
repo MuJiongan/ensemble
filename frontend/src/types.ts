@@ -18,9 +18,6 @@ export interface FsFile {
   language?: string | null;
   /** image / pdf, base64 data: URL */
   data_url?: string;
-  /** directory listing */
-  entries?: { name: string; is_dir: boolean }[];
-  total_entries?: number;
   note?: string;
 }
 

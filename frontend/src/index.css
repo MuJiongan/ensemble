@@ -1736,7 +1736,7 @@ textarea.field::-webkit-scrollbar {
   box-sizing: border-box;
 }
 
-/* file viewer: rendered/source toggle + directory listing */
+/* file viewer: rendered/source toggle */
 .file-view__toggle {
   display: inline-flex;
   align-items: center;
@@ -1745,24 +1745,6 @@ textarea.field::-webkit-scrollbar {
   margin-right: 2px;
   border-right: 1px solid var(--rule);
 }
-.file-view__entry {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 6px 8px;
-  margin: 1px -8px;
-  background: transparent;
-  border: 0;
-  border-radius: 3px;
-  cursor: pointer;
-  text-align: left;
-  color: var(--ink-2);
-  font-size: 12.5px;
-  transition: background .12s;
-}
-.file-view__entry:hover { background: var(--surface-chip); color: var(--ink); }
-.file-view__entry .ed-btn__mark { font-size: 12px; color: var(--ink-4); }
 
 /* inline clickable file path (chat prose, json leaves, code spans) */
 .file-path-link {

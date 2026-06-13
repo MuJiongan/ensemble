@@ -7,9 +7,11 @@ import { CloseButton } from './CloseButton';
 
 /**
  * Full-height side panel that resolves a file *path* to its contents and
- * renders it by type — text/code, markdown, html, image, pdf, directory.
- * Markdown and HTML get a rendered/source toggle; videos and opaque binaries
- * are reported rather than previewed.
+ * renders it by type — text/code, markdown, html, image, pdf. Markdown and
+ * HTML get a rendered/source toggle; videos and opaque binaries are reported
+ * rather than previewed. A path that points at a directory isn't browsed
+ * in-app — it's handed straight to the OS file manager (reveal) and the panel
+ * closes.
  *
  * Distinct from ValueViewer's `ViewerOverlay`, which renders an in-memory value
  * the frontend already holds. Here the browser has only a path string, so the
@@ -26,17 +28,6 @@ function basename(path: string): string {
   const trimmed = path.replace(/\/+$/, '');
   const i = trimmed.lastIndexOf('/');
   return i >= 0 ? trimmed.slice(i + 1) || trimmed : trimmed;
-}
-
-function parentDir(path: string): string {
-  const trimmed = path.replace(/\/+$/, '');
-  const i = trimmed.lastIndexOf('/');
-  if (i <= 0) return '/';
-  return trimmed.slice(0, i);
-}
-
-function joinPath(dir: string, name: string): string {
-  return `${dir.replace(/\/+$/, '')}/${name.replace(/\/+$/, '')}`;
 }
 
 const preStyle: React.CSSProperties = {
@@ -68,51 +59,14 @@ function NotPreviewable({ file, lead }: { file: FsFile; lead: string }) {
   );
 }
 
-function DirectoryView({ file, onNavigate }: { file: FsFile; onNavigate: (p: string) => void }) {
-  const entries = file.entries ?? [];
-  return (
-    <div>
-      <button
-        type="button"
-        className="file-view__entry"
-        onClick={() => onNavigate(parentDir(file.path))}
-      >
-        <span className="ed-btn__mark" aria-hidden>↑</span>
-        <span className="mono">..</span>
-      </button>
-      {entries.map((e) => (
-        <button
-          key={e.name}
-          type="button"
-          className="file-view__entry"
-          onClick={() => onNavigate(joinPath(file.path, e.name))}
-        >
-          <span className="ed-btn__mark" aria-hidden>{e.is_dir ? '📁' : '▤'}</span>
-          <span className="mono">{e.name}{e.is_dir ? '/' : ''}</span>
-        </button>
-      ))}
-      {entries.length === 0 && (
-        <p className="serif" style={{ fontStyle: 'italic', color: 'var(--ink-4)' }}>
-          empty directory
-        </p>
-      )}
-    </div>
-  );
-}
-
 function FileBody({
   file,
   view,
-  onNavigate,
 }: {
   file: FsFile;
   view: 'rendered' | 'source';
-  onNavigate: (p: string) => void;
 }) {
   switch (file.kind) {
-    case 'directory':
-      return <DirectoryView file={file} onNavigate={onNavigate} />;
-
     case 'image':
       return (
         <img
@@ -168,7 +122,7 @@ interface FileViewerOverlayProps {
 }
 
 export function FileViewerOverlay({ path: initialPath, title, subtitle, onClose }: FileViewerOverlayProps) {
-  const [path, setPath] = useState(initialPath);
+  const [path] = useState(initialPath);
   const [file, setFile] = useState<FsFile | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -198,7 +152,14 @@ export function FileViewerOverlay({ path: initialPath, title, subtitle, onClose 
     api
       .readFile(path)
       .then((f) => {
-        if (!cancelled) setFile(f);
+        if (cancelled) return;
+        if (f.kind === 'directory') {
+          // Folders aren't browsed in-app — hand off to the OS file manager.
+          api.openFileExternally(f.path, true).catch(() => {});
+          onClose();
+          return;
+        }
+        setFile(f);
       })
       .catch((e: unknown) => {
         if (cancelled) return;
@@ -312,7 +273,7 @@ export function FileViewerOverlay({ path: initialPath, title, subtitle, onClose 
             </div>
           )}
           {!loading && !error && file && (
-            <FileBody file={file} view={view} onNavigate={setPath} />
+            <FileBody file={file} view={view} />
           )}
         </div>
       </aside>

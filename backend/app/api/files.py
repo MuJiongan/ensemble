@@ -29,7 +29,6 @@ router = APIRouter(prefix="/api/files", tags=["files"])
 # to keep one giant file from pinning memory or freezing the panel.
 _TEXT_MAX_BYTES = 2 * 1024 * 1024          # 2 MB of decoded text
 _INLINE_MAX_BYTES = 25 * 1024 * 1024       # base64-inlined image/pdf ceiling
-_DIR_MAX_ENTRIES = 2000
 _READ_SAMPLE_BYTES = 4096
 
 # Videos are explicitly out of scope for preview — we report the kind so the
@@ -126,28 +125,11 @@ def _classify_file(p: Path) -> dict:
     }
 
 
-def _list_directory(p: Path) -> dict:
-    try:
-        children = sorted(
-            p.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())
-        )
-    except OSError as e:
-        raise HTTPException(status_code=400, detail=f"{type(e).__name__}: {e}")
-    entries = [
-        {"name": c.name, "is_dir": c.is_dir()}
-        for c in children[:_DIR_MAX_ENTRIES]
-    ]
-    out = {
-        "path": str(p),
-        "name": p.name or str(p),
-        "kind": "directory",
-        "entries": entries,
-        "total_entries": len(children),
-    }
-    if len(children) > _DIR_MAX_ENTRIES:
-        out["truncated"] = True
-        out["note"] = f"showing first {_DIR_MAX_ENTRIES} of {len(children)} entries"
-    return out
+def _directory_info(p: Path) -> dict:
+    """Directories aren't previewed in-app — the UI reveals them in the OS file
+    manager instead. We only confirm it's a directory so the caller knows to
+    hand off rather than render; no listing is read."""
+    return {"path": str(p), "name": p.name or str(p), "kind": "directory"}
 
 
 class OpenRequest(BaseModel):
@@ -209,7 +191,7 @@ def get_file(path: str = Query(..., description="Absolute path to read")) -> dic
         pass
 
     if p.is_dir():
-        return _list_directory(p)
+        return _directory_info(p)
     if p.is_file():
         return _classify_file(p)
     raise HTTPException(status_code=404, detail=f"no file or directory at: {path}")
