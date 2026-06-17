@@ -103,7 +103,7 @@ function FileBody({
             title={file.name}
             sandbox=""
             srcDoc={file.content ?? ''}
-            style={{ width: '100%', height: '78vh', border: '1px solid var(--rule)', borderRadius: 4, background: '#fff' }}
+            style={{ width: '100%', height: '78vh', border: '1px solid var(--rule)', borderRadius: 4, background: 'var(--surface-raised)' }}
           />
         )
         : <pre className="mono" style={preStyle}>{file.content}</pre>;

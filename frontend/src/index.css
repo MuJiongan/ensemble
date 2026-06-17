@@ -76,62 +76,62 @@
 [data-theme="dark"] {
   color-scheme: dark;
 
-  /* warm espresso — parchment text, muted (not bright white) */
-  --paper:        #1c1916;
-  --ink:          #e8e2d8;
-  --ink-2:        #cbc4b8;
-  --ink-3:        #9f9789;
-  --ink-4:        #736c60;
-  --ink-5:        #524c44;
-  --rule:         rgba(232, 226, 216, 0.09);
-  --rule-2:       rgba(232, 226, 216, 0.045);
+  /* warm twilight — lifted ground, clearer layers, easier long-session reading */
+  --paper:        #242019;
+  --ink:          #f0ebe3;
+  --ink-2:        #d8d2c6;
+  --ink-3:        #b5aea0;
+  --ink-4:        #918a7c;
+  --ink-5:        #6e6760;
+  --rule:         rgba(240, 235, 227, 0.13);
+  --rule-2:       rgba(240, 235, 227, 0.065);
 
-  --surface-raised: #211e1a;
-  --field-bg:         color-mix(in oklch, var(--accent) 5%, var(--surface-raised));
-  --field-border:     var(--rule);
-  --field-inset:      inset 0 1px 3px rgba(0, 0, 0, 0.14);
-  --field-focus-bg:   color-mix(in oklch, var(--accent) 8%, var(--surface-raised));
+  --surface-raised: #2c2822;
+  --field-bg:         color-mix(in oklch, var(--accent) 6%, var(--surface-raised));
+  --field-border:     rgba(240, 235, 227, 0.11);
+  --field-inset:      inset 0 1px 2px rgba(0, 0, 0, 0.12);
+  --field-focus-bg:   color-mix(in oklch, var(--accent) 10%, var(--surface-raised));
   --field-focus-ring: var(--accent-soft);
-  --surface-chip:   color-mix(in oklch, var(--accent) 14%, var(--paper));
-  --surface-hover:  color-mix(in oklch, var(--accent) 9%, var(--paper));
-  --overlay:        rgba(10, 8, 6, 0.55);
-  --hover:          rgba(232, 226, 216, 0.04);
-  --hover-strong:   rgba(232, 226, 216, 0.07);
-  --hover-subtle:   rgba(232, 226, 216, 0.03);
-  --muted-fill:     rgba(232, 226, 216, 0.025);
-  --muted-fill-2:   rgba(232, 226, 216, 0.05);
-  --err-bg:         rgba(220, 105, 90, 0.08);
-  --danger-bg:      rgba(220, 105, 90, 0.10);
-  --danger-bg-hover: rgba(220, 105, 90, 0.16);
-  --shadow-1:       rgba(0, 0, 0, 0.18);
-  --shadow-2:       rgba(0, 0, 0, 0.38);
-  --shadow-3:       rgba(0, 0, 0, 0.48);
-  --shadow-accent:  rgba(100, 130, 95, 0.18);
-  --dot-color:      rgba(232, 226, 216, 0.06);
-  --scrollbar:      rgba(232, 226, 216, 0.12);
+  --surface-chip:   color-mix(in oklch, var(--accent) 16%, var(--paper));
+  --surface-hover:  color-mix(in oklch, var(--accent) 11%, var(--paper));
+  --overlay:        rgba(8, 6, 4, 0.50);
+  --hover:          rgba(240, 235, 227, 0.055);
+  --hover-strong:   rgba(240, 235, 227, 0.085);
+  --hover-subtle:   rgba(240, 235, 227, 0.04);
+  --muted-fill:     rgba(240, 235, 227, 0.035);
+  --muted-fill-2:   rgba(240, 235, 227, 0.065);
+  --err-bg:         rgba(220, 105, 90, 0.10);
+  --danger-bg:      rgba(220, 105, 90, 0.12);
+  --danger-bg-hover: rgba(220, 105, 90, 0.18);
+  --shadow-1:       rgba(0, 0, 0, 0.14);
+  --shadow-2:       rgba(0, 0, 0, 0.28);
+  --shadow-3:       rgba(0, 0, 0, 0.36);
+  --shadow-accent:  rgba(110, 145, 105, 0.22);
+  --dot-color:      rgba(240, 235, 227, 0.075);
+  --scrollbar:      rgba(240, 235, 227, 0.16);
 
-  /* emphasis buttons — ink outline on espresso ground */
+  /* emphasis buttons — ink outline on twilight ground */
   --btn-primary-bg:          transparent;
-  --btn-primary-fg:          var(--ink-2);
+  --btn-primary-fg:          var(--ink);
   --btn-primary-bg-hover:    var(--hover-subtle);
   --btn-primary-border:      var(--rule);
   --btn-primary-border-hover: var(--ink-4);
-  --btn-primary-mark:        var(--ink-4);
-  --btn-primary-mark-hover:  var(--ink-3);
+  --btn-primary-mark:        var(--ink-3);
+  --btn-primary-mark-hover:  var(--ink-2);
   --btn-primary-disabled-fg: var(--ink-5);
 
-  --accent:       oklch(0.66 0.08 155);
-  --accent-soft:  oklch(0.66 0.08 155 / 0.16);
-  --accent-ink:   oklch(0.72 0.07 155);
+  --accent:       oklch(0.70 0.09 152);
+  --accent-soft:  oklch(0.70 0.09 152 / 0.20);
+  --accent-ink:   oklch(0.76 0.08 152);
 
-  --state-idle:    #736c60;
-  --state-run:     oklch(0.76 0.11 75);
-  --state-run-glow: oklch(0.76 0.11 75 / 0.40);
-  --state-run-ring: oklch(0.76 0.11 75 / 0.22);
-  --state-ok:      oklch(0.68 0.10 142);
-  --state-err:     oklch(0.65 0.12 28);
-  --state-warn:    oklch(0.74 0.10 68);
-  --state-skip:    #6f6860;
+  --state-idle:    #8a8276;
+  --state-run:     oklch(0.78 0.11 75);
+  --state-run-glow: oklch(0.78 0.11 75 / 0.42);
+  --state-run-ring: oklch(0.78 0.11 75 / 0.24);
+  --state-ok:      oklch(0.72 0.10 142);
+  --state-err:     oklch(0.68 0.12 28);
+  --state-warn:    oklch(0.76 0.10 68);
+  --state-skip:    #7a7368;
 }
 
 html, body, #root {
@@ -1410,6 +1410,83 @@ button.port-card:hover .port-card__open {
   color: var(--ink-3);
 }
 
+/* segmented toggle — local/remote; quiet neutral chip */
+.type-toggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  flex-shrink: 0;
+  background: transparent;
+}
+.type-toggle__opt {
+  background: transparent;
+  color: var(--ink-4);
+  border: 1px solid transparent;
+  padding: 4px 12px;
+  font-family: var(--serif);
+  font-size: 12.5px;
+  font-style: italic;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background .15s ease, color .15s ease, border-color .15s ease;
+}
+.type-toggle__opt:hover:not([aria-pressed="true"]) {
+  color: var(--ink-3);
+}
+.type-toggle__opt[aria-pressed="true"] {
+  background: color-mix(in oklch, var(--ink) 7%, var(--paper));
+  color: var(--ink-2);
+  border-color: var(--rule-2);
+}
+.type-toggle__opt:disabled {
+  cursor: not-allowed;
+}
+
+/* enable toggle — empty frame (off), inset sage seal (on) */
+.enable-toggle {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  padding: 6px;
+  border: 1px solid var(--rule-2);
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color .15s ease, background .15s ease;
+}
+.enable-toggle:hover:not(:disabled) {
+  border-color: var(--rule);
+  background: var(--hover-subtle);
+}
+.enable-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.enable-toggle__fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 1px;
+  background: transparent;
+}
+.enable-toggle--on {
+  border-color: color-mix(in oklch, var(--accent) 30%, var(--rule));
+  background: color-mix(in oklch, var(--accent) 5%, var(--paper));
+}
+.enable-toggle--on .enable-toggle__fill {
+  background: var(--accent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+.enable-toggle:focus-visible {
+  outline: 1px solid var(--accent-soft);
+  outline-offset: 2px;
+}
+
 /* editorial inputs — inset surface, typographic variants, shared shell */
 .field,
 .field-shell {
@@ -1909,6 +1986,21 @@ textarea.field::-webkit-scrollbar {
 
 .shadow-card {
   box-shadow: 0 1px 0 var(--shadow-1), 0 24px 60px -28px var(--shadow-3);
+}
+
+/* dark mode — softer depth, clearer cards without heavy black crush */
+[data-theme="dark"] .node {
+  box-shadow: 0 1px 0 var(--shadow-1), 0 8px 22px -14px var(--shadow-2);
+}
+[data-theme="dark"] .hero-input {
+  box-shadow: 0 1px 0 var(--shadow-1), 0 10px 28px -16px var(--shadow-2);
+}
+[data-theme="dark"] .shadow-card {
+  box-shadow: 0 1px 0 var(--shadow-1), 0 16px 44px -24px var(--shadow-3);
+}
+[data-theme="dark"] .chat-msg-user {
+  background: color-mix(in oklch, var(--accent) 8%, var(--surface-raised));
+  border-left-color: var(--ink-3);
 }
 
 /* KaTeX inherits editorial ink in dark mode */

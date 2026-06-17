@@ -1655,8 +1655,7 @@ function EnabledToggle({
   locked?: boolean;
   lockedTitle?: string;
 }) {
-  const trackOn = 'var(--accent)';
-  const trackOff = 'var(--ink-5, #b8b3a8)';
+  const lockedTitleText = locked ? (lockedTitle ?? 'unavailable') : undefined;
   return (
     <button
       type="button"
@@ -1664,54 +1663,16 @@ function EnabledToggle({
       aria-checked={value}
       disabled={locked}
       onClick={() => onChange(!value)}
-      className="serif"
+      className={`enable-toggle${value ? ' enable-toggle--on' : ''}`}
       title={
         locked
-          ? lockedTitle ?? 'unavailable'
+          ? lockedTitleText
           : value
-            ? 'click to disable this server'
-            : 'click to enable this server'
+            ? 'click to disable'
+            : 'click to enable'
       }
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 10,
-        padding: 0,
-        border: 0,
-        background: 'transparent',
-        color: value ? 'var(--ink-2)' : 'var(--ink-4)',
-        cursor: locked ? 'default' : 'pointer',
-        opacity: locked ? 0.5 : 1,
-        fontStyle: 'italic',
-        fontSize: 12.5,
-      }}
     >
-      <span
-        aria-hidden
-        style={{
-          position: 'relative',
-          width: 32,
-          height: 18,
-          borderRadius: 999,
-          background: value ? trackOn : trackOff,
-          transition: 'background 120ms ease',
-          flex: '0 0 auto',
-        }}
-      >
-        <span
-          style={{
-            position: 'absolute',
-            top: 2,
-            left: value ? 16 : 2,
-            width: 14,
-            height: 14,
-            borderRadius: '50%',
-            background: 'var(--paper, #fff)',
-            boxShadow: '0 1px 2px rgba(0,0,0,0.25)',
-            transition: 'left 120ms ease',
-          }}
-        />
-      </span>
+      <span className="enable-toggle__fill" aria-hidden />
     </button>
   );
 }
@@ -1722,32 +1683,13 @@ function TypeToggle({ value, onChange }: { value: McpType; onChange: (t: McpType
       type="button"
       onClick={() => onChange(t)}
       aria-pressed={value === t}
-      className="serif"
-      style={{
-        background: value === t ? 'var(--ink)' : 'transparent',
-        color: value === t ? 'var(--paper)' : 'var(--ink-3)',
-        border: 0,
-        padding: '4px 12px',
-        fontSize: 12.5,
-        fontStyle: 'italic',
-        cursor: 'pointer',
-        borderRadius: 3,
-      }}
+      className="type-toggle__opt"
     >
       {label}
     </button>
   );
   return (
-    <div
-      style={{
-        display: 'inline-flex',
-        gap: 2,
-        padding: 2,
-        border: '1px solid var(--rule)',
-        borderRadius: 4,
-        flexShrink: 0,
-      }}
-    >
+    <div className="type-toggle">
       {opt('local', 'local')}
       {opt('remote', 'remote')}
     </div>
