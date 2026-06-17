@@ -29,6 +29,7 @@ import httpx
 from app import compaction
 from app.catalog import models_dev as md
 from app.llm.openai_responses import (
+    _variant_body,
     parse_responses_sse,
     to_responses_input,
     to_responses_tools,
@@ -100,13 +101,6 @@ def _request_headers(access_token: str, account_id: Optional[str]) -> dict:
     return h
 
 
-def _reasoning_extra(reasoning_effort: Optional[str]) -> dict:
-    """Responses-API reasoning control derived from the selected variant."""
-    if not reasoning_effort:
-        return {}
-    return {"reasoning": {"effort": reasoning_effort, "summary": "auto"}}
-
-
 def call_codex_stream(
     model: str,
     messages: list[dict],
@@ -114,14 +108,16 @@ def call_codex_stream(
     access_token: str,
     account_id: Optional[str],
     cancel_event: Optional[threading.Event] = None,
-    reasoning_effort: Optional[str] = None,
+    variant_opts: dict | None = None,
 ) -> Iterator[tuple[str, Any]]:
     """Streaming entry point for the orchestrator agent loop.
 
     Same signature shape as :func:`app.orchestrator.agent.llm_stream._call_llm_stream`,
     just routed through the Codex Responses API.
     """
-    payload = _request_payload(model, messages, tool_specs, {"stream": True, **_reasoning_extra(reasoning_effort)})
+    payload = _request_payload(
+        model, messages, tool_specs, {"stream": True, **_variant_body(variant_opts)}
+    )
     headers = _request_headers(access_token, account_id)
     with httpx.Client(timeout=None) as client:
         with client.stream("POST", CODEX_API_ENDPOINT, headers=headers, json=payload) as r:
@@ -148,7 +144,7 @@ def call_codex_chat(
     call_id: Optional[str],
     access_token: str,
     account_id: Optional[str],
-    reasoning_effort: Optional[str] = None,
+    variant_opts: dict | None = None,
     **opts,
 ) -> dict:
     """Node-runtime entry point — mirrors ``runner.llm.call_llm``. Runs the
@@ -188,7 +184,7 @@ def call_codex_chat(
         parts: list[str] = []
         for item in call_codex_stream(
             model, [*head, {"role": "user", "content": prompt}], [],
-            access_token, account_id, reasoning_effort=reasoning_effort,
+            access_token, account_id, variant_opts=variant_opts,
         ):
             if item[0] == "done":
                 return (item[1]["message"].get("content") or "").strip()
@@ -232,7 +228,7 @@ def call_codex_chat(
         if streaming:
             for item in call_codex_stream(
                 model, messages, tool_schemas, access_token, account_id,
-                reasoning_effort=reasoning_effort,
+                variant_opts=variant_opts,
             ):
                 kind = item[0]
                 if kind == "text":
@@ -268,7 +264,7 @@ def call_codex_chat(
             # Non-streaming fallback: drain the stream with no callbacks.
             for item in call_codex_stream(
                 model, messages, tool_schemas, access_token, account_id,
-                reasoning_effort=reasoning_effort,
+                variant_opts=variant_opts,
             ):
                 if item[0] == "done":
                     assembled_msg = item[1]["message"]

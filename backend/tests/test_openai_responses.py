@@ -252,6 +252,49 @@ def test_parse_stream_raises_on_failure():
         assert "boom" in str(e)
 
 
+def test_parse_stream_raises_on_nested_error_event():
+    """Codex and production OpenAI often nest stream errors under ``error``."""
+    lines = _sse(
+        [
+            {
+                "type": "error",
+                "error": {
+                    "code": "context_length_exceeded",
+                    "message": "Your input exceeds the context window.",
+                },
+            }
+        ]
+    )
+    try:
+        list(resp.parse_responses_sse(iter(lines)))
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as e:
+        assert "context_length_exceeded" in str(e)
+        assert "context window" in str(e)
+
+
+def test_stream_error_message_top_level():
+    msg = resp._stream_error_message(
+        {"type": "error", "code": "too_many_requests", "message": "Slow down"}
+    )
+    assert msg == "too_many_requests: Slow down"
+
+
+def test_codex_payload_merges_variant_body():
+    """Codex must send the same Responses variant fields as the API-key path."""
+    from app.auth.codex_api import _request_payload
+    from app.llm import router
+
+    plan = router.plan("codex", "gpt-5.3-codex", "high")
+    extra = {"stream": True, **resp._variant_body(plan.variant_opts)}
+    payload = _request_payload(
+        "gpt-5.3-codex", [{"role": "user", "content": "hi"}], [], extra
+    )
+    assert payload["stream"] is True
+    assert payload["include"] == ["reasoning.encrypted_content"]
+    assert payload["reasoning"] == {"effort": "high", "summary": "auto"}
+
+
 def test_parse_non_streaming_response_json():
     msg, usage = resp._parse_response_json(
         {

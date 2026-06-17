@@ -258,6 +258,25 @@ def _usage_from(u: dict) -> dict:
     return usage
 
 
+def _stream_error_message(evt: dict, *, fallback: str = "stream error") -> str:
+    """Human-readable text from a Responses API error payload.
+
+    Production streams (including Codex) often nest details under ``error``,
+    while the spec also allows top-level ``message`` / ``code`` — check both."""
+    nested = evt.get("error")
+    if isinstance(nested, dict):
+        msg = nested.get("message")
+        if msg:
+            code = nested.get("code") or nested.get("type")
+            return f"{code}: {msg}" if code else str(msg)
+    msg = evt.get("message")
+    if msg:
+        code = evt.get("code")
+        return f"{code}: {msg}" if code else str(msg)
+    code = evt.get("code")
+    return str(code) if code else fallback
+
+
 def parse_responses_sse(lines: Iterator[str], cancel_event=None) -> Iterator[tuple]:
     """Parse a Responses API SSE stream (``data:`` lines) — the entry point
     for raw-httpx callers (Codex). See :func:`parse_responses_events`."""
@@ -377,11 +396,16 @@ def parse_responses_events(events: Iterator[dict]) -> Iterator[tuple]:
 
         if ev_type == "response.failed":
             resp = evt.get("response") or {}
-            err = (resp.get("error") or {}).get("message") or "response failed"
-            raise RuntimeError(f"OpenAI Responses: {err}")
+            err = resp.get("error")
+            msg = (
+                _stream_error_message({"error": err}, fallback="response failed")
+                if isinstance(err, dict)
+                else "response failed"
+            )
+            raise RuntimeError(f"OpenAI Responses: {msg}")
 
         if ev_type == "error":
-            raise RuntimeError(f"OpenAI Responses: {evt.get('message') or 'stream error'}")
+            raise RuntimeError(f"OpenAI Responses: {_stream_error_message(evt)}")
 
     tool_calls = [fn_items[i] for i in fn_order if fn_items[i]["function"]["name"]]
     msg: dict = {"role": "assistant", "content": "".join(content_parts)}

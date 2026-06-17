@@ -62,9 +62,9 @@ def call_llm(
     if (os.getenv("LLM_PROVIDER_ID") or "").strip() == "codex":
         from app.auth.codex_api import call_codex_chat
         from app.llm import router as llm_router
-        effort = llm_router.plan(
+        codex_plan = llm_router.plan(
             "codex", model, os.getenv("DEFAULT_NODE_VARIANT") or None
-        ).variant_opts.get("reasoningEffort")
+        )
         return call_codex_chat(
             model=model,
             prompt=prompt,
@@ -75,7 +75,7 @@ def call_llm(
             call_id=call_id,
             access_token=os.getenv("LLM_API_KEY", ""),
             account_id=os.getenv("LLM_ACCOUNT_ID") or None,
-            reasoning_effort=effort,
+            variant_opts=codex_plan.variant_opts,
             **opts,
         )
 
