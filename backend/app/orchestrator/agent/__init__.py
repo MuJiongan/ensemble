@@ -123,12 +123,12 @@ def _resolve_llm_stream(
             raise RuntimeError("Codex/ChatGPT sign-in required (no active credential)")
         from app.auth.codex_api import call_codex_stream
         from app.llm import router as llm_router
-        effort = llm_router.plan(
+        codex_plan = llm_router.plan(
             "codex", model, os.getenv("DEFAULT_ORCHESTRATOR_VARIANT") or None
-        ).variant_opts.get("reasoningEffort")
+        )
         codex_stream = call_codex_stream(
             model, messages, tool_specs, creds.access_token, creds.account_id, cancel_event,
-            reasoning_effort=effort,
+            variant_opts=codex_plan.variant_opts,
         )
         # The Codex SSE parser also emits ("tool_args", idx, name, delta)
         # 4-tuples so the node-runtime UI can render streaming tool-arg
