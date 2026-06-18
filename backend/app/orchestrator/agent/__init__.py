@@ -315,6 +315,10 @@ def run_turn(
         yield {"kind": "done"}
         return
     tool_specs = orch_tools.llm_tool_specs()
+    # Pin custom instructions for the whole turn. The middleware sets process env
+    # once per request; concurrent requests can mutate it while this generator
+    # is still streaming.
+    pinned_custom_instructions = os.getenv("ORCHESTRATOR_CUSTOM_INSTRUCTIONS", "").strip()
 
     def _cancellation_events():
         """Yield the right tail-events when a cancel is observed: a noisy
@@ -336,7 +340,9 @@ def run_turn(
             history = _strip_unsupported_attachments(_history_messages(db, session_id), model)
             mcp_msg = mcp_tools_message()
             messages = (
-                [{"role": "system", "content": build_system_prompt()}]
+                [{"role": "system", "content": build_system_prompt(
+                    custom_instructions=pinned_custom_instructions,
+                )}]
                 + ([mcp_msg] if mcp_msg else [])
                 + history
             )

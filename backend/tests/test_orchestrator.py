@@ -210,6 +210,20 @@ def test_build_system_prompt_empty_custom_instructions(monkeypatch):
     assert build_system_prompt() == SYSTEM_PROMPT
 
 
+def test_build_system_prompt_pinned_empty_skips_env(monkeypatch):
+    monkeypatch.setenv("ORCHESTRATOR_CUSTOM_INSTRUCTIONS", "stale env value")
+    prompt = build_system_prompt(custom_instructions="")
+    assert "stale env value" not in prompt
+    assert "# custom instructions" not in prompt
+
+
+def test_build_system_prompt_pinned_value_overrides_env(monkeypatch):
+    monkeypatch.setenv("ORCHESTRATOR_CUSTOM_INSTRUCTIONS", "from env")
+    prompt = build_system_prompt(custom_instructions="pinned rule")
+    assert "pinned rule" in prompt
+    assert "from env" not in prompt
+
+
 def test_build_system_prompt_appends_custom_instructions_section(monkeypatch):
     monkeypatch.setenv(
         "ORCHESTRATOR_CUSTOM_INSTRUCTIONS",

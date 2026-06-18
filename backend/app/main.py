@@ -57,6 +57,10 @@ _MCP_SERVERS_HEADER = "x-mcp-servers"
 _MCP_SERVERS_ENV = "MCP_SERVERS"
 _CUSTOM_INSTRUCTIONS_HEADER = "x-custom-instructions"
 _CUSTOM_INSTRUCTIONS_ENV = "ORCHESTRATOR_CUSTOM_INSTRUCTIONS"
+# Frontend sends this when custom instructions are explicitly cleared — a
+# non-empty sentinel so the header is always present (empty header values are
+# sometimes omitted by clients, which would leave stale process env).
+_EMPTY_CUSTOM_INSTRUCTIONS = "."
 
 
 @asynccontextmanager
@@ -117,11 +121,15 @@ async def apply_settings_headers(request: Request, call_next):
     custom_instructions = request.headers.get(_CUSTOM_INSTRUCTIONS_HEADER)
     if custom_instructions is not None:
         # Sent base64-encoded so multi-line / non-Latin1 free-text survives as
-        # a header value (see localSettings.encodeHeaderText).
-        try:
-            decoded = base64.b64decode(custom_instructions).decode("utf-8")
-        except (ValueError, UnicodeDecodeError):
+        # a header value (see localSettings.encodeHeaderText). The '.' sentinel
+        # means explicitly cleared.
+        if custom_instructions == _EMPTY_CUSTOM_INSTRUCTIONS:
             decoded = ""
+        else:
+            try:
+                decoded = base64.b64decode(custom_instructions).decode("utf-8")
+            except (ValueError, UnicodeDecodeError):
+                decoded = ""
         if decoded.strip():
             os.environ[_CUSTOM_INSTRUCTIONS_ENV] = decoded.strip()
         else:

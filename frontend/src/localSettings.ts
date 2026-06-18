@@ -10,8 +10,14 @@
  */
 import type { ModelSelection, ProviderConnection, Settings } from './types';
 
-const KEY = 'orchestra:settings';
+export const SETTINGS_STORAGE_KEY = 'orchestra:settings';
+const KEY = SETTINGS_STORAGE_KEY;
 export const SETTINGS_CHANGED_EVENT = 'orchestra:settings-changed';
+
+/** Non-empty sentinel for explicitly cleared custom instructions. Some HTTP
+ * clients omit headers whose value is `''`, which would leave a stale value in
+ * the backend's process env. */
+const EMPTY_CUSTOM_INSTRUCTIONS_HEADER = '.';
 
 /** Which LLM target a request is for. `base` sends no LLM provider headers. */
 export type LlmTarget = 'orchestrator' | 'node' | 'base';
@@ -79,19 +85,26 @@ export function loadSettings(): Settings {
       saveSettings(migrated);
       return migrated;
     }
-    return {
+    const custom_instructions =
+      'custom_instructions' in parsed && typeof parsed.custom_instructions === 'string'
+        ? parsed.custom_instructions
+        : typeof parsed.orchestrator_preferences === 'string'
+          ? parsed.orchestrator_preferences
+          : '';
+    const settings: Settings = {
       connections: asConnections(parsed.connections),
       parallel_api_key: typeof parsed.parallel_api_key === 'string' ? parsed.parallel_api_key : '',
       orchestrator: asSelection(parsed.orchestrator),
       node: asSelection(parsed.node),
       mcp_servers: typeof parsed.mcp_servers === 'string' ? parsed.mcp_servers : '',
-      custom_instructions:
-        typeof parsed.custom_instructions === 'string'
-          ? parsed.custom_instructions
-          : typeof parsed.orchestrator_preferences === 'string'
-            ? parsed.orchestrator_preferences
-            : '',
+      custom_instructions,
     };
+    // One-time cleanup: drop the pre-rename `orchestrator_preferences` key so
+    // a cleared textarea can't resurrect stale text from the legacy field.
+    if ('orchestrator_preferences' in parsed) {
+      saveSettings(settings);
+    }
+    return settings;
   } catch {
     return { ...EMPTY, connections: {} };
   }
@@ -231,9 +244,9 @@ function applyTarget(
   }
 }
 
-/** UTF-8-safe base64 for header transport. Empty in → empty out. */
+/** UTF-8-safe base64 for header transport. Empty in → explicit clear sentinel. */
 function encodeHeaderText(value: string): string {
-  if (!value) return '';
+  if (!value) return EMPTY_CUSTOM_INSTRUCTIONS_HEADER;
   const bytes = new TextEncoder().encode(value);
   let bin = '';
   for (const b of bytes) bin += String.fromCharCode(b);
