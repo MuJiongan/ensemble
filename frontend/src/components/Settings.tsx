@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { ModelSelection, ProviderConnection, Settings } from '../types';
-import { loadSettings, saveSettings, isConnected } from '../localSettings';
+import {
+  loadSettings,
+  saveSettings,
+  isConnected,
+  SETTINGS_STORAGE_KEY,
+} from '../localSettings';
 import {
   getCatalog,
   refreshCatalog,
@@ -67,7 +72,14 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
     getCatalog().then(setCatalog).catch(() => {});
     const onCat = () => getCatalog().then(setCatalog).catch(() => {});
     window.addEventListener(CATALOG_CHANGED_EVENT, onCat);
-    return () => window.removeEventListener(CATALOG_CHANGED_EVENT, onCat);
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === SETTINGS_STORAGE_KEY) setS(loadSettings());
+    };
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener(CATALOG_CHANGED_EVENT, onCat);
+      window.removeEventListener('storage', onStorage);
+    };
   }, []);
 
   useEffect(() => {

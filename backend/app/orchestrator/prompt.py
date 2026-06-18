@@ -319,9 +319,17 @@ SYSTEM_PROMPT = (
 )
 
 
-def build_system_prompt() -> str:
-    """Return ``SYSTEM_PROMPT``, optionally with a custom-instructions section."""
-    raw = os.getenv("ORCHESTRATOR_CUSTOM_INSTRUCTIONS", "").strip()
+def build_system_prompt(*, custom_instructions: str | None = None) -> str:
+    """Return ``SYSTEM_PROMPT``, optionally with a custom-instructions section.
+
+    When ``custom_instructions`` is passed (including ``""``), that value is
+    used instead of reading ``ORCHESTRATOR_CUSTOM_INSTRUCTIONS`` from the process
+    env — so a long orchestrator turn can't pick up a stale env written by a
+    concurrent request mid-stream."""
+    if custom_instructions is None:
+        raw = os.getenv("ORCHESTRATOR_CUSTOM_INSTRUCTIONS", "").strip()
+    else:
+        raw = custom_instructions.strip()
     if not raw:
         return SYSTEM_PROMPT
     return f"{SYSTEM_PROMPT}\n\n# custom instructions\n\n{raw}"
