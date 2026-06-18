@@ -9,6 +9,7 @@ import { Hero } from './components/Hero';
 import { SnapshotBanner } from './components/SnapshotBanner';
 import { SnapshotRunPanel } from './components/SnapshotRunPanel';
 import { AlertDialog, ConfirmDialog } from './components/ConfirmDialog';
+import { ProjectTransferPanel } from './components/ProjectTransferPanel';
 import { LlmAuthToast, McpAuthDialog } from './components/ReAuthDialogs';
 import { fetchStatus as fetchAuthStatus } from './auth';
 import { probeRemoteStatus } from './mcpApi';
@@ -21,8 +22,11 @@ import {
 import {
   DEFAULT_WORKFLOW_NAME,
   deriveWorkflowName,
+  formatWorkflowExport,
   historyToChatMessages,
+  parseWorkflowExport,
   snapshotToDetail,
+  snapshotToExport,
 } from './appHelpers';
 import { useOrchestratorStream } from './orchestratorStream';
 import { useImageAttachments } from './components/ImageAttachments';
@@ -80,8 +84,12 @@ export default function App() {
   type AppDialog =
     | { kind: 'none' }
     | { kind: 'alert'; message: string; variant?: 'default' | 'error' }
-    | { kind: 'confirm-clear-context' };
+    | { kind: 'confirm-clear-context' }
+    | { kind: 'import-project' }
+    | { kind: 'export-project' };
   const [dialog, setDialog] = useState<AppDialog>({ kind: 'none' });
+  const [importDraft, setImportDraft] = useState('');
+  const [exportDraft, setExportDraft] = useState('');
 
   // When non-null, the canvas renders this run's frozen `workflow_snapshot`
   // instead of the live graph. NodePanel still works (read-only) so the user
@@ -484,7 +492,7 @@ export default function App() {
     if (id === activeId) await refreshDetail();
   };
 
-  const activateFork = async (workflow: Workflow) => {
+  const activateImportedProject = async (workflow: Workflow) => {
     setWorkflows((prev) => [workflow, ...prev.filter((w) => w.id !== workflow.id)]);
     activeIdRef.current = workflow.id;
     setActiveId(workflow.id);
@@ -501,35 +509,43 @@ export default function App() {
     }
   };
 
-  const handleForkWorkflow = async (id: string) => {
-    if (orchestratingIds.has(id)) {
-      setDialog({
-        kind: 'alert',
-        message: 'wait for the orchestrator to finish before forking this project.',
-      });
-      return;
-    }
+  const handleOpenImport = () => {
+    setImportDraft('');
+    setDialog({ kind: 'import-project' });
+  };
+
+  const handleConfirmImport = async () => {
     try {
-      const fork = await api.forkWorkflow(id);
-      await activateFork(fork);
+      const parsed = parseWorkflowExport(importDraft);
+      const imported = await api.importWorkflow(parsed);
+      setDialog({ kind: 'none' });
+      setImportDraft('');
+      await activateImportedProject(imported);
     } catch (e) {
       setDialog({
         kind: 'alert',
-        message: `couldn't fork project: ${e instanceof Error ? e.message : String(e)}`,
+        message: `couldn't import project: ${e instanceof Error ? e.message : String(e)}`,
         variant: 'error',
       });
     }
   };
 
-  const handleForkSnapshot = async () => {
-    if (!viewingRun?.workflow_snapshot) return;
+  const handleExportCanvas = async () => {
     try {
-      const fork = await api.forkRunSnapshot(viewingRun.id);
-      await activateFork(fork);
+      let exported;
+      if (viewingRun) {
+        exported = snapshotToExport(viewingRun, activeWorkflow?.name);
+        if (!exported) throw new Error('this run has no graph snapshot to export');
+      } else {
+        if (!activeId) return;
+        exported = await api.exportWorkflow(activeId);
+      }
+      setExportDraft(formatWorkflowExport(exported));
+      setDialog({ kind: 'export-project' });
     } catch (e) {
       setDialog({
         kind: 'alert',
-        message: `couldn't fork snapshot: ${e instanceof Error ? e.message : String(e)}`,
+        message: `couldn't export project: ${e instanceof Error ? e.message : String(e)}`,
         variant: 'error',
       });
     }
@@ -653,6 +669,7 @@ export default function App() {
                 setRightPanelMode('chat');
                 handleSend(text);
               }}
+              onImport={handleOpenImport}
               onOpenSettings={() => setView('settings')}
               pendingAttachments={imageAttachments.attachments}
               onRemoveAttachment={imageAttachments.remove}
@@ -702,11 +719,11 @@ export default function App() {
                           <>
                             <button
                               type="button"
-                              onClick={handleForkSnapshot}
+                              onClick={handleExportCanvas}
                               className="snapshot-action-btn snapshot-action-btn--secondary"
-                              title="copy this frozen run graph into a new editable project"
+                              title="view and copy this snapshot as JSON"
                             >
-                              save as new
+                              export
                             </button>
                             <button
                               type="button"
@@ -741,12 +758,11 @@ export default function App() {
                     headerActions={
                       <button
                         type="button"
-                        onClick={() => handleForkWorkflow(detail.id)}
+                        onClick={handleExportCanvas}
                         className="snapshot-action-btn snapshot-action-btn--secondary"
-                        disabled={isOrchestrating}
-                        title="copy the current live canvas into a new project"
+                        title="view and copy this project as JSON"
                       >
-                        save as new
+                        export
                       </button>
                     }
                   />
@@ -976,6 +992,28 @@ export default function App() {
           variant="danger"
           onConfirm={doClearChatContext}
           onCancel={() => setDialog({ kind: 'none' })}
+        />
+      )}
+      {dialog.kind === 'import-project' && (
+        <ProjectTransferPanel
+          mode="import"
+          value={importDraft}
+          onChange={setImportDraft}
+          onConfirm={handleConfirmImport}
+          onClose={() => {
+            setDialog({ kind: 'none' });
+            setImportDraft('');
+          }}
+        />
+      )}
+      {dialog.kind === 'export-project' && (
+        <ProjectTransferPanel
+          mode="export"
+          value={exportDraft}
+          onClose={() => {
+            setDialog({ kind: 'none' });
+            setExportDraft('');
+          }}
         />
       )}
       {/* Re-auth prompts. The LLM one is a corner toast (non-blocking), the

@@ -1,5 +1,5 @@
 import type { ChatBlock, ChatMessage } from './components/ChatPanel';
-import type { ChatHistoryMessage, Run, RunEvent, WorkflowDetail } from './types';
+import type { ChatHistoryMessage, Run, RunEvent, WorkflowDetail, WorkflowExport } from './types';
 
 export interface ModelStat {
   model: string;
@@ -118,6 +118,66 @@ export function toolCallCountForRun(
 }
 
 export const DEFAULT_WORKFLOW_NAME = 'untitled project';
+
+export function formatWorkflowExport(data: WorkflowExport): string {
+  return JSON.stringify(data, null, 2);
+}
+
+export function parseWorkflowExport(text: string): WorkflowExport {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error("that doesn't look like valid JSON — paste the full exported project text.");
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('that JSON is not a project export (expected an object with a "nodes" list).');
+  }
+  const obj = parsed as Partial<WorkflowExport>;
+  if (!Array.isArray(obj.nodes)) {
+    throw new Error('that JSON is not a project export (missing a "nodes" list).');
+  }
+  if (obj.edges != null && !Array.isArray(obj.edges)) {
+    throw new Error('that project export is malformed ("edges" must be a list).');
+  }
+  const badNode = obj.nodes.findIndex(
+    (n) => !n || typeof (n as { id?: unknown }).id !== 'string',
+  );
+  if (badNode !== -1) {
+    throw new Error(`node ${badNode + 1} is missing a string "id" — this export looks incomplete.`);
+  }
+  return obj as WorkflowExport;
+}
+
+/** Build a portable export bundle from a run's frozen snapshot. */
+export function snapshotToExport(run: Run, projectName?: string): WorkflowExport | null {
+  const s = run.workflow_snapshot;
+  if (!s) return null;
+  const base = (projectName || 'project').trim() || 'project';
+  return {
+    exported_at: new Date().toISOString(),
+    name: `${base} (run ${run.id.slice(0, 8)})`,
+    input_node_id: s.input_node_id,
+    output_node_id: s.output_node_id,
+    nodes: s.nodes.map((n) => ({
+      id: n.id,
+      name: n.name,
+      description: n.description ?? '',
+      code: n.code,
+      inputs: n.inputs,
+      outputs: n.outputs,
+      config: n.config,
+      position: n.position ?? { x: 0, y: 0 },
+    })),
+    edges: s.edges.map((e) => ({
+      id: e.id,
+      from_node_id: e.from_node_id,
+      from_output: e.from_output,
+      to_node_id: e.to_node_id,
+      to_input: e.to_input,
+    })),
+  };
+}
 
 // Tools that mutate the graph — when we see one of these complete, refresh
 // the canvas detail.
