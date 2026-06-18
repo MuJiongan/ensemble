@@ -1,4 +1,6 @@
 from __future__ import annotations
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -35,6 +37,39 @@ def to_edge_out(e: models.Edge) -> schemas.EdgeOut:
     )
 
 
+def to_workflow_export(w: models.Workflow) -> schemas.WorkflowExport:
+    return schemas.WorkflowExport(
+        version=1,
+        exported_at=datetime.now(timezone.utc).isoformat(),
+        name=w.name,
+        input_node_id=w.input_node_id,
+        output_node_id=w.output_node_id,
+        nodes=[
+            schemas.WorkflowExportNode(
+                id=n.id,
+                name=n.name,
+                description=n.description or "",
+                code=n.code or schemas.DEFAULT_CODE,
+                inputs=[schemas.IOPort(**p) for p in (n.inputs or [])],
+                outputs=[schemas.IOPort(**p) for p in (n.outputs or [])],
+                config=schemas.NodeConfig(**(n.config or {})),
+                position=schemas.Position(**(n.position or {})),
+            )
+            for n in w.nodes
+        ],
+        edges=[
+            schemas.WorkflowExportEdge(
+                id=e.id,
+                from_node_id=e.from_node_id,
+                from_output=e.from_output,
+                to_node_id=e.to_node_id,
+                to_input=e.to_input,
+            )
+            for e in w.edges
+        ],
+    )
+
+
 @router.get("", response_model=list[schemas.WorkflowOut])
 def list_workflows(db: Session = Depends(get_db)):
     rows = db.query(models.Workflow).order_by(models.Workflow.created_at.desc()).all()
@@ -55,25 +90,26 @@ def create_workflow(body: schemas.WorkflowIn, db: Session = Depends(get_db)):
     return schemas.WorkflowOut(id=w.id, name=w.name, input_node_id=None, output_node_id=None)
 
 
-@router.post("/{wid}/fork", response_model=schemas.WorkflowOut)
-def fork_workflow(
-    wid: str,
-    body: schemas.WorkflowForkIn,
-    db: Session = Depends(get_db),
-):
-    source = db.get(models.Workflow, wid)
-    if not source:
-        raise HTTPException(404)
-    name = (body.name or f"{source.name} fork").strip() or f"{source.name} fork"
-    fork = graph_service.clone_live_workflow(db, source, name=name)
+@router.post("/import", response_model=schemas.WorkflowOut)
+def import_workflow(body: schemas.WorkflowExport, db: Session = Depends(get_db)):
+    name = (body.name or "untitled project").strip() or "untitled project"
+    imported = graph_service.import_workflow_graph(db, body.model_dump(), name=name)
     db.commit()
-    db.refresh(fork)
+    db.refresh(imported)
     return schemas.WorkflowOut(
-        id=fork.id,
-        name=fork.name,
-        input_node_id=fork.input_node_id,
-        output_node_id=fork.output_node_id,
+        id=imported.id,
+        name=imported.name,
+        input_node_id=imported.input_node_id,
+        output_node_id=imported.output_node_id,
     )
+
+
+@router.get("/{wid}/export", response_model=schemas.WorkflowExport)
+def export_workflow(wid: str, db: Session = Depends(get_db)):
+    w = db.get(models.Workflow, wid)
+    if not w:
+        raise HTTPException(404)
+    return to_workflow_export(w)
 
 
 @router.get("/{wid}", response_model=schemas.WorkflowDetail)

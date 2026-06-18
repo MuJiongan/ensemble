@@ -1,5 +1,5 @@
 import type { ChatBlock, ChatMessage } from './components/ChatPanel';
-import type { ChatHistoryMessage, Run, RunEvent, WorkflowDetail } from './types';
+import type { ChatHistoryMessage, Run, RunEvent, WorkflowDetail, WorkflowExport } from './types';
 
 export interface ModelStat {
   model: string;
@@ -118,6 +118,49 @@ export function toolCallCountForRun(
 }
 
 export const DEFAULT_WORKFLOW_NAME = 'untitled project';
+
+export function formatWorkflowExport(data: WorkflowExport): string {
+  return JSON.stringify(data, null, 2);
+}
+
+export function parseWorkflowExport(text: string): WorkflowExport {
+  const parsed = JSON.parse(text) as WorkflowExport;
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.nodes)) {
+    throw new Error('text is not a valid project export');
+  }
+  return parsed;
+}
+
+/** Build a portable export bundle from a run's frozen snapshot. */
+export function snapshotToExport(run: Run, projectName?: string): WorkflowExport | null {
+  const s = run.workflow_snapshot;
+  if (!s) return null;
+  const base = (projectName || 'project').trim() || 'project';
+  return {
+    version: 1,
+    exported_at: new Date().toISOString(),
+    name: `${base} (run ${run.id.slice(0, 8)})`,
+    input_node_id: s.input_node_id,
+    output_node_id: s.output_node_id,
+    nodes: s.nodes.map((n) => ({
+      id: n.id,
+      name: n.name,
+      description: n.description ?? '',
+      code: n.code,
+      inputs: n.inputs,
+      outputs: n.outputs,
+      config: n.config,
+      position: n.position ?? { x: 0, y: 0 },
+    })),
+    edges: s.edges.map((e) => ({
+      id: e.id,
+      from_node_id: e.from_node_id,
+      from_output: e.from_output,
+      to_node_id: e.to_node_id,
+      to_input: e.to_input,
+    })),
+  };
+}
 
 // Tools that mutate the graph — when we see one of these complete, refresh
 // the canvas detail.

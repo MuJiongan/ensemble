@@ -1,5 +1,5 @@
 import type {
-  Workflow, WorkflowDetail, WFNode, WFEdge, Run, IOPort, NodeConfig,
+  Workflow, WorkflowDetail, WorkflowExport, WFNode, WFEdge, Run, IOPort, NodeConfig,
   OrchestratorSession, ChatHistory, OrchestratorEvent, FsFile,
 } from './types';
 import { settingsHeaders, type LlmTarget } from './localSettings';
@@ -57,8 +57,10 @@ export interface PatchNodePayload {
 export const api = {
   listWorkflows: () => request<Workflow[]>('GET', '/api/workflows'),
   createWorkflow: (name: string) => request<Workflow>('POST', '/api/workflows', { name }),
-  forkWorkflow: (id: string, name?: string) =>
-    request<Workflow>('POST', `/api/workflows/${id}/fork`, { name }),
+  exportWorkflow: (id: string) =>
+    request<WorkflowExport>('GET', `/api/workflows/${id}/export`),
+  importWorkflow: (body: WorkflowExport) =>
+    request<Workflow>('POST', '/api/workflows/import', body),
   getWorkflow: (id: string) => request<WorkflowDetail>('GET', `/api/workflows/${id}`),
   patchWorkflow: (id: string, body: Partial<Pick<Workflow, 'name' | 'input_node_id' | 'output_node_id'>>) =>
     request<Workflow>('PATCH', `/api/workflows/${id}`, body),
@@ -78,8 +80,6 @@ export const api = {
     request<Run>('POST', `/api/workflows/${wid}/runs`, { inputs, kind: 'user' }, 'node'),
   rerunFromSnapshot: (rid: string, inputs: Record<string, unknown>) =>
     request<Run>('POST', `/api/runs/${rid}/rerun`, { inputs, kind: 'user' }, 'node'),
-  forkRunSnapshot: (rid: string, name?: string) =>
-    request<Workflow>('POST', `/api/runs/${rid}/fork`, { name }),
   cancelRun: (rid: string) =>
     request<{ cancelled: boolean }>('POST', `/api/runs/${rid}/cancel`),
   deleteRun: (rid: string) => request<{ ok: true }>('DELETE', `/api/runs/${rid}`),

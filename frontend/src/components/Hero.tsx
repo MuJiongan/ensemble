@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { AttachmentChips, type PendingAttachment } from './ImageAttachments';
+import { HeroComposer } from './HeroComposer';
 
 export function Hero({
   hasApiKey,
   disabled,
   onSend,
+  onImport,
   onOpenSettings,
   pendingAttachments,
   onRemoveAttachment,
@@ -14,6 +16,7 @@ export function Hero({
   hasApiKey: boolean;
   disabled: boolean;
   onSend: (text: string) => void;
+  onImport: () => void;
   onOpenSettings: () => void;
   pendingAttachments?: PendingAttachment[];
   onRemoveAttachment?: (id: string) => void;
@@ -21,19 +24,7 @@ export function Hero({
   attachmentNotice?: string | null;
 }) {
   const [text, setText] = useState('');
-  const taRef = useRef<HTMLTextAreaElement | null>(null);
   const attachments = pendingAttachments ?? [];
-
-  useEffect(() => {
-    if (hasApiKey) taRef.current?.focus();
-  }, [hasApiKey]);
-
-  useEffect(() => {
-    const ta = taRef.current;
-    if (!ta) return;
-    ta.style.height = 'auto';
-    ta.style.height = `${ta.scrollHeight}px`;
-  }, [text, hasApiKey]);
 
   const submit = () => {
     const t = text.trim();
@@ -91,68 +82,66 @@ export function Hero({
         </p>
 
         {hasApiKey ? (
-          <div
-            className="hero-input field-shell"
-            style={{
-              marginTop: 8,
-              padding: '14px 16px 12px',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 10,
-              ...(draggingFile
-                ? { outline: '1.5px dashed var(--accent-ink)', outlineOffset: 2 }
-                : {}),
-            }}
-          >
-            {attachmentNotice && (
-              <div
-                className="serif"
-                style={{ fontStyle: 'italic', fontSize: 12, color: 'var(--ink-4)' }}
-              >
-                {attachmentNotice}
-              </div>
-            )}
-            {onRemoveAttachment && (
-              <AttachmentChips attachments={attachments} onRemove={onRemoveAttachment} />
-            )}
-            <textarea
-              ref={taRef}
-              rows={3}
-              className="field field--plain field--prose"
-              placeholder="e.g. take a company name, search recent news, and produce a sentiment-labeled briefing"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                  e.preventDefault();
-                  submit();
-                }
-              }}
+          <>
+            <div
               style={{
-                resize: 'none',
-                fontStyle: 'italic',
-                fontSize: 16,
-                padding: '2px 4px',
+                marginTop: 8,
+                ...(draggingFile
+                  ? { outline: '1.5px dashed var(--accent-ink)', outlineOffset: 2, borderRadius: 4 }
+                  : {}),
               }}
-              disabled={disabled}
-            />
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span
-                className="serif"
-                style={{ fontStyle: 'italic', fontSize: 11.5, color: 'var(--ink-4)' }}
+            >
+              {attachmentNotice && (
+                <div
+                  className="serif"
+                  style={{
+                    fontStyle: 'italic',
+                    fontSize: 12,
+                    color: 'var(--ink-4)',
+                    marginBottom: 8,
+                  }}
+                >
+                  {attachmentNotice}
+                </div>
+              )}
+              {onRemoveAttachment && (
+                <div style={{ marginBottom: attachments.length > 0 ? 8 : 0 }}>
+                  <AttachmentChips attachments={attachments} onRemove={onRemoveAttachment} />
+                </div>
+              )}
+              <div
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    submit();
+                  }
+                }}
               >
-                ⌘ + enter to send
-              </span>
-              <span style={{ flex: 1 }} />
-              <button
-                className="btn-ink btn-ink--accent"
-                onClick={submit}
-                disabled={disabled || (!text.trim() && attachments.length === 0)}
-              >
-                ask ensemble <span className="italic-em">→</span>
-              </button>
+                <HeroComposer
+                  value={text}
+                  onChange={setText}
+                  autoFocus={hasApiKey}
+                  disabled={disabled}
+                  maxComposerHeight="min(40vh, 320px)"
+                  placeholder="e.g. take a company name, search recent news, and produce a sentiment-labeled briefing"
+                  footerHint="⌘ + enter to send"
+                  actionLabel="ask ensemble"
+                  onAction={submit}
+                  actionDisabled={disabled || (!text.trim() && attachments.length === 0)}
+                />
+              </div>
             </div>
-          </div>
+            <p className="serif hero-import-prompt">
+              or{' '}
+              <button
+                type="button"
+                className="hero-import-link hero-import-link--prominent"
+                onClick={onImport}
+              >
+                import a project
+              </button>
+            </p>
+          </>
         ) : (
           <div
             style={{
@@ -172,9 +161,12 @@ export function Hero({
               openai-compatible endpoint (openrouter by default) — keys are stored in your
               browser only.
             </div>
-            <div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center' }}>
               <button className="btn-ink" onClick={onOpenSettings}>
                 open settings <span className="italic-em">→</span>
+              </button>
+              <button type="button" className="hero-import-link" onClick={onImport}>
+                import project
               </button>
             </div>
           </div>

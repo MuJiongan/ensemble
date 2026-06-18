@@ -80,8 +80,28 @@ class WorkflowPatch(BaseModel):
     output_node_id: str | None = None
 
 
-class WorkflowForkIn(BaseModel):
-    name: str | None = None
+class WorkflowExportNode(NodeIn):
+    """Portable node record — ``id`` is preserved for edge remapping on import."""
+
+    id: str
+
+
+class WorkflowExportEdge(EdgeIn):
+    """Portable edge record — ``id`` is ignored on import."""
+
+    id: str | None = None
+
+
+class WorkflowExport(BaseModel):
+    """Portable project bundle written by export and accepted by import."""
+
+    version: int = 1
+    exported_at: str | None = None
+    name: str = "untitled project"
+    input_node_id: str | None = None
+    output_node_id: str | None = None
+    nodes: list[WorkflowExportNode] = Field(default_factory=list)
+    edges: list[WorkflowExportEdge] = Field(default_factory=list)
 
 
 class RunStartIn(BaseModel):

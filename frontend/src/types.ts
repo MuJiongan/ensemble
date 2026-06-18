@@ -58,6 +58,17 @@ export interface WorkflowDetail extends Workflow {
   edges: WFEdge[];
 }
 
+/** Portable project bundle for import/export. */
+export interface WorkflowExport {
+  version: number;
+  exported_at?: string | null;
+  name: string;
+  input_node_id: string | null;
+  output_node_id: string | null;
+  nodes: Array<Omit<WFNode, 'workflow_id'>>;
+  edges: Array<Omit<WFEdge, 'workflow_id'>>;
+}
+
 export type RunStatus = 'pending' | 'running' | 'success' | 'error' | 'cancelled';
 export type NodeRunStatus = 'pending' | 'running' | 'success' | 'error' | 'skipped';
 

@@ -1616,6 +1616,21 @@ textarea.field::-webkit-scrollbar {
   width: 0;
   height: 0;
 }
+textarea.field.field--scrollable {
+  field-sizing: fixed;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--rule-2) transparent;
+}
+textarea.field.field--scrollable::-webkit-scrollbar {
+  display: block;
+  width: 8px;
+  height: 8px;
+}
+textarea.field.field--scrollable::-webkit-scrollbar-thumb {
+  background: var(--rule-2);
+  border-radius: 4px;
+}
 .field--underline {
   background: transparent;
   border: 0;
@@ -1672,6 +1687,34 @@ textarea.field::-webkit-scrollbar {
   font-size: 13px;
   opacity: 0.92;
 }
+
+.hero-import-prompt {
+  margin: 10px 0 0;
+  font-style: italic;
+  font-size: 13px;
+  color: var(--ink-4);
+  line-height: 1.55;
+  text-align: center;
+}
+.hero-import-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 11.5px;
+  color: var(--ink-4);
+  cursor: pointer;
+  transition: color .15s;
+}
+.hero-import-link:hover { color: var(--accent-ink); }
+.hero-import-link--prominent {
+  font-size: 13px;
+  color: var(--accent-ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.hero-import-link--prominent:hover { color: var(--accent); }
 
 /* Hero composer: elevated shell wrapping a borderless textarea */
 .hero-input {
