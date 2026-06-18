@@ -39,7 +39,6 @@ def to_edge_out(e: models.Edge) -> schemas.EdgeOut:
 
 def to_workflow_export(w: models.Workflow) -> schemas.WorkflowExport:
     return schemas.WorkflowExport(
-        version=1,
         exported_at=datetime.now(timezone.utc).isoformat(),
         name=w.name,
         input_node_id=w.input_node_id,

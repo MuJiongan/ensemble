@@ -60,7 +60,6 @@ export interface WorkflowDetail extends Workflow {
 
 /** Portable project bundle for import/export. */
 export interface WorkflowExport {
-  version: number;
   exported_at?: string | null;
   name: string;
   input_node_id: string | null;

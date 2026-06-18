@@ -95,7 +95,7 @@ class WorkflowExportEdge(EdgeIn):
 class WorkflowExport(BaseModel):
     """Portable project bundle written by export and accepted by import."""
 
-    version: int = 1
+    # Informational only — written by export, accepted but ignored on import.
     exported_at: str | None = None
     name: str = "untitled project"
     input_node_id: str | None = None

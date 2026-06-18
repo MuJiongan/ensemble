@@ -124,11 +124,29 @@ export function formatWorkflowExport(data: WorkflowExport): string {
 }
 
 export function parseWorkflowExport(text: string): WorkflowExport {
-  const parsed = JSON.parse(text) as WorkflowExport;
-  if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.nodes)) {
-    throw new Error('text is not a valid project export');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error("that doesn't look like valid JSON — paste the full exported project text.");
   }
-  return parsed;
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('that JSON is not a project export (expected an object with a "nodes" list).');
+  }
+  const obj = parsed as Partial<WorkflowExport>;
+  if (!Array.isArray(obj.nodes)) {
+    throw new Error('that JSON is not a project export (missing a "nodes" list).');
+  }
+  if (obj.edges != null && !Array.isArray(obj.edges)) {
+    throw new Error('that project export is malformed ("edges" must be a list).');
+  }
+  const badNode = obj.nodes.findIndex(
+    (n) => !n || typeof (n as { id?: unknown }).id !== 'string',
+  );
+  if (badNode !== -1) {
+    throw new Error(`node ${badNode + 1} is missing a string "id" — this export looks incomplete.`);
+  }
+  return obj as WorkflowExport;
 }
 
 /** Build a portable export bundle from a run's frozen snapshot. */
@@ -137,7 +155,6 @@ export function snapshotToExport(run: Run, projectName?: string): WorkflowExport
   if (!s) return null;
   const base = (projectName || 'project').trim() || 'project';
   return {
-    version: 1,
     exported_at: new Date().toISOString(),
     name: `${base} (run ${run.id.slice(0, 8)})`,
     input_node_id: s.input_node_id,

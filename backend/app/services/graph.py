@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from app import models
+from app import models, schemas
 
 
 def cascade_delete_node(db: Session, node: models.Node) -> None:
@@ -48,7 +48,7 @@ def import_workflow_graph(
             workflow_id=target.id,
             name=src.get("name") or "node",
             description=src.get("description") or "",
-            code=src.get("code") or "def run(inputs, ctx):\n    return {}\n",
+            code=src.get("code") or schemas.DEFAULT_CODE,
             inputs=src.get("inputs") or [],
             outputs=src.get("outputs") or [],
             config=src.get("config") or {},

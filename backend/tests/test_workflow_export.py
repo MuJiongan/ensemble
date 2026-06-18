@@ -64,7 +64,6 @@ def test_export_bundle_contains_graph(db_factory):
         source = _seed_workflow(db)
         exported = to_workflow_export(source)
 
-    assert exported.version == 1
     assert exported.name == "invoice flow"
     assert len(exported.nodes) == 2
     assert len(exported.edges) == 1

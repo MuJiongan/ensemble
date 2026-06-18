@@ -120,7 +120,7 @@ export function ProjectTransferPanel({
             readOnly={!isImport}
             autoFocus={isImport}
             minRows={isImport ? 3 : 12}
-            placeholder={isImport ? '{"version":1,"name":"my project",...}' : undefined}
+            placeholder={isImport ? '{"name":"my project","nodes":[...],"edges":[...]}' : undefined}
             footerHint={isImport ? undefined : (copied ? 'copied' : undefined)}
             actionLabel={isImport ? 'import' : (copied ? 'copied' : 'copy')}
             onAction={isImport ? (onConfirm ?? (() => {})) : handleExportCopy}
