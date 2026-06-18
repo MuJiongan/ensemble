@@ -200,14 +200,37 @@ def test_execute_returns_error_for_bad_workflow(db):
     assert "not found" in res["error"]
 
 
+def test_build_system_prompt_substitutes_current_date(monkeypatch):
+    monkeypatch.delenv("ORCHESTRATOR_CUSTOM_INSTRUCTIONS", raising=False)
+    monkeypatch.setattr(
+        "app.orchestrator.prompt._current_date_str",
+        lambda: "Wednesday, June 17, 2026",
+    )
+    prompt = build_system_prompt()
+    assert "[[CURRENT_DATE]]" not in prompt
+    assert "today is Wednesday, June 17, 2026" in prompt
+
+
 def test_build_system_prompt_without_custom_instructions(monkeypatch):
     monkeypatch.delenv("ORCHESTRATOR_CUSTOM_INSTRUCTIONS", raising=False)
-    assert build_system_prompt() == SYSTEM_PROMPT
+    monkeypatch.setattr(
+        "app.orchestrator.prompt._current_date_str",
+        lambda: "Wednesday, June 17, 2026",
+    )
+    prompt = build_system_prompt()
+    assert "# custom instructions" not in prompt
+    assert "today is Wednesday, June 17, 2026" in prompt
 
 
 def test_build_system_prompt_empty_custom_instructions(monkeypatch):
     monkeypatch.setenv("ORCHESTRATOR_CUSTOM_INSTRUCTIONS", "   ")
-    assert build_system_prompt() == SYSTEM_PROMPT
+    monkeypatch.setattr(
+        "app.orchestrator.prompt._current_date_str",
+        lambda: "Wednesday, June 17, 2026",
+    )
+    prompt = build_system_prompt()
+    assert "# custom instructions" not in prompt
+    assert "today is Wednesday, June 17, 2026" in prompt
 
 
 def test_build_system_prompt_appends_custom_instructions_section(monkeypatch):
@@ -215,8 +238,13 @@ def test_build_system_prompt_appends_custom_instructions_section(monkeypatch):
         "ORCHESTRATOR_CUSTOM_INSTRUCTIONS",
         "always parallelize independent steps",
     )
+    monkeypatch.setattr(
+        "app.orchestrator.prompt._current_date_str",
+        lambda: "Wednesday, June 17, 2026",
+    )
     prompt = build_system_prompt()
-    assert prompt.startswith(SYSTEM_PROMPT)
+    assert prompt.startswith("You are *Ensemble*")
+    assert "today is Wednesday, June 17, 2026" in prompt
     assert "# custom instructions" in prompt
     assert prompt.endswith("always parallelize independent steps")
 
@@ -1556,6 +1584,16 @@ def test_system_prompt_explains_editing_existing_nodes():
     # Must instruct the model to inspect before patching and preserve structure.
     assert "view_node_details" in SYSTEM_PROMPT
     assert "preserve" in SYSTEM_PROMPT.lower()
+
+
+def test_system_prompt_instructs_passing_current_date_to_nodes():
+    """The orchestrator must know today's date and be told to pass it into
+    node prompts when time-sensitive work needs it."""
+    p = SYSTEM_PROMPT
+    assert "# current date" in p
+    assert "[[CURRENT_DATE]]" in p
+    assert "ctx.call_llm" in p
+    assert "inner LLMs don't know today's date" in p
 
 
 def test_system_prompt_offers_both_direct_and_llm_tool_forms():

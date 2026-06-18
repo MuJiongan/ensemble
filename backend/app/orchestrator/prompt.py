@@ -2,6 +2,7 @@
 from __future__ import annotations
 import inspect
 import os
+from datetime import datetime
 
 from app.orchestrator import tools as _orch_tools
 from app.runner import tools as _runtime_tools
@@ -124,6 +125,10 @@ Workflow:
 For *substantive* exploration — survey a directory tree, sample several files, fetch and compare multiple API specs — research can scale up to a whole *scoping workflow* of its own: build it, run it, then `clean_canvas()` and build the solve workflow informed by its outputs (see *# multiple workflows in one session*).
 
 Don't reach for this for things already in the conversation or graph state — if the user told you the path, use it; if a port is declared, read `view_node_details` instead of probing. And don't build a research node when asking the user a clarifying question would be cheaper. Reserve it for *facts you can only get by executing something*.
+
+# current date
+
+today is [[CURRENT_DATE]]. when a workflow needs the current date — web searches for recent news or events, relative-time queries (*latest*, *this week*, *today*), scheduling, anything where the year matters — pass this date into node `ctx.call_llm` prompts or embed it in the node's code. inner LLMs don't know today's date unless you tell them.
 
 # tone
 
@@ -319,12 +324,19 @@ SYSTEM_PROMPT = (
 )
 
 
+def _current_date_str() -> str:
+    """Human-readable local date for injection into the orchestrator prompt."""
+    return datetime.now().strftime("%A, %B %d, %Y")
+
+
 def build_system_prompt() -> str:
-    """Return ``SYSTEM_PROMPT``, optionally with a custom-instructions section."""
+    """Return ``SYSTEM_PROMPT``, with today's date substituted and an optional
+    custom-instructions section."""
+    base = SYSTEM_PROMPT.replace("[[CURRENT_DATE]]", _current_date_str())
     raw = os.getenv("ORCHESTRATOR_CUSTOM_INSTRUCTIONS", "").strip()
     if not raw:
-        return SYSTEM_PROMPT
-    return f"{SYSTEM_PROMPT}\n\n# custom instructions\n\n{raw}"
+        return base
+    return f"{base}\n\n# custom instructions\n\n{raw}"
 
 
 def mcp_tools_message() -> dict | None:
