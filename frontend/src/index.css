@@ -9,17 +9,17 @@
   color-scheme: light;
 
   /* warm linen neutrals — soft paper tone, never harsh black-on-white */
-  --paper:        #f7f4ef;
+  --paper:        #f4f0e8;
   --ink:          #2e2a24;
   --ink-2:        #454035;
   --ink-3:        #635c52;
   --ink-4:        #918a7e;
   --ink-5:        #b5afa4;
-  --rule:         rgba(46, 42, 36, 0.10);
-  --rule-2:       rgba(46, 42, 36, 0.05);
+  --rule:         rgba(46, 42, 36, 0.11);
+  --rule-2:       rgba(46, 42, 36, 0.055);
 
   /* surfaces & overlays */
-  --surface-raised: #fcfaf6;
+  --surface-raised: #f8f5ef;
   --field-bg:         var(--surface-raised);
   --field-border:     var(--rule);
   --field-inset:      inset 0 1px 2px var(--shadow-1);
@@ -36,11 +36,11 @@
   --err-bg:         rgba(185, 80, 65, 0.06);
   --danger-bg:      rgba(195, 80, 68, 0.08);
   --danger-bg-hover: rgba(195, 80, 68, 0.13);
-  --shadow-1:       rgba(30, 26, 20, 0.04);
-  --shadow-2:       rgba(30, 26, 20, 0.14);
+  --shadow-1:       rgba(30, 26, 20, 0.05);
+  --shadow-2:       rgba(30, 26, 20, 0.15);
   --shadow-3:       rgba(30, 26, 20, 0.20);
   --shadow-accent:  rgba(55, 115, 62, 0.24);
-  --dot-color:      rgba(46, 42, 36, 0.08);
+  --dot-color:      rgba(46, 42, 36, 0.09);
   --scrollbar:      rgba(46, 42, 36, 0.15);
 
   /* emphasis buttons — ink outline on paper, no fill blocks */
