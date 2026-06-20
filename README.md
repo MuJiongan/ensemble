@@ -4,6 +4,8 @@ A local, single-user app where you describe a goal in chat and an **orchestrator
 
 Everything runs on your machine against your own LLM keys. Nothing is hosted, and the backend never persists your credentials.
 
+Where the project is headed — tool creation, hooks and loop control, more LLM primitives, and packaging workflows as reusable subworkflows — is sketched in [Harness vision & roadmap](docs/harness-vision.md).
+
 ## How it works
 
 The orchestrator owns the graph. You talk to it; it recruits nodes, wires their inputs and outputs, writes their Python, and can run the team for you. The canvas is a read-only view of what it builds — you can't drag nodes or draw edges by hand (that is the orchestrator's job), but you can open any node to read or rewrite its code, and you can run the graph yourself from the run console.
