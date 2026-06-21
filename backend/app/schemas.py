@@ -163,6 +163,9 @@ class ChatBlockTool(BaseModel):
     t: str = "tool"
     tool: str
     args: str
+    # Full parsed argument dict, so the panel can render the raw input
+    # parameters when a tool card is expanded — `args` is only a lossy summary.
+    args_full: dict[str, Any] | None = None
     status: str
     result: Any | None = None
 

@@ -308,6 +308,9 @@ export interface ChatBlockTool {
   t: 'tool';
   tool: string;
   args: string;
+  /** Full parsed argument dict — `args` is only a lossy summary. Used to show
+   * raw input parameters when a tool card is expanded. */
+  args_full?: Record<string, unknown> | null;
   status: 'pending' | 'ok' | 'err';
   result?: unknown;
 }

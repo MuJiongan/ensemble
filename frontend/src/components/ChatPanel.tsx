@@ -208,6 +208,10 @@ export interface ChatToolCall {
   t: 'tool';
   tool: string;
   args: string;
+  /** Full parsed argument dict — `args` is only a lossy summary (long strings
+   * truncated, `code` collapsed to a line count). Surfaced so the card can
+   * show the raw input parameters when expanded. */
+  argsFull?: Record<string, unknown> | null;
   status: ChatToolStatus;
   /** Tool result payload — `run_workflow` and a few others stash structured
    * data here so the panel can render rich cards. Untyped on purpose; each
@@ -378,44 +382,111 @@ function CompactionNotice({ text }: { text: string }) {
   );
 }
 
-function ToolCallCard({ tool, args, status }: ChatToolCall) {
+function ToolCallCard({ tool, args, argsFull, status, result }: ChatToolCall) {
+  // Click the header to expand and inspect the raw input parameters and the
+  // tool result. Prefer the full parsed args dict when present; fall back to
+  // the summary string (older history rows have no `argsFull`).
+  const [open, setOpen] = useState(false);
+  const toggle = () => setOpen((v) => !v);
+  const inputValue = argsFull && Object.keys(argsFull).length > 0 ? argsFull : args;
+
   return (
     <div
       className="tool-call fade-in"
-      style={{
-        padding: '7px 10px',
-        margin: '6px 0',
-        display: 'flex',
-        alignItems: 'baseline',
-        gap: 8,
-        fontSize: 11.5,
-      }}
+      style={{ margin: '6px 0', fontSize: 11.5, display: 'flex', flexDirection: 'column' }}
     >
-      <span className="mono" style={{ color: 'var(--accent-ink)', fontSize: 10.5 }}>
-        {tool}
-      </span>
-      <span
-        className="mono"
+      {/* header row — clickable disclosure */}
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={toggle}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            toggle();
+          }
+        }}
+        title={open ? 'hide details' : 'inspect input & result'}
         style={{
-          color: 'var(--ink-4)',
-          fontSize: 10.5,
-          flex: 1,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
+          padding: '7px 10px',
+          display: 'flex',
+          alignItems: 'baseline',
+          gap: 8,
+          cursor: 'pointer',
         }}
       >
-        {args}
-      </span>
-      <span
-        className="smallcaps"
-        style={{
-          color: status === 'ok' ? 'var(--state-ok)' : status === 'err' ? 'var(--state-err)' : 'var(--ink-4)',
-          fontSize: 9,
-        }}
-      >
-        {status === 'ok' ? '✓ done' : status === 'err' ? '× failed' : '…'}
-      </span>
+        <span
+          aria-hidden
+          style={{
+            display: 'inline-block',
+            width: 12,
+            flexShrink: 0,
+            color: 'var(--ink-4)',
+            fontSize: 10,
+            transform: open ? 'rotate(90deg)' : 'none',
+            transition: 'transform .12s ease',
+          }}
+        >
+          ▸
+        </span>
+        <span className="mono" style={{ color: 'var(--accent-ink)', fontSize: 10.5 }}>
+          {tool}
+        </span>
+        <span
+          className="mono"
+          style={{
+            color: 'var(--ink-4)',
+            fontSize: 10.5,
+            flex: 1,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {args}
+        </span>
+        <span
+          className="smallcaps"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 5,
+            color: status === 'ok' ? 'var(--state-ok)' : status === 'err' ? 'var(--state-err)' : 'var(--ink-4)',
+            fontSize: 9,
+          }}
+        >
+          <span
+            aria-hidden
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              background:
+                status === 'ok' ? 'var(--state-ok)' : status === 'err' ? 'var(--state-err)' : 'var(--ink-4)',
+            }}
+          />
+          {status === 'ok' ? 'done' : status === 'err' ? 'failed' : 'running'}
+        </span>
+      </div>
+
+      {open && (
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 9,
+            padding: '2px 10px 9px',
+            borderTop: '1px solid var(--rule)',
+          }}
+        >
+          <ToolDetailSection label="input" value={inputValue} placeholder="no input" />
+          <ToolDetailSection
+            label="result"
+            value={result}
+            placeholder={status === 'pending' ? 'running…' : 'no result'}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -448,6 +519,76 @@ function preview(value: unknown, max = 140): string {
   } catch {
     return String(value);
   }
+}
+
+/** Full, un-truncated rendering of a value for the expanded detail view:
+ * strings verbatim, everything else pretty-printed JSON. */
+function formatFull(value: unknown): string {
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+/** Is this value worth rendering in an expanded section, or should we show a
+ * placeholder? Empty objects, empty strings, and null/undefined are "empty". */
+function isEmptyValue(value: unknown): boolean {
+  if (value == null) return true;
+  if (typeof value === 'string') return value.trim() === '';
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    return Object.keys(value as object).length === 0;
+  }
+  return false;
+}
+
+/** One labelled block inside an expanded tool card — pretty-printed value in a
+ * scrollable mono panel, or an italic placeholder when there's nothing yet. */
+function ToolDetailSection({
+  label,
+  value,
+  placeholder,
+}: {
+  label: string;
+  value: unknown;
+  placeholder: string;
+}) {
+  return (
+    <div>
+      <div className="smallcaps" style={{ color: 'var(--ink-4)', fontSize: 9, marginBottom: 4 }}>
+        {label}
+      </div>
+      {isEmptyValue(value) ? (
+        <div
+          className="serif"
+          style={{ fontStyle: 'italic', color: 'var(--ink-4)', fontSize: 11.5 }}
+        >
+          {placeholder}
+        </div>
+      ) : (
+        <pre
+          className="mono scroll"
+          style={{
+            margin: 0,
+            background: 'var(--muted-fill-2)',
+            border: '1px solid var(--rule)',
+            borderRadius: 3,
+            padding: '6px 8px',
+            fontSize: 10.5,
+            lineHeight: 1.5,
+            color: 'var(--ink-2)',
+            whiteSpace: 'pre-wrap',
+            overflowWrap: 'anywhere',
+            maxHeight: 280,
+            overflow: 'auto',
+          }}
+        >
+          {formatFull(value)}
+        </pre>
+      )}
+    </div>
+  );
 }
 
 function RunWorkflowCard({

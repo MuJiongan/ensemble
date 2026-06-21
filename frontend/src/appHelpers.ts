@@ -291,6 +291,7 @@ export function historyToChatMessages(history: ChatHistoryMessage[]): ChatMessag
           t: 'tool',
           tool: b.tool,
           args: b.args,
+          argsFull: b.args_full,
           status: b.status === 'pending' ? 'pending' : b.status,
           result: b.result,
         };
