@@ -545,6 +545,9 @@ def _assistant_content_blocks(
                 "t": "tool",
                 "tool": name,
                 "args": summary,
+                # Full parsed args alongside the summary, so the panel can show
+                # raw input parameters when the card is expanded on reload.
+                "args_full": args if isinstance(args, dict) else None,
                 "status": "ok" if ok else ("err" if tr else "pending"),
                 # Surface the persisted result so the chat panel can render rich
                 # tool cards (e.g. `run_workflow` snapshot summary) on history

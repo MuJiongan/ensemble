@@ -51,7 +51,10 @@ export function reduceAssistantOnEvent(ev: OrchestratorEvent): AssistantMutation
   if (ev.kind === 'tool_call_start') {
     return (a) => ({
       ...a,
-      content: [...a.content, { t: 'tool', tool: ev.tool, args: ev.args, status: 'pending' }],
+      content: [
+        ...a.content,
+        { t: 'tool', tool: ev.tool, args: ev.args, argsFull: ev.args_full, status: 'pending' },
+      ],
     });
   }
   if (ev.kind === 'tool_call_end') {
