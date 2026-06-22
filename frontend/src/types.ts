@@ -190,6 +190,7 @@ export type RunEvent =
       call_id: string;
       model: string;
       tools: string[];
+      label?: string;
     }
   | {
       type: 'llm_round_started';
@@ -384,3 +385,81 @@ export type OrchestratorEvent =
   | { kind: 'context_compacted' }
   | { kind: 'error'; message: string }
   | { kind: 'done' };
+
+// --- continue-chat (call_llm continuations) -------------------------------
+
+/** A call's continuation with its full OpenAI-shape transcript. */
+export interface CallChat {
+  id: string;
+  workflow_id: string;
+  node_run_id: string;
+  call_id: string;
+  label: string;
+  model: string;
+  provider_id: string;
+  variant: string;
+  tools: string[];
+  messages: Array<Record<string, unknown>>;
+}
+
+/** Events streamed for one continue-chat turn. Mirrors the run event contract
+ * a node's ctx.call_llm emits — minus node_id (a continuation belongs to no node). The
+ * terminal `run_finished` carries the grown conversation so the client can sync
+ * against the persisted transcript. */
+export type CallChatTurnEvent =
+  | { type: 'run_started' }
+  | {
+      type: 'mcp_status';
+      servers: Record<string, { status: string; tool_count?: number; error?: string }>;
+    }
+  | { type: 'llm_call_started'; call_id: string; model: string; tools: string[]; label?: string }
+  | { type: 'llm_round_started'; call_id: string; round: number }
+  | {
+      type: 'llm_call_chunk';
+      call_id: string;
+      kind: LLMChunkKind;
+      round: number;
+      delta: string;
+      tc_index?: number;
+      tool?: string;
+    }
+  | {
+      type: 'llm_call_finished';
+      call_id: string;
+      model: string;
+      content: string;
+      usage: Record<string, unknown>;
+      cost: number;
+      error?: string;
+    }
+  | {
+      type: 'tool_call_started';
+      tool: string;
+      args: Record<string, unknown>;
+      via: ToolVia;
+      call_id?: string;
+      tc_index?: number;
+      round?: number;
+    }
+  | {
+      type: 'tool_call_finished';
+      tool: string;
+      args: Record<string, unknown>;
+      result?: unknown;
+      error?: string;
+      via: ToolVia;
+      call_id?: string;
+      tc_index?: number;
+      round?: number;
+    }
+  | { type: 'context_compacted'; call_id?: string; summarized: number }
+  | {
+      type: 'run_finished';
+      status: RunStatus;
+      messages: Array<Record<string, unknown>>;
+      usage: Record<string, unknown>;
+      cost: number;
+      error: string | null;
+    }
+  | { type: 'run_deleted'; run_id: string }
+  | { type: 'error'; error: string };

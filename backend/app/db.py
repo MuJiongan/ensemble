@@ -27,6 +27,14 @@ _PENDING_COLUMNS: list[tuple[str, str, str]] = [
     ("messages", "cost", "FLOAT DEFAULT 0.0"),
     ("runs", "workflow_snapshot", "JSON DEFAULT NULL"),
     ("mcp_credentials", "token_endpoint_auth_method", "VARCHAR DEFAULT NULL"),
+    # provider_id/variant were added to call_chats partway through the
+    # continue-chat work, so a dev DB created from an earlier checkout of this
+    # branch has the table but not these columns (create_all only adds whole
+    # tables). Patch them in so a continuation pins the recorded model. Harmless
+    # on a fresh DB (the columns already exist) — kept so nobody has to drop their
+    # local DB across the branch.
+    ("call_chats", "provider_id", "VARCHAR DEFAULT ''"),
+    ("call_chats", "variant", "VARCHAR DEFAULT ''"),
 ]
 
 
@@ -42,6 +50,50 @@ def _ensure_columns() -> None:
             if column not in existing:
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {type_def}"))
                 conn.commit()
+        _ensure_callchat_unique_index(conn)
+
+
+def _ensure_callchat_unique_index(conn) -> None:
+    """Back-fill (node_run_id, call_id) uniqueness on a call_chats table that
+    predates the model's UniqueConstraint.
+
+    create_all builds that constraint for fresh DBs (SQLite materializes it as a
+    unique autoindex), but it skips an already-existing table and SQLite cannot
+    ALTER TABLE ADD CONSTRAINT. A unique INDEX gives the same guarantee, so the
+    open_call_chat IntegrityError dedup stays effective on a DB whose table was
+    created before the constraint existed. No-op when uniqueness is already
+    enforced (the normal case — matched by columns, not index name, so the
+    constraint's autoindex counts). Never deletes rows: if pre-existing
+    duplicates block the index it is left uncreated rather than risk data loss at
+    startup (a constraint-less DB carrying duplicates is an unreachable corner in
+    practice, and the runtime dedup still prevents new ones once an index exists)."""
+    try:
+        indexes = conn.execute(text("PRAGMA index_list(call_chats)")).fetchall()
+    except Exception:
+        return  # table absent (fresh DB handled by create_all) or unreadable
+    for ix in indexes:
+        name, unique = ix[1], ix[2]
+        if not unique:
+            continue
+        cols = [
+            r[2] for r in conn.execute(text(f'PRAGMA index_info("{name}")')).fetchall()
+        ]
+        if cols == ["node_run_id", "call_id"]:
+            return  # already enforced (constraint autoindex or a prior back-fill)
+    try:
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_callchat_call "
+            "ON call_chats(node_run_id, call_id)"
+        ))
+        conn.commit()
+    except Exception:
+        # Pre-existing duplicates block the unique index. Leave them for manual
+        # cleanup rather than auto-delete at startup; roll back the failed DDL so
+        # the connection stays usable for the rest of init.
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
 
 def _strip_legacy_node_config_keys() -> None:

@@ -62,6 +62,23 @@ def _serialize_workflow(w: models.Workflow) -> dict:
     }
 
 
+def _lean_llm_calls(llm_calls) -> list:
+    """Drop each call's full `messages` transcript from the run payload and
+    replace it with a `has_chat` flag. The trace UI no longer renders the
+    conversation inline (it opens in the chat panel), so shipping the verbatim
+    history on every run load is pure waste — the full messages are pulled on
+    demand by the continue-chat create-or-get endpoint instead."""
+    lean: list = []
+    for call in llm_calls or []:
+        if isinstance(call, dict):
+            entry = {k: v for k, v in call.items() if k != "messages"}
+            entry["has_chat"] = bool(call.get("messages"))
+            lean.append(entry)
+        else:
+            lean.append(call)
+    return lean
+
+
 def _run_to_out(run: models.Run, node_runs) -> schemas.RunOut:
     return schemas.RunOut(
         id=run.id,
@@ -81,7 +98,7 @@ def _run_to_out(run: models.Run, node_runs) -> schemas.RunOut:
                 inputs=nr.inputs or {},
                 outputs=nr.outputs or {},
                 logs=nr.logs or [],
-                llm_calls=nr.llm_calls or [],
+                llm_calls=_lean_llm_calls(nr.llm_calls),
                 tool_calls=nr.tool_calls or [],
                 error=nr.error,
                 duration_ms=nr.duration_ms or 0,
@@ -198,6 +215,15 @@ def delete_run(rid: str, db: Session = Depends(get_db)):
         raise HTTPException(404)
     if run.status in ("running", "pending"):
         raise HTTPException(409, detail="cancel the run before deleting")
+    # Clean up any call_llm continuations tied to this run's node_runs. CallChat
+    # uses FK-free string refs (a continuation survives incidental node_run
+    # changes), but an explicit run delete is deliberate destruction — drop its
+    # continuations too rather than leave them orphaned.
+    nr_ids = [nr.id for nr in run.node_runs]
+    if nr_ids:
+        db.query(models.CallChat).filter(
+            models.CallChat.node_run_id.in_(nr_ids)
+        ).delete(synchronize_session=False)
     db.delete(run)
     db.commit()
     run_service.discard(rid)

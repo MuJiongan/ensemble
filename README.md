@@ -18,9 +18,10 @@ How the on-screen vocabulary maps to the code:
 | Handoff | `Edge` | Wires one node's named output to another node's named input |
 | Run | `Run` | One end-to-end execution; freezes a snapshot of the graph |
 | Agent trace | `NodeRun` | The inputs/outputs/logs/LLM + tool calls for one node in a run |
+| Subagent chat | `CallChat` | A continued `ctx.call_llm` conversation — one ongoing thread per call |
 | Canvas | Canvas | The read-only visual board; topology is orchestrator-owned |
 
-The interface is a two-pane workspace: the canvas takes the left ~2/5, and the right ~3/5 toggles between **chat** (talk to the orchestrator) and **workspace** (the run console, or a node's code editor and trace). There is no hand-drawn graph editor — recruiting, deleting, renaming, and wiring agents all happen through the orchestrator.
+The interface is a two-pane workspace: the canvas takes the left ~2/5, and the right ~3/5 toggles between **chat** (talk to the orchestrator, or continue a node's `call_llm` sub-agent) and **workspace** (the run console, or a node's code editor and trace). There is no hand-drawn graph editor — recruiting, deleting, renaming, and wiring agents all happen through the orchestrator.
 
 ## Quick start
 
@@ -74,11 +75,13 @@ Each agent is a Python block exposing `run(inputs, ctx)`:
 
 ```python
 def run(inputs, ctx):
-    # ctx.call_llm(model=None, prompt=..., tools=["web_search", "<server>_<tool>"]) -> dict
+    # ctx.call_llm(model=None, prompt=..., tools=[...], label="short name") -> dict
     #   Run an LLM-mediated sub-agent. Defaults to the node's configured model
     #   (raises if neither set). With tools, runs an agent loop: the model calls
     #   tools, results feed back, until it returns a final answer.
-    #   Returns {content, messages, tool_calls_made, usage, cost}.
+    #   Returns {content, messages, tool_calls_made, usage, cost}. The full
+    #   `messages` transcript is also persisted on the NodeRun trace so the
+    #   call can be continued as a chat later.
     #
     # ctx.tools.shell(...) / read_file / write_file / edit_file / web_search / web_fetch
     # ctx.tools.<server>.<tool>(arg=...)  or  ctx.tools.<server>_<tool>(...)
@@ -101,6 +104,7 @@ A few choices that shape how the system behaves in use:
 - **Branching is data, not control flow.** There are no cyclic or conditional edges — a node returns `None` on an output to skip a downstream path (the [skip rule](#node-runtime)), and any looping lives inside one node's Python. The graph stays a DAG you can read at a glance.
 - **The orchestrator and node models are independent.** The chat agent and the agents it builds run on separate provider/key/reasoning settings, so you can pair an expensive planner with cheap workers (or the reverse) without coupling the two.
 - **A runaway loop is a cancel button, not a turn cap.** Neither the orchestrator turn nor a node's `call_llm` loop has an iteration limit; each runs until the model stops calling tools, and is stopped — when it needs to be — by cancel (a `SIGTERM` to the run subprocess).
+- **Subagent chats are separate from the orchestrator.** Each finished `ctx.call_llm` in a run trace can be continued as its own chat — seeded from that call's recorded conversation, with the same tools reconnected — but it lives in a `CallChat` row, not in the orchestrator session. One continuation per call (not a branch); the chat pane swaps to it from a node's **llm calls** tab and returns to the orchestrator via **‹ orchestrator**. Continuations pin the provider/model/variant the source call ran with, overridable per-chat via the header model switcher.
 
 ## External MCP tool integrations
 
@@ -126,6 +130,8 @@ The orchestrator never executes MCP tools itself. Instead, each orchestrator tur
 - **Theme.** A light/dark toggle; the interface uses a paper-and-ink editorial aesthetic.
 - **Cost.** Per-turn and per-run cost is shown in USD where the provider reports it (currently OpenRouter).
 - **Markdown.** Chat renders Markdown with currency-safe math: `$50K` stays literal text; only `$$...$$` is treated as a math block.
+- **Continue subagent chat.** Open any node's **llm calls** tab and click **continue →** on a finished `call_llm` to keep talking to that sub-agent in the shared chat pane — same model, tools, and transcript, grown turn by turn. While a run is in flight, **watch →** streams the call live (read-only) until it persists, then the composer enables. Optional `label=` on `ctx.call_llm` names calls when a node makes several (shown in the tab and as the continuation title).
+- **Chat model switcher.** The chat header's model control (▾ picker + reasoning-variant pill) applies to whichever conversation is active: the orchestrator (persists to Settings) or a subagent continuation (per-call, in memory). In-flight live calls have a fixed model — no picker until they land.
 
 ## Configuring providers & models
 
@@ -140,7 +146,7 @@ Settings ("providers & models") is where you connect providers and choose models
 
 ## Data model
 
-SQLite (`./workflow_builder.db` by default), ten tables: `workflows`, `nodes`, `edges`, `runs`, `node_runs`, `sessions`, `messages`, `settings`, `credentials`, and `mcp_credentials`.
+SQLite (`./workflow_builder.db` by default), eleven tables: `workflows`, `nodes`, `edges`, `runs`, `node_runs`, `call_chats`, `sessions`, `messages`, `settings`, `credentials`, and `mcp_credentials`.
 
 ```
 Workflow   { id, name, created_at, input_node_id, output_node_id }
@@ -152,6 +158,9 @@ Run        { id, workflow_id, kind: "user"|"orchestrator",
              inputs, outputs, error, total_cost, workflow_snapshot }
 NodeRun    { id, run_id, node_id, status, inputs, outputs,
              logs, llm_calls, tool_calls, error, duration_ms, cost }
+CallChat   { id, workflow_id, node_run_id, call_id, label,
+             model, provider_id, variant, tools, messages,
+             created_at, updated_at }   # one row per (node_run_id, call_id)
 Session    { id, workflow_id, created_at }
 Message    { id, session_id, role, content, tool_calls, reasoning_details, cost, ts }
 Credential { provider: "codex"|"xai", access_token, refresh_token, expires_at, account_id?, label? }
@@ -181,6 +190,7 @@ backend/
     api/
       workflows.py nodes.py edges.py   # Graph CRUD + project import/export
       runs.py          # Run lifecycle, rerun-from-snapshot, WebSocket event stream
+      call_chats.py    # Continue-chat: open/list/send/cancel + WebSocket turn stream
       files.py         # File-viewer endpoint: resolve a path, classify + return contents; OS open/reveal
       orchestrator.py  # Chat sessions + SSE turn streaming
       settings.py      # DB-backed settings (backward-compat hydration)
@@ -202,10 +212,12 @@ backend/
       prompt.py tools.py               # System prompt + 16-tool surface
     runner/
       runner.py child.py service.py    # Subprocess spawn, scheduler, run lifecycle + persistence
+      chat.py chat_child.py            # Continue-chat turn runner + single-call_llm child
+      subprocess_io.py                 # Shared stdin/stdout/MCP plumbing for child subprocesses
       ctx.py tools.py                  # Injected node context + built-in tool registry
       llm.py mcp.py                    # Node-side call_llm + MCP client
       events.py                        # In-memory run event pub/sub → WebSocket
-  tests/               # pytest: runner, orchestrator, mcp, llm transport, catalog, compaction, images, run recovery, workflow export
+  tests/               # pytest: runner, orchestrator, mcp, llm transport, catalog, compaction, images, run recovery, workflow export, call chats
 frontend/
   src/
     App.tsx            # Top-level shell and app state
@@ -214,9 +226,10 @@ frontend/
     providerCatalog.ts modelVariant.ts   # Backend catalog client + reasoning variants
     theme.ts           # Light/dark theme
     auth.ts mcpApi.ts  # Provider-OAuth + MCP clients
-    orchestratorStream.ts runWebSocket.ts notify.ts
+    orchestratorStream.ts callChatStream.ts chatBlocks.ts
+    runWebSocket.ts notify.ts
     components/
-      TopBar.tsx ChatPanel.tsx Canvas.tsx Hero.tsx HeroComposer.tsx ProjectTransferPanel.tsx NodePanel.tsx RunPanel.tsx
+      TopBar.tsx ChatPanel.tsx ModelSwitcher.tsx Canvas.tsx Hero.tsx HeroComposer.tsx ProjectTransferPanel.tsx NodePanel.tsx RunPanel.tsx
       Settings.tsx ProviderDialogs.tsx ImageAttachments.tsx ExecutionStats.tsx
       FilePathLink.tsx FileViewerOverlay.tsx   # Clickable paths + the file-viewer side panel
       ThemeToggle.tsx SnapshotBanner.tsx SnapshotRunPanel.tsx Markdown.tsx ...

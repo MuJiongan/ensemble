@@ -1,8 +1,9 @@
 import type {
   Workflow, WorkflowDetail, WorkflowExport, WFNode, WFEdge, Run, IOPort, NodeConfig,
   OrchestratorSession, ChatHistory, OrchestratorEvent, FsFile,
+  CallChat, ModelSelection,
 } from './types';
-import { settingsHeaders, type LlmTarget } from './localSettings';
+import { settingsHeaders, callChatTurnNodeHeaders, type LlmTarget } from './localSettings';
 
 /** Request failure carrying the HTTP status, so callers can branch on it
  * (404 = the resource is gone, vs. transient/network-ish failures). */
@@ -18,8 +19,9 @@ async function request<T>(
   path: string,
   body?: unknown,
   target: LlmTarget = 'base',
+  extraHeaders?: Record<string, string>,
 ): Promise<T> {
-  const headers: Record<string, string> = { ...settingsHeaders(target) };
+  const headers: Record<string, string> = { ...settingsHeaders(target), ...(extraHeaders ?? {}) };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   const r = await fetch(path, {
     method,
@@ -32,6 +34,12 @@ async function request<T>(
   }
   if (r.status === 204) return undefined as T;
   return (await r.json()) as T;
+}
+
+/** Build an absolute ws(s):// URL for a backend WebSocket path. */
+function wsUrl(path: string): string {
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${window.location.host}${path}`;
 }
 
 export interface NewNodePayload {
@@ -85,10 +93,7 @@ export const api = {
   deleteRun: (rid: string) => request<{ ok: true }>('DELETE', `/api/runs/${rid}`),
   getRun: (rid: string) => request<Run>('GET', `/api/runs/${rid}`),
   listRuns: (wid: string) => request<Run[]>('GET', `/api/workflows/${wid}/runs`),
-  runEventsUrl: (rid: string) => {
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${proto}//${window.location.host}/api/runs/${rid}/events`;
-  },
+  runEventsUrl: (rid: string) => wsUrl(`/api/runs/${rid}/events`),
 
   // --- file viewer ---------------------------------------------------------
   readFile: (path: string) =>
@@ -108,6 +113,31 @@ export const api = {
     request<{ ok: true }>('DELETE', `/api/sessions/${sid}/messages`),
   cancelOrchestratorTurn: (sid: string) =>
     request<{ cancelled: boolean }>('POST', `/api/sessions/${sid}/cancel`),
+
+  // --- continue-chat (call_llm continuations) -------------------------------------
+  /** Create (or fetch the existing) continuation conversation for one call_llm call. */
+  openCallChat: (nodeRunId: string, callId: string) =>
+    request<CallChat>(
+      'POST',
+      `/api/node-runs/${nodeRunId}/llm-calls/${encodeURIComponent(callId)}/chat`,
+    ),
+  /** Send a follow-up turn. `sel` pins the provider/model/variant for this turn
+   * (defaults to the continuation's recorded model; overridden by the model switcher). */
+  sendCallChatTurn: (cid: string, text: string, sel: ModelSelection | null) =>
+    request<{ turn_id: string }>(
+      'POST',
+      `/api/call-chats/${cid}/turns`,
+      // Only carry a model name when a provider is actually selected — the
+      // provider rides in via headers (callChatTurnNodeHeaders also no-ops
+      // without one), so sending a bare model would pair it with no/old
+      // provider. No provider → empty → backend keeps the recorded model.
+      { text, model: sel?.providerID ? (sel.modelID ?? '') : '' },
+      'node',
+      callChatTurnNodeHeaders(sel),
+    ),
+  cancelCallChatTurn: (turnId: string) =>
+    request<{ cancelled: boolean }>('POST', `/api/call-chats/turns/${turnId}/cancel`),
+  callChatEventsUrl: (turnId: string) => wsUrl(`/api/call-chats/turns/${turnId}/events`),
 
   /**
    * Send a user message to the orchestrator session and stream back its events.

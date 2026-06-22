@@ -1,7 +1,7 @@
 import type {
   WorkflowDetail, NodeRun, NodeRunStatus, RunEvent,
 } from '../types';
-import { modelStatsFromCalls } from '../appHelpers';
+import { modelStatsFromCalls, formatTokenCount } from '../appHelpers';
 import { JsonView } from './JsonView';
 import { ExecutionStats } from './ExecutionStats';
 import { LogsView } from './LogsView';
@@ -37,6 +37,8 @@ export interface CallRound {
 
 export interface LiveLLMCall {
   call_id: string;
+  /** Short human name from ctx.call_llm(label=...); falls back to "call N". */
+  label?: string;
   model: string;
   tools: string[];
   rounds: CallRound[];
@@ -45,6 +47,10 @@ export interface LiveLLMCall {
   cost?: number;
   usage?: Record<string, unknown>;
   errorMsg?: string;
+  // True when this finished call has a saved conversation that can be resumed
+  // as a chat. Only set on historical (persisted) traces — live calls aren't
+  // continuable until they finish and persist.
+  hasChat?: boolean;
 }
 
 export type DirectCallStatus = 'pending' | 'ok' | 'err';
@@ -60,6 +66,9 @@ export interface DirectToolCall {
 
 export interface NodeTrace {
   node_id: string;
+  // The persisted NodeRun id, present only for historical/snapshot traces
+  // (not live aggregation). Needed to address a call's continuation.
+  node_run_id?: string;
   status: NodeRunStatus;
   inputs?: Record<string, unknown>;
   outputs?: Record<string, unknown>;
@@ -130,11 +139,18 @@ export function aggregateEvents(events: RunEvent[]): NodeTrace[] {
     return t;
   };
 
-  const ensureCall = (t: NodeTrace, call_id: string, model = '', tools: string[] = []): LiveLLMCall => {
+  const ensureCall = (
+    t: NodeTrace,
+    call_id: string,
+    model = '',
+    tools: string[] = [],
+    label?: string,
+  ): LiveLLMCall => {
     let c = t.llmCallById.get(call_id);
     if (!c) {
       c = {
         call_id,
+        label,
         model,
         tools,
         rounds: [],
@@ -146,6 +162,7 @@ export function aggregateEvents(events: RunEvent[]): NodeTrace[] {
     } else {
       if (model && !c.model) c.model = model;
       if (tools.length && !c.tools.length) c.tools = tools;
+      if (label && !c.label) c.label = label;
     }
     return c;
   };
@@ -158,7 +175,7 @@ export function aggregateEvents(events: RunEvent[]): NodeTrace[] {
     } else if (ev.type === 'log') {
       ensureNode(ev.node_id).logs.push(ev.msg);
     } else if (ev.type === 'llm_call_started') {
-      ensureCall(ensureNode(ev.node_id), ev.call_id, ev.model, ev.tools);
+      ensureCall(ensureNode(ev.node_id), ev.call_id, ev.model, ev.tools, ev.label);
     } else if (ev.type === 'llm_round_started') {
       ensureRound(ensureCall(ensureNode(ev.node_id), ev.call_id), ev.round);
     } else if (ev.type === 'llm_call_chunk') {
@@ -308,8 +325,11 @@ export function aggregateEvents(events: RunEvent[]): NodeTrace[] {
 
 interface HistoricalLLMCall {
   call_id?: string;
+  label?: string;
   model?: string;
   tools?: string[];
+  // Lean run payload flag: this call has a saved conversation to continue.
+  has_chat?: boolean;
   content?: string;
   tool_calls_made?: Array<{
     name?: string;
@@ -355,6 +375,7 @@ export function nodeRunToTrace(nr: NodeRun): NodeTrace {
     };
     const c: LiveLLMCall = {
       call_id: id,
+      label: rec.label,
       model: rec.model ?? '',
       tools: rec.tools ?? [],
       rounds: [round],
@@ -362,6 +383,7 @@ export function nodeRunToTrace(nr: NodeRun): NodeTrace {
       status: 'done',
       cost: rec.cost,
       usage: rec.usage,
+      hasChat: rec.has_chat ?? false,
     };
     llmCalls.push(c);
     llmCallById.set(id, c);
@@ -392,6 +414,7 @@ export function nodeRunToTrace(nr: NodeRun): NodeTrace {
 
   return {
     node_id: nr.node_id,
+    node_run_id: nr.id,
     status: nr.status,
     inputs: nr.inputs,
     outputs: nr.outputs,
@@ -439,12 +462,10 @@ export function NodeTraceCard({
 }: NodeTraceCardProps) {
   const nodeName =
     workflow.nodes.find((n) => n.id === trace.node_id)?.name ?? trace.node_id;
-  const modelStats = modelStatsFromCalls(
-    trace.llmCalls.map((c) => ({ model: c.model, usage: c.usage, cost: c.cost })),
-  );
+  // LLM calls live in their own "llm calls" tab now; this tab is structure:
+  // status, I/O, logs, direct tool calls, and compaction notes.
   const hasSecondary =
     trace.logs.length > 0 ||
-    trace.llmCalls.length > 0 ||
     trace.directToolCalls.length > 0 ||
     trace.compactions.length > 0;
 
@@ -456,12 +477,8 @@ export function NodeTraceCard({
           alignItems: 'baseline',
           gap: 8,
           padding: '4px 0 6px',
-          // Border lives on ExecutionStats (or trace-content-start below) so we
-          // don't stack two rules when model stats are present.
-          ...(!modelStats ? {
-            borderBottom: '1px solid var(--rule-2)',
-            marginBottom: 10,
-          } : {}),
+          borderBottom: '1px solid var(--rule-2)',
+          marginBottom: 10,
         }}
       >
         <span className={`node-state-dot ${STATE_CLASS[trace.status]}`} />
@@ -487,12 +504,7 @@ export function NodeTraceCard({
         </span>
       </div>
 
-      <ExecutionStats modelStats={modelStats} marginTop={modelStats ? 4 : 0} />
-
-      <div
-        className={!modelStats ? 'trace-content-start' : undefined}
-        style={{ display: 'flex', flexDirection: 'column', gap: 14, marginTop: modelStats ? 12 : 0 }}
-      >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         {trace.error && (
           <>
             <pre
@@ -540,22 +552,6 @@ export function NodeTraceCard({
               </section>
             )}
 
-            {trace.llmCalls.length > 0 && (
-              <section className="snapshot-io-section snapshot-io-section--detail">
-                <div className="snapshot-io-section__head">
-                  <span className="smallcaps snapshot-io-section__title">llm calls</span>
-                  <span className="snapshot-io-section__count">
-                    {trace.llmCalls.length} {trace.llmCalls.length === 1 ? 'call' : 'calls'}
-                  </span>
-                </div>
-                <div className="trace-dense-list">
-                  {trace.llmCalls.map((c, idx) => (
-                    <LLMCallCard key={c.call_id} call={c} index={idx} />
-                  ))}
-                </div>
-              </section>
-            )}
-
             {trace.directToolCalls.length > 0 && (
               <section className="snapshot-io-section snapshot-io-section--detail">
                 <div className="snapshot-io-section__head">
@@ -597,7 +593,71 @@ export function NodeTraceCard({
   );
 }
 
+// --- llm calls tab --------------------------------------------------------
+//
+// The node's LLM calls, lifted out of the trace tab into their own tab. Per
+// model stats up top, then one card per ctx.call_llm. Clicking a card opens the
+// call in the shared chat pane: a finished call as a continuation (composer
+// enabled), an in-flight call streaming live (read-only until it lands). A rare
+// finished-but-unsaved call (over the persist budget) keeps the inline rounds.
+
+interface NodeLlmCallsViewProps {
+  trace: NodeTrace;
+  /** True when these are an in-flight run's calls (streamed from events). */
+  live?: boolean;
+  /** Open a call in the chat pane (continue if finished, watch if live). */
+  onOpen?: (call: LiveLLMCall, callIndex: number) => void;
+}
+
+export function NodeLlmCallsView({ trace, live, onOpen }: NodeLlmCallsViewProps) {
+  if (trace.llmCalls.length === 0) {
+    return (
+      <div
+        className="serif"
+        style={{ fontStyle: 'italic', color: 'var(--ink-3)', fontSize: 13, lineHeight: 1.55 }}
+      >
+        this node made no LLM calls in the selected run.
+      </div>
+    );
+  }
+  // A per-model rollup only earns its place when there's more than one call —
+  // a single call's card already carries its own model + token + cost line.
+  const modelStats =
+    trace.llmCalls.length > 1
+      ? modelStatsFromCalls(
+          trace.llmCalls.map((c) => ({ model: c.model, usage: c.usage, cost: c.cost })),
+        )
+      : null;
+  return (
+    <div className="fade-in" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {modelStats && <ExecutionStats modelStats={modelStats} marginTop={0} />}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {trace.llmCalls.map((c, idx) => {
+          // Live calls are always openable (watch them stream); finished calls
+          // need a saved transcript to continue.
+          const canOpen =
+            !!onOpen && (live || (!!trace.node_run_id && c.status === 'done' && !!c.hasChat));
+          return (
+            <LLMCallCard
+              key={c.call_id}
+              call={c}
+              index={idx}
+              live={live}
+              onContinue={canOpen ? () => onOpen!(c, idx) : undefined}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // --- LLM call cards -------------------------------------------------------
+
+function callDisplayName(call: LiveLLMCall, index: number): string {
+  const label = call.label?.trim();
+  return label || `call ${index + 1}`;
+}
 
 function llmStatusMeta(call: LiveLLMCall): {
   label: string;
@@ -613,9 +673,20 @@ function llmStatusMeta(call: LiveLLMCall): {
   return { label: 'done', color: 'var(--state-ok)', live: false };
 }
 
-function LLMCallCard({ call, index }: { call: LiveLLMCall; index: number }) {
+function LLMCallCard({
+  call, index, onContinue, live,
+}: {
+  call: LiveLLMCall;
+  index: number;
+  /** When set, the call renders as an elegant card whose click opens the call
+   * in the chat pane (continue if finished, watch if live). */
+  onContinue?: () => void;
+  /** True when this is an in-flight run's call (streamed, read-only). */
+  live?: boolean;
+}) {
   const isStreaming = call.status === 'streaming';
   const status = llmStatusMeta(call);
+  const callName = callDisplayName(call, index);
   const lastRoundIdx = call.rounds.length - 1;
   const showWaiting =
     isStreaming &&
@@ -624,11 +695,81 @@ function LLMCallCard({ call, index }: { call: LiveLLMCall; index: number }) {
     !isStreaming && typeof call.cost === 'number' && call.cost > 0
       ? `$${call.cost.toFixed(4)}`
       : undefined;
+  // Count tool *calls actually made* (across rounds), not the tools available
+  // to the call — "8 tool calls" is what the user means, not "2 tools".
+  const toolCallCount = call.rounds.reduce((n, r) => n + r.toolCalls.length, 0);
+  const toolHint = toolCallCount > 0
+    ? `${toolCallCount} tool ${toolCallCount === 1 ? 'call' : 'calls'}`
+    : undefined;
   const hintParts = [
     call.model || '…',
-    call.tools.length > 0 ? call.tools.join(', ') : undefined,
+    toolHint,
     costHint,
   ].filter(Boolean);
+
+  // A continuable call renders as an elegant clickable card (matching the I/O
+  // cards): model + token/cost/tool stats + an output preview, with the whole
+  // card opening the continuation in the chat pane. The transcript itself reads
+  // there, not inline.
+  if (onContinue) {
+    const usage = (call.usage ?? {}) as Record<string, unknown>;
+    const inTok = Number(usage.prompt_tokens) || 0;
+    const outTok = Number(usage.completion_tokens) || 0;
+    const metaParts = [
+      inTok ? `${formatTokenCount(inTok)} in` : undefined,
+      outTok ? `${formatTokenCount(outTok)} out` : undefined,
+      costHint,
+      toolHint,
+    ].filter(Boolean) as string[];
+    const preview = call.rounds[lastRoundIdx]?.content?.trim() || '';
+    const streaming = live && call.status === 'streaming';
+
+    return (
+      <button
+        type="button"
+        className="port-card port-card--llm fade-in"
+        onClick={onContinue}
+        title={streaming ? 'watch this call stream' : 'continue this conversation'}
+      >
+        <div className="port-card__head">
+          <span className="port-card__label">
+            <span className="port-card__name">{callName}</span>
+            <span className="port-card__hint">{call.model || '…'}</span>
+          </span>
+          <span className="port-card__meta">
+            {streaming && (
+              <span
+                className="smallcaps"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 9, color: 'var(--ink-4)' }}
+              >
+                <span className="caret" />
+                streaming
+              </span>
+            )}
+            <span className="port-card__open">{streaming ? 'watch →' : 'continue →'}</span>
+          </span>
+        </div>
+        {metaParts.length > 0 && (
+          <div
+            className="mono"
+            style={{ marginTop: 7, fontSize: 10, letterSpacing: '0.04em', color: 'var(--ink-4)' }}
+          >
+            {metaParts.join('  ·  ')}
+          </div>
+        )}
+        {preview ? (
+          <div className="port-card__value">{preview}</div>
+        ) : streaming ? (
+          <div
+            className="serif"
+            style={{ marginTop: 7, fontStyle: 'italic', fontSize: 12.5, color: 'var(--ink-4)' }}
+          >
+            running…
+          </div>
+        ) : null}
+      </button>
+    );
+  }
 
   return (
     <details className="trace-fold trace-fold--nested fade-in" open={isStreaming}>
@@ -636,7 +777,7 @@ function LLMCallCard({ call, index }: { call: LiveLLMCall; index: number }) {
         <span className="trace-fold__lead">
           <span className="trace-fold__chevron" aria-hidden>▸</span>
           <span className="trace-fold__label">
-            <span className="mono" style={{ fontSize: 11 }}>call {index + 1}</span>
+            <span className="mono" style={{ fontSize: 11 }}>{callName}</span>
             <span className="trace-fold__hint">{hintParts.join(' · ')}</span>
           </span>
         </span>
