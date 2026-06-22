@@ -274,3 +274,26 @@ export function settingsHeaders(_target: LlmTarget = 'base'): Record<string, str
   applyTarget(h, s, s.node, NODE_HEADERS);
   return h;
 }
+
+/**
+ * Node-target header overrides for a continue-chat turn. Pins the node
+ * provider / model / variant to `sel` — the continuation's chosen model, which defaults
+ * to the model the source call_llm ran with — instead of the current
+ * node-default selection. Merged *over* the base settings headers by the
+ * request helper, so the rest (MCP, parallel, custom instructions) is unchanged.
+ *
+ * Returns `{}` when `sel` has no provider (e.g. a pre-feature call with nothing
+ * recorded), so the request falls back to the current node default.
+ */
+export function callChatTurnNodeHeaders(sel: ModelSelection | null): Record<string, string> {
+  if (!sel || !sel.providerID) return {};
+  const s = loadSettings();
+  // Seed key + base url empty so switching to a different provider can't leak
+  // the previous provider's key from the base node headers.
+  const h: Record<string, string> = {
+    [NODE_HEADERS.apiKey]: '',
+    [NODE_HEADERS.baseURL]: '',
+  };
+  applyTarget(h, s, sel, NODE_HEADERS);
+  return h;
+}

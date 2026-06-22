@@ -11,6 +11,8 @@ as parallel streaming cards instead of mashing them together.
 from __future__ import annotations
 import inspect
 import itertools
+import json
+import os
 import threading
 from pathlib import Path
 from typing import Callable
@@ -25,6 +27,41 @@ from app.runner import llm as llm_mod
 
 
 EmitFn = Callable[[dict], None]
+
+# A call's full message history is persisted on its run-trace record so the
+# "continue chat" feature can re-seed the exact conversation. It's the only
+# place we store the verbatim transcript, so cap it: a long agent loop can
+# accumulate large tool outputs, and we don't want to bloat the NodeRun JSON
+# (which is read on every run load). Over budget → store None; the call is
+# then simply not continuable (the UI hides its "open in chat" affordance).
+_SEED_MSG_BUDGET_BYTES = 256 * 1024
+
+
+def _strip_message_attachments(messages: list) -> list:
+    """Drop the ``attachments`` key (image/file base64 that rides tool messages
+    for the protocol adapters) from a copy of each message.
+
+    Tool messages already carry a text-only ``content`` size-note; the base64
+    only exists for the in-process round and must never reach persistence —
+    otherwise a single screenshot blows the seed budget and silently makes the
+    call non-continuable, and any that slipped under the cap would bloat the row."""
+    out = []
+    for m in messages:
+        if isinstance(m, dict) and "attachments" in m:
+            m = {k: v for k, v in m.items() if k != "attachments"}
+        out.append(m)
+    return out
+
+
+def _within_seed_budget(messages: list) -> bool:
+    """True if `messages` serialize under the persistence budget. Conservative:
+    a serialization failure counts as over-budget (don't persist garbage)."""
+    if not messages:
+        return False
+    try:
+        return len(json.dumps(messages, default=str)) <= _SEED_MSG_BUDGET_BYTES
+    except (TypeError, ValueError):
+        return False
 
 
 class _ServerProxy:
@@ -165,20 +202,29 @@ class Ctx:
             self.logs.append(s)
         self._on_event({"type": "log", "msg": s})
 
-    def call_llm(self, model: str | None = None, prompt=None, tools=None, **opts) -> dict:
+    def call_llm(
+        self,
+        model: str | None = None,
+        prompt=None,
+        tools=None,
+        label: str | None = None,
+        **opts,
+    ) -> dict:
         m = model or self._default_model
         if not m:
             raise RuntimeError("call_llm: no model specified and no default configured")
 
         call_id = self._next_call_id()
-        self._on_event(
-            {
-                "type": "llm_call_started",
-                "call_id": call_id,
-                "model": m,
-                "tools": tools or [],
-            }
-        )
+        call_label = (label or "").strip() or None
+        started: dict = {
+            "type": "llm_call_started",
+            "call_id": call_id,
+            "model": m,
+            "tools": tools or [],
+        }
+        if call_label:
+            started["label"] = call_label
+        self._on_event(started)
         try:
             result = llm_mod.call_llm(
                 m,
@@ -202,15 +248,28 @@ class Ctx:
             )
             raise
 
+        # Strip attachment base64 before the budget check: it only matters for
+        # the in-process round, and counting/persisting it would wrongly push
+        # transcripts over budget (silently disabling continuation).
+        seed_msgs = _strip_message_attachments(result.get("messages") or [])
         record = {
             "call_id": call_id,
             "model": m,
             "prompt": prompt if isinstance(prompt, str) else "<messages>",
             "tools": tools or [],
+            **({"label": call_label} if call_label else {}),
             "content": result.get("content", ""),
             "tool_calls_made": result.get("tool_calls_made", []),
             "usage": result.get("usage", {}),
             "cost": result.get("cost", 0.0),
+            # Provider + reasoning variant this call actually ran with, so a
+            # continuation can pin the *same* model end-to-end instead of
+            # inheriting whatever node default Settings happens to hold later.
+            "provider_id": (os.getenv("LLM_PROVIDER_ID") or "").strip(),
+            "variant": os.getenv("DEFAULT_NODE_VARIANT") or "",
+            # Full conversation, for resuming this call as a chat. None when it
+            # exceeds the persistence budget (call is then not continuable).
+            "messages": seed_msgs if _within_seed_budget(seed_msgs) else None,
         }
         with self._lock:
             self.llm_calls.append(record)

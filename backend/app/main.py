@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import init_db, SessionLocal
-from app.api import workflows, nodes, edges, runs, orchestrator
+from app.api import workflows, nodes, edges, runs, orchestrator, call_chats
 from app.api import settings as settings_api
 from app.api import auth as auth_api
 from app.api import mcp as mcp_api
@@ -147,6 +147,7 @@ app.include_router(nodes.router)
 app.include_router(edges.router)
 app.include_router(runs.router)
 app.include_router(orchestrator.router)
+app.include_router(call_chats.router)
 app.include_router(settings_api.router)
 app.include_router(auth_api.router)
 app.include_router(mcp_api.router)

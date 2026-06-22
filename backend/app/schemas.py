@@ -196,3 +196,34 @@ class AttachmentIn(BaseModel):
 class UserMessageIn(BaseModel):
     text: str
     attachments: list[AttachmentIn] = []
+
+
+# --- continue-chat (call_llm continuation) schemas ------------------------
+
+
+class CallChatOut(BaseModel):
+    """A call's continuation with its full transcript (OpenAI-shape messages)."""
+    id: str
+    workflow_id: str
+    node_run_id: str
+    call_id: str
+    label: str
+    model: str
+    # Provider + reasoning variant the source call ran with — the frontend sends
+    # these as the node selection so the continuation keeps using the same model.
+    provider_id: str = ""
+    variant: str = ""
+    tools: list[Any] = Field(default_factory=list)
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class CallChatTurnIn(BaseModel):
+    text: str
+    # The continuation's currently-selected model (from the chat model
+    # switcher). Empty → keep the stored model. Provider + variant ride in via
+    # the X-Node-* headers; this carries the model name to match them.
+    model: str = ""
+
+
+class CallChatTurnOut(BaseModel):
+    turn_id: str

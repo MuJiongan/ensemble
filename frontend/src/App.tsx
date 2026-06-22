@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { TopBar } from './components/TopBar';
 import { Canvas } from './components/Canvas';
 import { ChatPanel, type ChatMessage } from './components/ChatPanel';
 import { NodePanel } from './components/NodePanel';
+import { aggregateEvents } from './components/NodeTraceCard';
 import { RunPanel } from './components/RunPanel';
 import { SettingsPanel } from './components/Settings';
 import { Hero } from './components/Hero';
@@ -13,9 +14,10 @@ import { ProjectTransferPanel } from './components/ProjectTransferPanel';
 import { LlmAuthToast, McpAuthDialog } from './components/ReAuthDialogs';
 import { fetchStatus as fetchAuthStatus } from './auth';
 import { probeRemoteStatus } from './mcpApi';
-import { api } from './api';
+import { api, ApiError } from './api';
 import {
   loadSettings,
+  saveSettings,
   isConnected,
   SETTINGS_CHANGED_EVENT,
 } from './localSettings';
@@ -24,15 +26,19 @@ import {
   deriveWorkflowName,
   formatWorkflowExport,
   historyToChatMessages,
+  messagesToChat,
+  liveCallToChat,
   parseWorkflowExport,
   snapshotToDetail,
   snapshotToExport,
 } from './appHelpers';
 import { useOrchestratorStream } from './orchestratorStream';
+import { useCallChatStream } from './callChatStream';
 import { useImageAttachments } from './components/ImageAttachments';
 import { useRunWebSocket } from './runWebSocket';
+import { getCatalog, findModel, CATALOG_CHANGED_EVENT, type Catalog } from './providerCatalog';
 import type {
-  Workflow, WorkflowDetail, NodeRunStatus, Run, CurrentRun,
+  Workflow, WorkflowDetail, NodeRunStatus, Run, CurrentRun, ModelSelection, CallChat,
 } from './types';
 
 type View = 'workflow' | 'settings';
@@ -81,6 +87,26 @@ export default function App() {
   const [chatByWorkflow, setChatByWorkflow] = useState<Record<string, ChatMessage[]>>({});
   // Workflows whose orchestrator is currently streaming.
   const [orchestratingIds, setOrchestratingIds] = useState<Set<string>>(new Set());
+
+  // Call-llm continuations, keyed by CallChat id. One continuation per call;
+  // they're reached only from a node's chat tab (not the orchestrator chat).
+  // State lives here so a streaming turn survives switching nodes/tabs.
+  const [callChatMessages, setCallChatMessages] = useState<Record<string, ChatMessage[]>>({});
+  // Per-continuation model selection — defaults to the model the source call
+  // ran with, overridable via the chat tab's model switcher.
+  const [callChatModelById, setCallChatModelById] = useState<Record<string, ModelSelection>>({});
+  const [streamingChatIds, setStreamingChatIds] = useState<Set<string>>(new Set());
+  const [catalog, setCatalog] = useState<Catalog | null>(null);
+  // The continuation currently shown in the chat pane (null = orchestrator).
+  // Set by a node's "continue →"; cleared by the chat header's "← orchestrator".
+  const [activeContinuation, setActiveContinuation] = useState<CallChat | null>(null);
+  // An in-flight call streaming into the chat pane (no persisted row yet). When
+  // its run finishes + persists, it transitions to a continuation (composer
+  // enabled). Mutually exclusive with activeContinuation.
+  const [activeLiveCall, setActiveLiveCall] = useState<
+    { runId: string; nodeId: string; callId: string; label: string } | null
+  >(null);
+
   type AppDialog =
     | { kind: 'none' }
     | { kind: 'alert'; message: string; variant?: 'default' | 'error' }
@@ -256,6 +282,11 @@ export default function App() {
     attachToRunRef,
   });
 
+  const { streamToCallChat, cancelCallChat, dropAllStreams } = useCallChatStream({
+    setCallChatMessages,
+    setStreamingChatIds,
+  });
+
   const enterSnapshotView = async (runId: string) => {
     try {
       const run = await api.getRun(runId);
@@ -287,10 +318,20 @@ export default function App() {
     setSelectedSnapshotNodeId(null);
   };
   // Switching workflows must drop snapshot view — the snapshot belongs to
-  // whatever workflow's runs the user was browsing before.
+  // whatever workflow's runs the user was browsing before. The active
+  // continuation belongs to a run too, so drop it back to the orchestrator.
   useEffect(() => {
     setViewingRun(null);
     setSelectedSnapshotNodeId(null);
+    setActiveContinuation(null);
+    setActiveLiveCall(null);
+    // Continuations belong to the previous workflow's runs — tear down any
+    // in-flight turn sockets and drop their cached transcripts/model picks so
+    // a stale stream can't mutate state under the newly-selected workflow.
+    dropAllStreams();
+    setCallChatMessages({});
+    setCallChatModelById({});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
 
   // viewingRun is captured at the moment snapshot view opens, so for an
@@ -336,14 +377,14 @@ export default function App() {
   // Mirror localStorage's orchestrator-model setting so the chat header reflects
   // what's actually being sent over the wire. Refreshed on save (custom event)
   // and on cross-tab edits (`storage`).
-  const [orchestratorModel, setOrchestratorModel] = useState<string>(
-    () => loadSettings().orchestrator?.modelID ?? '',
+  const [orchestratorSelection, setOrchestratorSelection] = useState<ModelSelection | null>(
+    () => loadSettings().orchestrator,
   );
   const [hasApiKey, setHasApiKey] = useState<boolean>(() => hasCredsForPreset(loadSettings()));
   useEffect(() => {
     const sync = () => {
       const s = loadSettings();
-      setOrchestratorModel(s.orchestrator?.modelID ?? '');
+      setOrchestratorSelection(s.orchestrator);
       setHasApiKey(hasCredsForPreset(s));
     };
     window.addEventListener(SETTINGS_CHANGED_EVENT, sync);
@@ -352,6 +393,19 @@ export default function App() {
       window.removeEventListener(SETTINGS_CHANGED_EVENT, sync);
       window.removeEventListener('storage', sync);
     };
+  }, []);
+  // Derived — always the orchestrator selection's model id (no separate state).
+  const orchestratorModel = orchestratorSelection?.modelID ?? '';
+
+  // Provider/model catalog for the chat model switcher (same source Settings
+  // uses). Loaded once; refreshed when the catalog changes (e.g. a provider
+  // connect/disconnect triggers a catalog refresh elsewhere).
+  useEffect(() => {
+    let alive = true;
+    const load = () => { void getCatalog().then((c) => { if (alive) setCatalog(c); }).catch(() => {}); };
+    load();
+    window.addEventListener(CATALOG_CHANGED_EVENT, load);
+    return () => { alive = false; window.removeEventListener(CATALOG_CHANGED_EVENT, load); };
   }, []);
 
   // On every workflow switch, hydrate its session + chat history if we have one.
@@ -602,6 +656,191 @@ export default function App() {
     }
   };
 
+  // --- call_llm in the chat pane ----------------------------------------
+  // The shared chat pane shows one of: the orchestrator (default), a finished
+  // call's continuation (composer enabled), or an in-flight call streaming live
+  // (composer disabled until it lands). Reached only from a node's "llm calls"
+  // tab. A live call transitions to a continuation when its run persists.
+  const variantsFor = (sel: ModelSelection | null): string[] =>
+    catalog && sel
+      ? (findModel(catalog, sel.providerID, sel.modelID)?.variants ?? [])
+      : [];
+
+  // "continue →" on a finished call: create-or-get its continuation, seed the
+  // transcript on first open (re-opening must not clobber a live in-memory
+  // one), and show it in the chat pane.
+  const openContinuation = async (nodeRunId: string, callId: string) => {
+    try {
+      const chat = await api.openCallChat(nodeRunId, callId);
+      setCallChatMessages((prev) =>
+        prev[chat.id] ? prev : { ...prev, [chat.id]: messagesToChat(chat.messages) });
+      setCallChatModelById((prev) =>
+        prev[chat.id]
+          ? prev
+          : {
+              ...prev,
+              [chat.id]: {
+                providerID: chat.provider_id,
+                modelID: chat.model,
+                variant: chat.variant || null,
+              },
+            });
+      setActiveLiveCall(null);
+      setActiveContinuation(chat);
+      setRightPanelMode('chat');
+    } catch (e) {
+      setDialog({
+        kind: 'alert',
+        message: `couldn't continue this call: ${e instanceof Error ? e.message : String(e)}`,
+        variant: 'error',
+      });
+    }
+  };
+
+  // "continue →" on an in-flight call: stream it into the chat pane (read-only)
+  // from the run's live events.
+  const openLiveCall = (runId: string, nodeId: string, callId: string, label: string) => {
+    setActiveContinuation(null);
+    setActiveLiveCall({ runId, nodeId, callId, label });
+    setRightPanelMode('chat');
+  };
+
+  // The live call's bubbles, derived from its run's event stream — recomputed as
+  // events arrive, so the chat pane streams. Keyed on the *active* run's events
+  // only, so an event on some other concurrent run doesn't re-aggregate here.
+  const activeRun = activeLiveCall ? liveRuns[activeLiveCall.runId] ?? null : null;
+  const liveCall = useMemo(() => {
+    if (!activeLiveCall || !activeRun) return null;
+    const t = aggregateEvents(activeRun.events).find((x) => x.node_id === activeLiveCall.nodeId);
+    return t?.llmCalls.find((c) => c.call_id === activeLiveCall.callId) ?? null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeLiveCall, activeRun?.events]);
+
+  // When a live call's run finishes + persists, swap to its continuation so the
+  // composer enables. Retries briefly — node_runs commit just after run_finished.
+  const liveRunStatus = activeLiveCall ? liveRuns[activeLiveCall.runId]?.status : undefined;
+  useEffect(() => {
+    if (!activeLiveCall) return;
+    if (liveRunStatus !== 'success' && liveRunStatus !== 'error' && liveRunStatus !== 'cancelled') {
+      return;
+    }
+    const target = activeLiveCall;
+    let cancelled = false;
+    let tries = 0;
+    let timer: number | undefined;
+    const attempt = async () => {
+      tries += 1;
+      try {
+        const full = await api.getRun(target.runId);
+        const nr = full.node_runs.find((n) => n.node_id === target.nodeId);
+        if (nr) {
+          let chat: CallChat;
+          try {
+            chat = await api.openCallChat(nr.id, target.callId);
+          } catch (e) {
+            // A 404 here is terminal, not transient: the call has no continuable
+            // transcript. That can mean it failed before finishing (an errored
+            // call_llm is never recorded) OR its transcript exceeded the persist
+            // budget — the backend returns distinct details, but both conclude
+            // "can't continue", so use one neutral message rather than parse the
+            // body. Stop retrying and drop the now-pointless read-only live view.
+            if (e instanceof ApiError && e.status === 404) {
+              if (cancelled) return;
+              setActiveLiveCall((cur) => (cur === target ? null : cur));
+              setDialog({
+                kind: 'alert',
+                message:
+                  'this call finished but can’t be continued — its conversation wasn’t saved (it may have failed, or its transcript was too large to persist).',
+                variant: 'error',
+              });
+              return;
+            }
+            throw e; // transient (e.g. node_run not committed yet) → retry
+          }
+          if (cancelled) return;
+          setCallChatMessages((prev) =>
+            prev[chat.id] ? prev : { ...prev, [chat.id]: messagesToChat(chat.messages) });
+          setCallChatModelById((prev) =>
+            prev[chat.id]
+              ? prev
+              : { ...prev, [chat.id]: { providerID: chat.provider_id, modelID: chat.model, variant: chat.variant || null } });
+          setActiveLiveCall((cur) => (cur === target ? null : cur));
+          setActiveContinuation(chat);
+          return;
+        }
+      } catch {
+        // node_run not written yet → retry below.
+      }
+      if (!cancelled && tries < 6) timer = window.setTimeout(attempt, 600);
+    };
+    void attempt();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeLiveCall, liveRunStatus]);
+
+  // The active chat conversation: live > continuation > orchestrator.
+  const cont = activeContinuation;
+  const chatMessages = activeLiveCall
+    ? (liveCall ? liveCallToChat(liveCall) : [])
+    : cont
+      ? (callChatMessages[cont.id] ?? [])
+      : messages;
+  // A live call is read-only (can't send while it streams / before it persists).
+  const chatDisabled = activeLiveCall
+    ? true
+    : cont
+      ? streamingChatIds.has(cont.id)
+      : isOrchestrating;
+  const chatSelection: ModelSelection | null = activeLiveCall
+    ? null
+    : cont
+      ? (callChatModelById[cont.id] ?? null)
+      : orchestratorSelection;
+  const chatModelLabel = activeLiveCall
+    ? (liveCall?.model ?? '')
+    : cont
+      ? (chatSelection?.modelID ?? '')
+      : orchestratorModel;
+  const conversationLabel = activeLiveCall?.label ?? cont?.label;
+  const onChatSend = (text: string) => {
+    if (activeLiveCall) return; // read-only while live
+    if (cont) void streamToCallChat(cont.id, text, callChatModelById[cont.id] ?? null);
+    else void handleSend(text);
+  };
+  const onChatCancel = () => {
+    if (activeLiveCall) return;
+    if (cont) cancelCallChat(cont.id);
+    else void cancelOrchestrator();
+  };
+  const backToOrchestrator = () => {
+    setActiveContinuation(null);
+    setActiveLiveCall(null);
+  };
+  // Model edits: a continuation's stay per-call (in memory); the orchestrator's
+  // persist to Settings. A live call's model is fixed, so no picker (below).
+  const onChatPickModel = (sel: ModelSelection) => {
+    if (cont) {
+      setCallChatModelById((prev) => ({ ...prev, [cont.id]: sel }));
+    } else {
+      const s = loadSettings();
+      saveSettings({ ...s, orchestrator: sel });
+    }
+  };
+  const onChatCycleVariant = (next: string | null) => {
+    if (cont) {
+      setCallChatModelById((prev) => {
+        const cur = prev[cont.id];
+        return cur ? { ...prev, [cont.id]: { ...cur, variant: next } } : prev;
+      });
+    } else {
+      const s = loadSettings();
+      if (s.orchestrator) saveSettings({ ...s, orchestrator: { ...s.orchestrator, variant: next } });
+    }
+  };
+
   const topBarStatus: 'idle' | 'building' | 'running' | 'ready' = isOrchestrating
     ? 'building'
     : currentRun?.status === 'running' || currentRun?.status === 'pending'
@@ -831,16 +1070,35 @@ export default function App() {
                       }}
                     >
                       <ChatPanel
-                        messages={messages}
-                        onSend={handleSend}
+                        // Remount when the conversation identity changes (live
+                        // call / continuation / orchestrator) so transient
+                        // panel state — composer draft, scroll position — never
+                        // bleeds from one conversation into the next.
+                        key={
+                          activeLiveCall
+                            ? `live:${activeLiveCall.runId}:${activeLiveCall.nodeId}:${activeLiveCall.callId}`
+                            : cont
+                              ? `cont:${cont.id}`
+                              : `orch:${activeId ?? 'none'}`
+                        }
+                        messages={chatMessages}
+                        onSend={onChatSend}
                         pendingAttachments={imageAttachments.attachments}
                         onRemoveAttachment={imageAttachments.remove}
                         draggingFile={imageAttachments.dragging}
                         attachmentNotice={imageAttachments.notice}
-                        onCancel={cancelOrchestrator}
-                        disabled={isOrchestrating}
-                        modelLabel={orchestratorModel}
+                        onCancel={activeLiveCall ? undefined : onChatCancel}
+                        disabled={chatDisabled}
+                        modelLabel={chatModelLabel}
                         onClearContext={clearChatContext}
+                        conversationLabel={conversationLabel}
+                        onBack={backToOrchestrator}
+                        modelSelection={chatSelection}
+                        modelVariants={variantsFor(chatSelection)}
+                        catalog={catalog}
+                        // A live call's model is fixed — no picker while streaming.
+                        onPickModel={activeLiveCall ? undefined : onChatPickModel}
+                        onCycleVariant={activeLiveCall ? undefined : onChatCycleVariant}
                         onViewRun={(runId) => {
                           // Snapshot view renders inside the workspace tab —
                           // flip back from chat so the run panel is actually
@@ -875,6 +1133,8 @@ export default function App() {
                               // haven't materialised yet.
                               currentRun={viewingRunLive}
                               onSendErrorToOrchestrator={sendErrorToOrchestrator}
+                              onContinue={openContinuation}
+                              onViewLive={openLiveCall}
                             />
                           );
                         }
@@ -916,6 +1176,8 @@ export default function App() {
                           onChange={refreshDetail}
                           currentRun={currentRun}
                           onSendErrorToOrchestrator={sendErrorToOrchestrator}
+                          onContinue={openContinuation}
+                          onViewLive={openLiveCall}
                         />
                       )}
                       {!viewingRun && detail && !selectedNode && (

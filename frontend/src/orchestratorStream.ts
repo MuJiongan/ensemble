@@ -1,6 +1,10 @@
 import { useEffect, useRef } from 'react';
 import { api } from './api';
 import { GRAPH_MUTATING_TOOLS, WORKFLOW_METADATA_TOOLS } from './appHelpers';
+import {
+  foldContentDelta, foldReasoningDelta, appendToolCall, resolveToolCall,
+  appendParagraph, appendNotice, updateLastAssistant,
+} from './chatBlocks';
 import type { AssistantMessage, ChatMessage } from './components/ChatPanel';
 import type { OrchestratorEvent } from './types';
 
@@ -13,62 +17,28 @@ type AssistantMutation = (a: AssistantMessage) => AssistantMessage;
  * clickable while still running; the caller still also handles run_started
  * separately to attach the run panel WS. Pure for unit-testability. */
 export function reduceAssistantOnEvent(ev: OrchestratorEvent): AssistantMutation | null {
+  // Reasoning streams before visible content; content streams as deltas. Tool
+  // start/end push and resolve cards. (See chatBlocks for the folding rules.)
   if (ev.kind === 'assistant_thinking_chunk' && ev.text) {
-    // Reasoning streams before visible content. Append to the trailing
-    // thinking block when it's still live (no p/tool block has appeared
-    // since); otherwise start a fresh thinking block — the model is
-    // taking a second think mid-turn.
-    return (a) => {
-      const content = [...a.content];
-      const last = content[content.length - 1];
-      if (last && last.t === 'thinking') {
-        content[content.length - 1] = { ...last, text: last.text + ev.text };
-      } else {
-        content.push({ t: 'thinking', text: ev.text });
-      }
-      return { ...a, content };
-    };
+    return (a) => foldReasoningDelta(a, ev.text);
   }
   if (ev.kind === 'assistant_text_chunk' && ev.text) {
-    return (a) => {
-      const content = [...a.content];
-      const last = content[content.length - 1];
-      if (last && last.t === 'p') {
-        content[content.length - 1] = { ...last, text: last.text + ev.text };
-      } else {
-        content.push({ t: 'p', text: ev.text });
-      }
-      return { ...a, content };
-    };
+    return (a) => foldContentDelta(a, ev.text);
   }
   if (ev.kind === 'assistant_text' && ev.text) {
+    // Non-streaming full-text fallback: skip when the trailing paragraph
+    // already has text (the chunks already built it).
     return (a) => {
       const last = a.content[a.content.length - 1];
       if (last && last.t === 'p' && last.text) return a;
-      return { ...a, content: [...a.content, { t: 'p', text: ev.text }] };
+      return appendParagraph(a, ev.text);
     };
   }
   if (ev.kind === 'tool_call_start') {
-    return (a) => ({
-      ...a,
-      content: [
-        ...a.content,
-        { t: 'tool', tool: ev.tool, args: ev.args, argsFull: ev.args_full, status: 'pending' },
-      ],
-    });
+    return (a) => appendToolCall(a, { tool: ev.tool, args: ev.args, argsFull: ev.args_full });
   }
   if (ev.kind === 'tool_call_end') {
-    return (a) => {
-      const content = [...a.content];
-      for (let i = content.length - 1; i >= 0; i--) {
-        const b = content[i];
-        if (b.t === 'tool' && b.tool === ev.tool && b.status === 'pending') {
-          content[i] = { ...b, status: ev.status, result: ev.result };
-          break;
-        }
-      }
-      return { ...a, content };
-    };
+    return (a) => resolveToolCall(a, { tool: ev.tool, status: ev.status, result: ev.result });
   }
   if (ev.kind === 'run_started') {
     // Find the pending run_workflow block this run belongs to and stash the
@@ -89,13 +59,10 @@ export function reduceAssistantOnEvent(ev: OrchestratorEvent): AssistantMutation
     return (a) => ({ ...a, cost: (a.cost ?? 0) + ev.cost });
   }
   if (ev.kind === 'context_compacted') {
-    return (a) => ({ ...a, content: [...a.content, { t: 'notice', text: 'context compacted' }] });
+    return (a) => appendNotice(a, 'context compacted');
   }
   if (ev.kind === 'error') {
-    return (a) => ({
-      ...a,
-      content: [...a.content, { t: 'p', text: `*[error]* ${ev.message}` }],
-    });
+    return (a) => appendParagraph(a, `*[error]* ${ev.message}`);
   }
   if (ev.kind === 'done') {
     return (a) => ({ ...a, streaming: false });
@@ -135,11 +102,8 @@ export function useOrchestratorStream({
   const updateAssistant = (wid: string, mut: AssistantMutation) => {
     setChatByWorkflow((prev) => {
       const cur = prev[wid] ?? [];
-      if (cur.length === 0) return prev;
-      const last = cur[cur.length - 1];
-      if (last.role !== 'assistant') return prev;
-      const next: ChatMessage[] = [...cur.slice(0, -1), mut(last)];
-      return { ...prev, [wid]: next };
+      const next = updateLastAssistant(cur, mut);
+      return next === cur ? prev : { ...prev, [wid]: next };
     });
   };
 

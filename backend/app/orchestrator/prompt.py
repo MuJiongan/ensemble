@@ -163,7 +163,7 @@ def run(inputs, ctx):
 
 `ctx` provides:
 
-- `ctx.call_llm(prompt, tools=[...])` — runs an LLM inside the node. Pass tool names ([[NODE_TOOL_NAMES]]) in the `tools` list; the LLM running inside the node decides when to invoke them. Returns a dict with keys `content` (str), `tool_calls_made` (list), `usage`, `cost`. Omit the `model` arg (see *# design conventions*).
+- `ctx.call_llm(prompt, tools=[...])` — runs an LLM inside the node. Pass tool names ([[NODE_TOOL_NAMES]]) in the `tools` list; the LLM running inside the node decides when to invoke them. Returns a dict with keys `content` (str), `tool_calls_made` (list), `usage`, `cost`. Omit the `model` arg (see *# design conventions*). Optional `label` when a node makes several calls — keep it short and meaningful.
 - `ctx.tools.shell(...)` / `ctx.tools.read_file(...)` / `ctx.tools.web_fetch(...)` / … — direct (non-LLM) tool calls, same names, returning the same dicts the LLM-mediated form would produce. The agentic form above is the default; reserve direct calls for when there's nothing for a model to decide (see *# direct calls vs wrapping the tool in an agent*).
 - `ctx.log("...")` — appends a visible line to the run log.
 - `ctx.workdir` — `pathlib.Path` to a per-run scratch directory.
@@ -235,7 +235,7 @@ def run(inputs, ctx):
     items = inputs["items"]
     def _one(item):
         ctx.log(f"summarising {item}")
-        return ctx.call_llm(prompt=f"summarise: {item}")["content"]
+        return ctx.call_llm(prompt=f"summarise: {item}", label=str(item))["content"]
     with ThreadPoolExecutor(max_workers=min(8, len(items) or 1)) as pool:
         summaries = list(pool.map(_one, items))
     return {"summaries": summaries}

@@ -13,9 +13,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import uuid
 from collections import defaultdict, deque
-from typing import Any
+from typing import Any, Callable
 
 from app.runner import events as ev_mod
 
@@ -37,6 +38,45 @@ def _resolve_mcp_servers() -> str:
         return mcp_mod.resolve_oauth_config(raw, SessionLocal)
     except Exception:
         return raw
+
+
+def build_child_env() -> dict[str, str]:
+    """Build the env a runner child inherits, from the current process env
+    (which the request middleware has populated from the user's settings).
+
+    Node calls use the NODE_* credentials (independent of the orchestrator's
+    LLM_* creds), so a run uses the *node's* provider/model — not whatever the
+    orchestrator chat is signed into. OAuth-backed providers (codex/xai) get a
+    fresh access token resolved here and forwarded as the effective LLM_API_KEY;
+    the subprocess never touches the credentials DB itself. Shared by the
+    workflow runner and the continue-chat turn runner so both spawn with the
+    same node credentials + MCP config.
+    """
+    env_for_child: dict[str, str] = {
+        "LLM_API_KEY": os.getenv("NODE_API_KEY", ""),
+        "LLM_BASE_URL": os.getenv("NODE_BASE_URL", ""),
+        "PARALLEL_API_KEY": os.getenv("PARALLEL_API_KEY", ""),
+        # Provider id + node reasoning variant so the child can apply the
+        # catalog-computed reasoning options to each ``ctx.call_llm`` body.
+        "LLM_PROVIDER_ID": (os.getenv("NODE_PROVIDER_ID") or "").strip(),
+        "DEFAULT_NODE_VARIANT": os.getenv("DEFAULT_NODE_VARIANT", ""),
+        # MCP server config (opencode-style JSON); the child connects to these
+        # and registers their tools into its runtime registry. Remote OAuth
+        # servers get a fresh bearer injected here (the child has no DB access).
+        "MCP_SERVERS": _resolve_mcp_servers(),
+    }
+    pid = (os.getenv("NODE_PROVIDER_ID") or "").strip()
+    if pid in ("codex", "xai"):
+        from app.auth.resolve import resolve
+        creds = resolve(pid)
+        if creds is not None:
+            env_for_child["LLM_API_KEY"] = creds.access_token
+            env_for_child["LLM_PROVIDER_ID"] = pid
+            if pid == "codex":
+                env_for_child["LLM_ACCOUNT_ID"] = creds.account_id or ""
+            elif pid == "xai":
+                env_for_child["LLM_BASE_URL"] = "https://api.x.ai/v1"
+    return env_for_child
 
 
 def topo_sort(nodes: list[dict], edges: list[dict]) -> list[str]:
@@ -63,6 +103,115 @@ def topo_sort(nodes: list[dict], edges: list[dict]) -> list[str]:
     return out
 
 
+def drive_child_subprocess(
+    run_id: str,
+    module: str,
+    payload: dict,
+    terminal_event: Callable[[str, str | None], dict],
+) -> dict | None:
+    """Spawn ``python -m <module>``, pipe ``payload`` to its stdin, stream its
+    JSON-line stdout events into ``run_id``'s pub/sub, and drain stderr
+    concurrently (so a chatty child can't fill the stderr pipe and deadlock the
+    stdout read).
+
+    Shared by the workflow runner and the continue-chat turn runner — only the
+    payload, the spawned module, and the terminal-event shape differ, the last
+    supplied by ``terminal_event(status, error) -> dict``. On any spawn/stdin
+    failure, or if the child exits without emitting a terminal ``run_finished``,
+    a synthetic terminal is appended so subscribers always observe an end.
+
+    Returns the child's ``run_finished`` event dict if it emitted one, else
+    ``None``. The caller owns workdir lifecycle and post-processing.
+    """
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", module],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+    except Exception as e:
+        ev_mod.append_event(run_id, terminal_event("error", f"failed to spawn {module}: {e}"))
+        return None
+
+    ev_mod.set_proc(run_id, proc)
+
+    # Honor a cancel that arrived during the spawn window (before the proc
+    # existed, so events.cancel recorded the flag but couldn't signal). Now that
+    # we own the proc, terminate it and arm the same SIGKILL escalation. The
+    # None-guard matters: a concurrent discard (or the turn GC) can drop the
+    # state between set_proc and here.
+    _st = ev_mod.get(run_id)
+    if _st is not None and _st.cancelled:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        ev_mod.schedule_force_kill(proc)
+
+    try:
+        assert proc.stdin is not None
+        proc.stdin.write(json.dumps(payload).encode())
+        proc.stdin.close()
+    except Exception as e:
+        ev_mod.append_event(run_id, terminal_event("error", f"failed to write to {module} stdin: {e}"))
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return None
+
+    # Drain stderr concurrently: a child that writes a lot to stderr (MCP
+    # connect spew, a long traceback) could otherwise fill the pipe, stall its
+    # stdout, and wedge the stdout read below into a wait() deadlock.
+    stderr_chunks: list[bytes] = []
+
+    def _drain_stderr() -> None:
+        try:
+            if proc.stderr is not None:
+                for chunk in proc.stderr:
+                    stderr_chunks.append(chunk)
+        except Exception:
+            pass
+
+    stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+    stderr_thread.start()
+
+    terminal: dict | None = None
+    assert proc.stdout is not None
+    for raw in proc.stdout:
+        line = raw.decode(errors="replace").strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        ev_mod.append_event(run_id, event)
+        if event.get("type") == "run_finished":
+            terminal = event
+
+    rc = proc.wait()
+    stderr_thread.join(timeout=2.0)
+
+    if terminal is None:
+        stderr_text = b"".join(stderr_chunks).decode(errors="replace")
+        st = ev_mod.get(run_id)
+        cancelled = bool(st and st.cancelled)
+        if cancelled or rc < 0:
+            detail = "cancelled by user" if cancelled else f"{module} killed (rc={rc})"
+            ev_mod.append_event(run_id, terminal_event("cancelled", detail))
+        else:
+            ev_mod.append_event(
+                run_id, terminal_event("error", f"{module} exited rc={rc}: {stderr_text[-1000:]}")
+            )
+    return terminal
+
+
 def run_workflow_streaming(
     run_id: str,
     workflow: dict,
@@ -78,142 +227,24 @@ def run_workflow_streaming(
     """
     workdir = tempfile.mkdtemp(prefix="wfrun-")
     try:
-        # Node calls use the NODE_* credentials (independent of the orchestrator's
-        # LLM_* creds), so a run the orchestrator spawns uses the *node's*
-        # provider/model — not whatever the orchestrator chat is signed into.
-        env_for_child: dict[str, str] = {
-            "LLM_API_KEY": os.getenv("NODE_API_KEY", ""),
-            "LLM_BASE_URL": os.getenv("NODE_BASE_URL", ""),
-            "PARALLEL_API_KEY": os.getenv("PARALLEL_API_KEY", ""),
-            # Provider id + node reasoning variant so the child can apply the
-            # catalog-computed reasoning options to each ``ctx.call_llm`` body.
-            "LLM_PROVIDER_ID": (os.getenv("NODE_PROVIDER_ID") or "").strip(),
-            "DEFAULT_NODE_VARIANT": os.getenv("DEFAULT_NODE_VARIANT", ""),
-            # MCP server config (opencode-style JSON); the child connects to
-            # these and registers their tools into its runtime registry. Remote
-            # OAuth servers get a fresh bearer injected here (the child has no
-            # DB access), mirroring the LLM-credential resolution below.
-            "MCP_SERVERS": _resolve_mcp_servers(),
-        }
-        # OAuth-backed providers: resolve the access token (refresh if needed)
-        # once at spawn time and forward it as the effective LLM_API_KEY. The
-        # subprocess never touches the credentials DB itself; that keeps the
-        # subprocess decoupled from the auth layer and matches how the
-        # subprocess already consumes API-key settings (env-only).
-        pid = (os.getenv("NODE_PROVIDER_ID") or "").strip()
-        if pid in ("codex", "xai"):
-            from app.auth.resolve import resolve
-            creds = resolve(pid)
-            if creds is not None:
-                env_for_child["LLM_API_KEY"] = creds.access_token
-                env_for_child["LLM_PROVIDER_ID"] = pid
-                if pid == "codex":
-                    env_for_child["LLM_ACCOUNT_ID"] = creds.account_id or ""
-                elif pid == "xai":
-                    env_for_child["LLM_BASE_URL"] = "https://api.x.ai/v1"
-
         payload = {
             "workflow": workflow,
             "inputs": inputs,
             "default_model": default_model,
             "workdir": workdir,
-            "env": env_for_child,
+            "env": build_child_env(),
         }
 
-        env = os.environ.copy()
-        env["PYTHONUNBUFFERED"] = "1"
+        def _terminal(status: str, error: str | None) -> dict:
+            return {
+                "type": "run_finished",
+                "status": status,
+                "error": error,
+                "outputs": {},
+                "total_cost": 0.0,
+            }
 
-        try:
-            proc = subprocess.Popen(
-                [sys.executable, "-m", "app.runner.child"],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=env,
-            )
-        except Exception as e:
-            ev_mod.append_event(
-                run_id,
-                {
-                    "type": "run_finished",
-                    "status": "error",
-                    "error": f"failed to spawn runner: {e}",
-                    "outputs": {},
-                    "total_cost": 0.0,
-                },
-            )
-            return
-
-        ev_mod.set_proc(run_id, proc)
-
-        try:
-            assert proc.stdin is not None
-            proc.stdin.write(json.dumps(payload).encode())
-            proc.stdin.close()
-        except Exception as e:
-            ev_mod.append_event(
-                run_id,
-                {
-                    "type": "run_finished",
-                    "status": "error",
-                    "error": f"failed to write to runner stdin: {e}",
-                    "outputs": {},
-                    "total_cost": 0.0,
-                },
-            )
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            return
-
-        saw_finished = False
-        assert proc.stdout is not None
-        for raw in proc.stdout:
-            line = raw.decode(errors="replace").strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            ev_mod.append_event(run_id, event)
-            if event.get("type") == "run_finished":
-                saw_finished = True
-
-        rc = proc.wait()
-
-        if not saw_finished:
-            stderr_text = ""
-            try:
-                if proc.stderr is not None:
-                    stderr_text = proc.stderr.read().decode(errors="replace")
-            except Exception:
-                pass
-            st = ev_mod.get(run_id)
-            cancelled = bool(st and st.cancelled)
-            if cancelled or rc < 0:
-                ev_mod.append_event(
-                    run_id,
-                    {
-                        "type": "run_finished",
-                        "status": "cancelled",
-                        "error": "cancelled by user" if cancelled else f"runner killed (rc={rc})",
-                        "outputs": {},
-                        "total_cost": 0.0,
-                    },
-                )
-            else:
-                ev_mod.append_event(
-                    run_id,
-                    {
-                        "type": "run_finished",
-                        "status": "error",
-                        "error": f"runner exited rc={rc}: {stderr_text[-1000:]}",
-                        "outputs": {},
-                        "total_cost": 0.0,
-                    },
-                )
+        drive_child_subprocess(run_id, "app.runner.child", payload, _terminal)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 

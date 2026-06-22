@@ -1,7 +1,10 @@
 from __future__ import annotations
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Integer, Float, Text, ForeignKey, JSON, DateTime
+from sqlalchemy import (
+    Column, String, Integer, Float, Text, ForeignKey, JSON, DateTime,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import relationship
 
 from app.db import Base
@@ -22,6 +25,7 @@ class Workflow(Base):
     edges = relationship("Edge", back_populates="workflow", cascade="all, delete-orphan")
     runs = relationship("Run", back_populates="workflow", cascade="all, delete-orphan")
     sessions = relationship("Session", back_populates="workflow", cascade="all, delete-orphan")
+    call_chats = relationship("CallChat", back_populates="workflow", cascade="all, delete-orphan")
 
 
 class Node(Base):
@@ -167,6 +171,43 @@ class Session(Base):
         back_populates="session",
         cascade="all, delete-orphan",
         order_by="Message.ts",
+    )
+
+
+class CallChat(Base):
+    """The continuation of one node's ``ctx.call_llm`` call — a single ongoing
+    conversation, not a branch (exactly one per ``(node_run_id, call_id)``).
+
+    Seeded with that call's recorded message history (the same OpenAI-shape
+    transcript ``call_llm`` returns) and grown by follow-up turns the user
+    sends from the node's chat tab. Kept deliberately separate from the
+    immutable ``NodeRun`` trace it continues from. ``messages`` is the single
+    source of truth, rewritten after each turn completes.
+    """
+    __tablename__ = "call_chats"
+    id = Column(String, primary_key=True, default=uid)
+    workflow_id = Column(String, ForeignKey("workflows.id"), nullable=False)
+    # Plain string refs (not FKs): the continuation copies its seed, so it
+    # survives incidental node_run changes. Explicit deletes do clean it up —
+    # the run delete endpoint drops continuations for its node_runs, and the
+    # workflow cascade (below) drops all of a workflow's continuations.
+    node_run_id = Column(String, nullable=False)
+    call_id = Column(String, nullable=False)
+    # Display label computed once at creation (e.g. "extract · call 2"), so it
+    # stays stable even if the source node is later renamed or deleted.
+    label = Column(String, default="")
+    model = Column(String, default="")  # recorded model of the source call
+    # Provider + reasoning variant the source call ran with, so the continuation
+    # pins the same model end-to-end regardless of the current node-default.
+    provider_id = Column(String, default="")
+    variant = Column(String, default="")
+    tools = Column(JSON, default=list)  # recorded tool names to re-expose
+    messages = Column(JSON, default=list)  # full evolving conversation
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    workflow = relationship("Workflow", back_populates="call_chats")
+    __table_args__ = (
+        UniqueConstraint("node_run_id", "call_id", name="uq_callchat_call"),
     )
 
 

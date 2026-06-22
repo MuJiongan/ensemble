@@ -3,7 +3,7 @@ import Editor from '@monaco-editor/react';
 import type { WFNode, IOPort, WorkflowDetail, Run, CurrentRun } from '../types';
 import { api } from '../api';
 import {
-  NodeTraceCard, aggregateEvents, nodeRunToTrace, type NodeTrace,
+  NodeTraceCard, NodeLlmCallsView, aggregateEvents, nodeRunToTrace, type LiveLLMCall, type NodeTrace,
 } from './NodeTraceCard';
 import { CloseButton } from './CloseButton';
 
@@ -23,9 +23,14 @@ interface Props {
   currentRun?: CurrentRun | null;
   /** Forward a node-level error from the trace tab to the orchestrator. */
   onSendErrorToOrchestrator?: (message: string) => void;
+  /** Continue a *finished* call_llm's conversation in the shared right-pane
+   * chat (full height), entered from the "llm calls" tab. */
+  onContinue?: (nodeRunId: string, callId: string) => void;
+  /** Watch an *in-flight* call stream into the shared chat pane. */
+  onViewLive?: (runId: string, nodeId: string, callId: string, label: string) => void;
 }
 
-type Tab = 'code' | 'i/o' | 'trace';
+type Tab = 'code' | 'i/o' | 'trace' | 'calls';
 
 const PANEL_STYLE: React.CSSProperties = {
   position: 'absolute',
@@ -50,7 +55,7 @@ const PANEL_STYLE: React.CSSProperties = {
  */
 export function NodePanel({
   node, workflow, onClose, onChange, readOnly, pinnedRun, currentRun,
-  onSendErrorToOrchestrator,
+  onSendErrorToOrchestrator, onContinue, onViewLive,
 }: Props) {
   // Trace tab visibility + data source. Three regimes, in priority order:
   //   1. The pinned run is also the live attached one (rerun-from-snapshot
@@ -90,11 +95,28 @@ export function NodePanel({
     setTab('code');
   }, [node.id]);
 
-  // If the trace tab disappears (run was cleared, snapshot exited) while it
-  // was selected, fall back to code so we don't render an empty pane.
+  // The "llm calls" tab needs a run with at least one call_llm recorded.
+  const callsTabAvailable = traceTabAvailable && !!trace && trace.llmCalls.length > 0;
+
+  // If the selected tab disappears (run cleared, snapshot exited, no calls)
+  // fall back to code so we don't render an empty pane.
   useEffect(() => {
     if (tab === 'trace' && !traceTabAvailable) setTab('code');
-  }, [tab, traceTabAvailable]);
+    if (tab === 'calls' && !callsTabAvailable) setTab('code');
+  }, [tab, traceTabAvailable, callsTabAvailable]);
+
+  // Open a call in the shared chat pane. A live run's call streams in
+  // (read-only); a finished run's call continues. Routed by which run produced
+  // the trace.
+  const onOpenCall = (call: LiveLLMCall, callIndex: number) => {
+    const callName = call.label?.trim() || `call ${callIndex + 1}`;
+    if (liveRunForThisNode && onViewLive) {
+      onViewLive(liveRunForThisNode.id, node.id, call.call_id, `${node.name} · ${callName}`);
+    } else if (pinnedRun && onContinue) {
+      const nr = pinnedRun.node_runs.find((x) => x.node_id === node.id);
+      if (nr) onContinue(nr.id, call.call_id);
+    }
+  };
 
   const isInput = workflow.input_node_id === node.id;
   const isOutput = workflow.output_node_id === node.id;
@@ -160,14 +182,16 @@ export function NodePanel({
       </div>
 
       <div style={{ display: 'flex', borderBottom: '1px solid var(--rule)', padding: '0 18px' }}>
-        {/* `trace` shows when this node is part of a run we can read — a
-         * frozen snapshot (pinnedRun) or a live in-flight run on this
-         * workflow. Otherwise it'd just render an empty pane, so we hide
-         * the button. */}
-        {(traceTabAvailable
-          ? (['code', 'i/o', 'trace'] as const)
-          : (['code', 'i/o'] as const)
-        ).map((k) => (
+        {/* `trace` + `llm calls` show when this node is part of a run we can
+         * read — a frozen snapshot (pinnedRun) or a live in-flight run on this
+         * workflow; `llm calls` also needs at least one recorded call.
+         * Otherwise they'd render empty panes, so we hide them. */}
+        {([
+          'code',
+          'i/o',
+          ...(traceTabAvailable ? (['trace'] as const) : []),
+          ...(callsTabAvailable ? (['calls'] as const) : []),
+        ] as Tab[]).map((k) => (
           <button
             key={k}
             onClick={() => setTab(k)}
@@ -183,9 +207,10 @@ export function NodePanel({
               borderBottomWidth: 1.5,
               borderBottomColor: tab === k ? 'var(--ink)' : 'transparent',
               cursor: 'pointer',
+              whiteSpace: 'nowrap',
             }}
           >
-            {k}
+            {k === 'calls' ? 'llm calls' : k}
           </button>
         ))}
       </div>
@@ -255,6 +280,12 @@ export function NodePanel({
                   : 'this node has no trace in the selected run.'}
               </div>
             )}
+          </div>
+        )}
+
+        {tab === 'calls' && trace && (
+          <div style={{ padding: 18 }}>
+            <NodeLlmCallsView trace={trace} live={!!liveRunForThisNode} onOpen={onOpenCall} />
           </div>
         )}
       </div>

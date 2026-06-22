@@ -11,7 +11,7 @@ Event types (all on a single line, JSON):
   {"type": "run_started",  "node_count": N, "order": [...]}
   {"type": "node_started", "node_id": "...", "inputs": {...}}
   {"type": "log",          "node_id": "...", "msg": "..."}
-  {"type": "llm_call_started",  "node_id": "...", "call_id": "...", "model": "...", "tools": [...]}
+  {"type": "llm_call_started",  "node_id": "...", "call_id": "...", "model": "...", "tools": [...], "label"?: "..."}
   {"type": "llm_round_started", "node_id": "...", "call_id": "...", "round": N}
   {"type": "llm_call_chunk",    "node_id": "...", "call_id": "...", "round": N,
                                 "kind": "content"|"reasoning"|"tool_args",
@@ -34,10 +34,7 @@ invocation gets its own ``call_id`` and the stdout write below is locked so
 the per-line JSON frames don't get interleaved.
 """
 from __future__ import annotations
-import json
 import os
-import signal
-import sys
 import threading
 import time
 import traceback
@@ -45,66 +42,14 @@ from concurrent.futures import ThreadPoolExecutor, FIRST_COMPLETED, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
-_emit_lock = threading.Lock()
-
-
-def _emit(event: dict) -> None:
-    line = json.dumps(event, default=str) + "\n"
-    with _emit_lock:
-        sys.stdout.write(line)
-        sys.stdout.flush()
-
-
-def _install_sigterm_handler() -> None:
-    """Make SIGTERM raise KeyboardInterrupt so we can emit a clean cancelled event."""
-    def _handler(signum, frame):
-        raise KeyboardInterrupt("cancelled")
-    try:
-        signal.signal(signal.SIGTERM, _handler)
-    except Exception:
-        pass
-
-
-def _read_payload() -> dict:
-    """Read the workflow payload from stdin and apply its env-vars in place."""
-    payload = json.loads(sys.stdin.read())
-    for k, v in (payload.get("env") or {}).items():
-        if v:
-            os.environ[k] = v
-    return payload
-
-
-def _load_mcp_tools():
-    """Connect to configured MCP servers and register their tools into the
-    runtime registry so node code can use them via ``ctx.call_llm(tools=[...])``
-    or ``ctx.tools.<name>(...)``. Best-effort: a connection failure is logged to
-    stderr (captured by the parent for diagnostics) but never fails the run.
-    Returns the live manager so the caller can shut it down on exit."""
-    raw = os.environ.get("MCP_SERVERS", "")
-    if not raw.strip():
-        return None
-    try:
-        from app.runner import mcp as mcp_mod
-        from app.runner import tools as tools_mod
-
-        manager = mcp_mod.register_runtime_tools(
-            raw,
-            tools_mod.REGISTRY,
-            tools_mod.TOOL_SCHEMAS,
-            tools_mod.MCP_NAMESPACES,
-            tools_mod.MCP_SERVER_STATUS,
-        )
-        if manager is not None:
-            for name, st in manager.status().items():
-                print(f"[mcp] {name}: {st}", file=sys.stderr)
-            # Surface per-server connection state to the run UI so it can
-            # prompt for re-login when a configured server needs auth.
-            _emit({"type": "mcp_status", "servers": manager.status()})
-        return manager
-    except Exception as e:
-        print(f"[mcp] failed to load MCP tools: {type(e).__name__}: {e}", file=sys.stderr)
-        return None
+# Subprocess plumbing (stdin payload, stdout event emit, SIGTERM, MCP connect)
+# is shared with the continue-chat turn runner — see app.runner.subprocess_io.
+from app.runner.subprocess_io import (
+    _emit,
+    _install_sigterm_handler,
+    _load_mcp_tools,
+    _read_payload,
+)
 
 
 @dataclass

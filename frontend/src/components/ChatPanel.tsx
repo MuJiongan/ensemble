@@ -6,10 +6,12 @@ import rehypeKatex from 'rehype-katex';
 import type { Components } from 'react-markdown';
 import 'katex/dist/katex.min.css';
 import { api, ApiError } from '../api';
-import type { Run } from '../types';
+import type { Run, ModelSelection } from '../types';
+import type { Catalog } from '../providerCatalog';
 import { CloseButton } from './CloseButton';
 import { AttachmentChips, FileTile, type PendingAttachment } from './ImageAttachments';
 import { FilePathLink, childText, linkifyNodes, looksLikePath } from './FilePathLink';
+import { ModelSwitcher } from './ModelSwitcher';
 
 export type ChatToolStatus = 'pending' | 'ok' | 'err';
 
@@ -260,6 +262,28 @@ export interface AssistantMessage {
 
 export type ChatMessage = UserMessage | AssistantMessage;
 
+/** The scrollable message list + composer, shared by the orchestrator chat and
+ * a node's continuation chat. The surrounding header (title, model switcher,
+ * actions) is supplied by each host. */
+export interface ChatThreadProps {
+  messages: ChatMessage[];
+  onSend: (text: string) => void;
+  disabled?: boolean;
+  onCancel?: () => void;
+  onViewRun?: (runId: string) => void;
+  /** Composer placeholder when idle. */
+  placeholder?: string;
+  /** Tooltip on the stop button while streaming. */
+  stopTitle?: string;
+  /** Rendered in place of the messages when the thread is empty. */
+  emptyState?: React.ReactNode;
+  // Attachments (orchestrator chat only; the continuation composer is text-only).
+  pendingAttachments?: PendingAttachment[];
+  onRemoveAttachment?: (id: string) => void;
+  draggingFile?: boolean;
+  attachmentNotice?: string | null;
+}
+
 interface Props {
   messages: ChatMessage[];
   onSend: (text: string) => void;
@@ -280,6 +304,20 @@ interface Props {
    * `run_workflow` tool card. The host can swap the canvas to render the
    * run's frozen `workflow_snapshot`. */
   onViewRun?: (runId: string) => void;
+
+  // --- continuation mode ------------------------------------------------
+  /** When set, this pane shows a call_llm continuation (entered from a node's
+   * "llm calls" tab) rather than the orchestrator chat: the header shows this
+   * label + a "‹ orchestrator" back link instead of the orchestrator title. */
+  conversationLabel?: string;
+  onBack?: () => void;
+
+  // --- model switcher (active conversation) -----------------------------
+  modelSelection?: ModelSelection | null;
+  modelVariants?: string[];
+  catalog?: Catalog | null;
+  onPickModel?: (sel: ModelSelection) => void;
+  onCycleVariant?: (next: string | null) => void;
 }
 
 function ThinkingBlock({ text, live }: { text: string; live: boolean }) {
@@ -455,16 +493,16 @@ function ToolCallCard({ tool, args, argsFull, status, result }: ChatToolCall) {
             fontSize: 9,
           }}
         >
-          <span
-            aria-hidden
-            style={{
-              width: 6,
-              height: 6,
-              borderRadius: '50%',
-              background:
-                status === 'ok' ? 'var(--state-ok)' : status === 'err' ? 'var(--state-err)' : 'var(--ink-4)',
-            }}
-          />
+          {status === 'ok' || status === 'err' ? (
+            <span aria-hidden style={{ fontSize: 11, lineHeight: 1 }}>
+              {status === 'ok' ? '✓' : '✕'}
+            </span>
+          ) : (
+            <span
+              aria-hidden
+              style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--ink-4)' }}
+            />
+          )}
           {status === 'ok' ? 'done' : status === 'err' ? 'failed' : 'running'}
         </span>
       </div>
@@ -1094,33 +1132,39 @@ function MessageBubble({
   );
 }
 
-export function ChatPanel({
+/** The scrollable message list + composer. Holds its own draft state and
+ * auto-scrolls on new messages. Shared by the orchestrator chat and a node's
+ * continuation chat; each host wraps it with its own header. */
+export function ChatThread({
   messages,
   onSend,
+  disabled,
+  onCancel,
+  onViewRun,
+  placeholder = 'type a message',
+  stopTitle = 'stop',
+  emptyState,
   pendingAttachments,
   onRemoveAttachment,
   draggingFile,
   attachmentNotice,
-  onCancel,
-  disabled,
-  modelLabel,
-  onClose,
-  onClearContext,
-  onViewRun,
-}: Props) {
+}: ChatThreadProps) {
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const attachments = pendingAttachments ?? [];
-
-  const totalCost = messages.reduce(
-    (sum, m) => sum + (m.role === 'assistant' ? m.cost ?? 0 : 0),
-    0,
-  );
+  // Stick to the bottom only while the user is already there. A live call's
+  // `messages` is a fresh array every render, so this effect runs constantly —
+  // without the pin check it would yank the view back down and fight a manual
+  // scroll-up. `onScroll` records whether we're pinned before the next update.
+  const pinnedToBottom = useRef(true);
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (el) pinnedToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+  };
 
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
+    const el = scrollRef.current;
+    if (el && pinnedToBottom.current) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
   const submit = (e?: React.FormEvent) => {
@@ -1132,79 +1176,11 @@ export function ChatPanel({
   };
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        height: '100%',
-        background: 'var(--paper)',
-      }}
-    >
-      <div
-        style={{
-          padding: '14px 22px 12px',
-          borderBottom: '1px solid var(--rule)',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0 }}>
-          <span className="smallcaps">orchestrator agent</span>
-          <span style={{ flex: 1 }} />
-          <span
-            className="mono"
-            title={modelLabel || 'no orchestrator model set — using server fallback'}
-            style={{
-              fontSize: 10.5,
-              color: 'var(--ink-4)',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              minWidth: 0,
-            }}
-          >
-            {modelLabel || '(default)'}
-          </span>
-          {totalCost > 0 && (
-            <>
-              <span
-                className="asterisk"
-                aria-hidden
-                style={{ fontSize: 12, color: 'var(--ink-4)' }}
-              >
-                ·
-              </span>
-              <span
-                className="mono"
-                title="total provider-reported cost across this chat context"
-                style={{ fontSize: 10.5, color: 'var(--ink-4)', whiteSpace: 'nowrap' }}
-              >
-                ${totalCost.toFixed(4)}
-              </span>
-            </>
-          )}
-          {onClearContext && messages.length > 0 && !disabled && (
-            <button
-              type="button"
-              onClick={onClearContext}
-              className="text-btn"
-              title="clear chat context while keeping this project and its runs"
-              style={{ marginLeft: 8, flexShrink: 0 }}
-            >
-              reset chat
-            </button>
-          )}
-          {onClose && (
-            <CloseButton
-              onClick={onClose}
-              title="close chat"
-              style={{ marginLeft: 8 }}
-            />
-          )}
-        </div>
-      </div>
-
+    <>
       <div
         ref={scrollRef}
         className="scroll"
+        onScroll={onScroll}
         style={{
           flex: 1,
           overflowY: 'auto',
@@ -1213,24 +1189,7 @@ export function ChatPanel({
           minWidth: 0,
         }}
       >
-        {messages.length === 0 && (
-          <div
-            className="serif"
-            style={{
-              padding: '32px 22px',
-              fontStyle: 'italic',
-              color: 'var(--ink-4)',
-              fontSize: 14,
-              lineHeight: 1.6,
-            }}
-          >
-            describe what you want to build and{' '}
-            <span className="italic-em" style={{ color: 'var(--ink-3)' }}>
-              ensemble
-            </span>{' '}
-            will design the project graph for you.
-          </div>
-        )}
+        {messages.length === 0 && emptyState}
         {messages.map((m, i) => (
           <MessageBubble key={i} msg={m} onViewRun={onViewRun} />
         ))}
@@ -1272,8 +1231,8 @@ export function ChatPanel({
                 draggingFile
                   ? 'drop file to attach'
                   : disabled
-                    ? 'ensemble is working…'
-                    : 'refine, add a node, or ask anything'
+                    ? 'working…'
+                    : placeholder
               }
               disabled={disabled}
             />
@@ -1283,7 +1242,7 @@ export function ChatPanel({
               type="button"
               className="text-btn text-btn--danger"
               onClick={onCancel}
-              title="stop the orchestrator"
+              title={stopTitle}
             >
               stop
             </button>
@@ -1298,6 +1257,195 @@ export function ChatPanel({
           )}
         </div>
       </form>
+    </>
+  );
+}
+
+export function ChatPanel({
+  messages,
+  onSend,
+  pendingAttachments,
+  onRemoveAttachment,
+  draggingFile,
+  attachmentNotice,
+  onCancel,
+  disabled,
+  modelLabel,
+  onClose,
+  onClearContext,
+  onViewRun,
+  conversationLabel,
+  onBack,
+  modelSelection,
+  modelVariants,
+  catalog,
+  onPickModel,
+  onCycleVariant,
+}: Props) {
+  const totalCost = messages.reduce(
+    (sum, m) => sum + (m.role === 'assistant' ? m.cost ?? 0 : 0),
+    0,
+  );
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        background: 'var(--paper)',
+      }}
+    >
+      <div
+        style={{
+          padding: '14px 22px 12px',
+          borderBottom: '1px solid var(--rule)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0 }}>
+          {conversationLabel ? (
+            // Breadcrumb: an explicit, labeled "← orchestrator" back link, then
+            // the current continuation. The lone chevron wasn't an obvious way
+            // back; spelling out "orchestrator" + the arrow makes it clear.
+            <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 8, minWidth: 0 }}>
+              <button
+                type="button"
+                className="text-btn"
+                onClick={onBack}
+                title="back to the orchestrator chat"
+                style={{ display: 'inline-flex', alignItems: 'baseline', gap: 5, flexShrink: 0 }}
+              >
+                <span aria-hidden>←</span>
+                orchestrator
+              </button>
+              <span className="smallcaps" aria-hidden style={{ color: 'var(--ink-4)', flexShrink: 0 }}>
+                /
+              </span>
+              <span
+                className="smallcaps"
+                title={conversationLabel}
+                style={{ color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+              >
+                {conversationLabel}
+              </span>
+            </span>
+          ) : (
+            <span className="smallcaps">orchestrator agent</span>
+          )}
+          <span style={{ flex: 1 }} />
+          {onPickModel ? (
+            <ModelSwitcher
+              selection={modelSelection ?? null}
+              variants={modelVariants ?? []}
+              catalog={catalog ?? null}
+              fallbackLabel={modelLabel}
+              onPick={onPickModel}
+              onCycleVariant={onCycleVariant}
+            />
+          ) : (
+            <span
+              className="mono"
+              title={modelLabel || 'no orchestrator model set — using server fallback'}
+              style={{
+                fontSize: 10.5,
+                color: 'var(--ink-4)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                minWidth: 0,
+              }}
+            >
+              {modelLabel || '(default)'}
+            </span>
+          )}
+          {totalCost > 0 && (
+            <>
+              <span
+                className="asterisk"
+                aria-hidden
+                style={{ fontSize: 12, color: 'var(--ink-4)' }}
+              >
+                ·
+              </span>
+              <span
+                className="mono"
+                title="total provider-reported cost across this chat context"
+                style={{ fontSize: 10.5, color: 'var(--ink-4)', whiteSpace: 'nowrap' }}
+              >
+                ${totalCost.toFixed(4)}
+              </span>
+            </>
+          )}
+          {onClearContext && !conversationLabel && messages.length > 0 && !disabled && (
+            <button
+              type="button"
+              onClick={onClearContext}
+              className="text-btn"
+              title="clear chat context while keeping this project and its runs"
+              style={{ marginLeft: 8, flexShrink: 0 }}
+            >
+              reset chat
+            </button>
+          )}
+          {onClose && (
+            <CloseButton
+              onClick={onClose}
+              title="close chat"
+              style={{ marginLeft: 8 }}
+            />
+          )}
+        </div>
+      </div>
+
+      <ChatThread
+        messages={messages}
+        onSend={onSend}
+        disabled={disabled}
+        onCancel={onCancel}
+        onViewRun={onViewRun}
+        placeholder={conversationLabel ? 'continue this conversation…' : 'refine, add a node, or ask anything'}
+        stopTitle={conversationLabel ? 'stop this turn' : 'stop the orchestrator'}
+        // Attachments are an orchestrator-chat affordance; a continuation turn
+        // is text-only, so don't wire the chips/drop UI there.
+        pendingAttachments={conversationLabel ? undefined : pendingAttachments}
+        onRemoveAttachment={conversationLabel ? undefined : onRemoveAttachment}
+        draggingFile={conversationLabel ? undefined : draggingFile}
+        attachmentNotice={conversationLabel ? undefined : attachmentNotice}
+        emptyState={
+          conversationLabel ? (
+            <div
+              className="serif"
+              style={{
+                padding: '32px 22px',
+                fontStyle: 'italic',
+                color: 'var(--ink-4)',
+                fontSize: 13.5,
+                lineHeight: 1.6,
+              }}
+            >
+              continue this call's conversation — ask it to explain itself, push
+              back, or have it redo a step.
+            </div>
+          ) : (
+            <div
+              className="serif"
+              style={{
+                padding: '32px 22px',
+                fontStyle: 'italic',
+                color: 'var(--ink-4)',
+                fontSize: 14,
+                lineHeight: 1.6,
+              }}
+            >
+              describe what you want to build and{' '}
+              <span className="italic-em" style={{ color: 'var(--ink-3)' }}>
+                ensemble
+              </span>{' '}
+              will design the project graph for you.
+            </div>
+          )
+        }
+      />
     </div>
   );
 }

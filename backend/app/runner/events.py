@@ -99,21 +99,51 @@ def is_active(run_id: str) -> bool:
     return proc is None or proc.poll() is None
 
 
+_CANCEL_KILL_GRACE = 5.0  # seconds to wait after SIGTERM before escalating to SIGKILL
+
+
+def schedule_force_kill(proc: subprocess.Popen) -> None:
+    """SIGKILL ``proc`` if it ignores SIGTERM past the grace window.
+
+    A child wedged in an uninterruptible call never delivers the SIGTERM →
+    KeyboardInterrupt that lets it exit cleanly, so the parent's stdout read /
+    ``proc.wait()`` would block forever and the cancel would never complete.
+    Wait a bounded grace on this exact Popen handle — never on a pid, so a
+    reaped/recycled process can't be mis-signalled — then kill. Runs in a daemon
+    thread that lives at most the grace window and is safe to arm repeatedly."""
+    def _watch() -> None:
+        try:
+            proc.wait(timeout=_CANCEL_KILL_GRACE)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        except Exception:
+            pass
+    threading.Thread(target=_watch, daemon=True).start()
+
+
 def cancel(run_id: str) -> bool:
-    """Best-effort: SIGTERM the run's subprocess. Returns True if a signal was sent."""
+    """Request cancellation of a run/turn. Records the intent under the lock and,
+    if the subprocess is already running, SIGTERMs it (escalating to SIGKILL if
+    ignored). Returns True whenever a not-yet-finished run exists — including
+    during the spawn window before the proc exists, where the spawner honors the
+    recorded flag the moment it owns the proc (so the caller isn't told the
+    cancel failed while it is in fact pending). Idempotent."""
     st = _RUNS.get(run_id)
     if not st or st.finished:
         return False
-    proc = st.proc
-    if not proc or proc.poll() is not None:
-        return False
     with st.lock:
         st.cancelled = True
-    try:
-        proc.terminate()
-        return True
-    except Exception:
-        return False
+        proc = st.proc
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        schedule_force_kill(proc)
+    return True
 
 
 async def subscribe(run_id: str):
@@ -123,9 +153,17 @@ async def subscribe(run_id: str):
     finishes (a `run_finished` event) or is deleted out from under the
     subscriber (a synthetic `run_deleted` event from :func:`discard`).
     """
-    st = get_or_create(run_id)
     loop = asyncio.get_running_loop()
     q: asyncio.Queue = asyncio.Queue()
+    st = get(run_id)
+    if st is None:
+        # No in-memory state: the run/turn was never started, or (the common
+        # case for one-shot chat turns) it already finished and was discarded.
+        # Resurrecting an empty state via get_or_create would leave this
+        # generator blocked forever on events that will never be appended —
+        # so signal "gone" and return instead.
+        yield {"type": "run_deleted", "run_id": run_id}
+        return
     with st.lock:
         backlog = list(st.events)
         already_finished = st.finished
