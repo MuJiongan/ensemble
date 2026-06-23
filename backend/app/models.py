@@ -93,6 +93,37 @@ class NodeRun(Base):
     duration_ms = Column(Integer, default=0)
     cost = Column(Float, default=0.0)
     run = relationship("Run", back_populates="node_runs")
+    transcripts = relationship(
+        "CallTranscript", back_populates="node_run", cascade="all, delete-orphan"
+    )
+
+
+class CallTranscript(Base):
+    """Verbatim recorded conversation for one node's ``ctx.call_llm`` call — the
+    seed for continuing that call as a chat.
+
+    Deliberately kept OUT of ``NodeRun.llm_calls`` (a JSON blob deserialized on
+    every run-list / run-detail load): transcripts can be large, and the trace
+    UI never renders them inline. Loaded only on demand when a continuation is
+    opened, so a long agent loop with big tool outputs costs nothing on the run
+    hot path. Persistence is unbounded by design — the only ceiling is the
+    model's context window, applied (via the continue-chat cap) when the seed is
+    turned into a chat, not here.
+
+    One row per ``(node_run_id, call_id)``. FK-backed (unlike ``CallChat``):
+    this IS part of the immutable run trace, so it lives and dies with its
+    node_run via the relationship cascade.
+    """
+    __tablename__ = "call_transcripts"
+    id = Column(String, primary_key=True, default=uid)
+    node_run_id = Column(String, ForeignKey("node_runs.id"), nullable=False)
+    call_id = Column(String, nullable=False)
+    messages = Column(JSON, default=list)  # attachment-stripped, uncapped
+    created_at = Column(DateTime, default=datetime.utcnow)
+    node_run = relationship("NodeRun", back_populates="transcripts")
+    __table_args__ = (
+        UniqueConstraint("node_run_id", "call_id", name="uq_calltranscript_call"),
+    )
 
 
 class Setting(Base):

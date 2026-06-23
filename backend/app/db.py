@@ -60,8 +60,8 @@ def _ensure_callchat_unique_index(conn) -> None:
     create_all builds that constraint for fresh DBs (SQLite materializes it as a
     unique autoindex), but it skips an already-existing table and SQLite cannot
     ALTER TABLE ADD CONSTRAINT. A unique INDEX gives the same guarantee, so the
-    open_call_chat IntegrityError dedup stays effective on a DB whose table was
-    created before the constraint existed. No-op when uniqueness is already
+    first-turn create's IntegrityError dedup (_get_or_create_continuation) stays
+    effective on a DB whose table was created before the constraint existed. No-op when uniqueness is already
     enforced (the normal case — matched by columns, not index name, so the
     constraint's autoindex counts). Never deletes rows: if pre-existing
     duplicates block the index it is left uncreated rather than risk data loss at

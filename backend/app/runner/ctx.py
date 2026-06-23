@@ -11,7 +11,6 @@ as parallel streaming cards instead of mashing them together.
 from __future__ import annotations
 import inspect
 import itertools
-import json
 import os
 import threading
 from pathlib import Path
@@ -28,14 +27,6 @@ from app.runner import llm as llm_mod
 
 EmitFn = Callable[[dict], None]
 
-# A call's full message history is persisted on its run-trace record so the
-# "continue chat" feature can re-seed the exact conversation. It's the only
-# place we store the verbatim transcript, so cap it: a long agent loop can
-# accumulate large tool outputs, and we don't want to bloat the NodeRun JSON
-# (which is read on every run load). Over budget → store None; the call is
-# then simply not continuable (the UI hides its "open in chat" affordance).
-_SEED_MSG_BUDGET_BYTES = 256 * 1024
-
 
 def _strip_message_attachments(messages: list) -> list:
     """Drop the ``attachments`` key (image/file base64 that rides tool messages
@@ -43,25 +34,14 @@ def _strip_message_attachments(messages: list) -> list:
 
     Tool messages already carry a text-only ``content`` size-note; the base64
     only exists for the in-process round and must never reach persistence —
-    otherwise a single screenshot blows the seed budget and silently makes the
-    call non-continuable, and any that slipped under the cap would bloat the row."""
+    a single screenshot is megabytes and the persisted transcript never needs
+    the bytes, only the size-note text."""
     out = []
     for m in messages:
         if isinstance(m, dict) and "attachments" in m:
             m = {k: v for k, v in m.items() if k != "attachments"}
         out.append(m)
     return out
-
-
-def _within_seed_budget(messages: list) -> bool:
-    """True if `messages` serialize under the persistence budget. Conservative:
-    a serialization failure counts as over-budget (don't persist garbage)."""
-    if not messages:
-        return False
-    try:
-        return len(json.dumps(messages, default=str)) <= _SEED_MSG_BUDGET_BYTES
-    except (TypeError, ValueError):
-        return False
 
 
 class _ServerProxy:
@@ -248,9 +228,9 @@ class Ctx:
             )
             raise
 
-        # Strip attachment base64 before the budget check: it only matters for
-        # the in-process round, and counting/persisting it would wrongly push
-        # transcripts over budget (silently disabling continuation).
+        # Strip attachment base64 from the recorded transcript: it only matters
+        # for the in-process round and must never reach persistence. The caller
+        # still gets the full result (a node may want the bytes).
         seed_msgs = _strip_message_attachments(result.get("messages") or [])
         record = {
             "call_id": call_id,
@@ -267,9 +247,11 @@ class Ctx:
             # inheriting whatever node default Settings happens to hold later.
             "provider_id": (os.getenv("LLM_PROVIDER_ID") or "").strip(),
             "variant": os.getenv("DEFAULT_NODE_VARIANT") or "",
-            # Full conversation, for resuming this call as a chat. None when it
-            # exceeds the persistence budget (call is then not continuable).
-            "messages": seed_msgs if _within_seed_budget(seed_msgs) else None,
+            # Full conversation, for resuming this call as a chat. Stored
+            # verbatim and uncapped — the run-persist step lifts it into its own
+            # call_transcripts row (off the run-load hot path), and the
+            # continue-chat path trims it to fit when it seeds a chat.
+            "messages": seed_msgs,
         }
         with self._lock:
             self.llm_calls.append(record)

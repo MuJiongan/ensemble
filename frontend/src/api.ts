@@ -115,18 +115,26 @@ export const api = {
     request<{ cancelled: boolean }>('POST', `/api/sessions/${sid}/cancel`),
 
   // --- continue-chat (call_llm continuations) -------------------------------------
-  /** Create (or fetch the existing) continuation conversation for one call_llm call. */
-  openCallChat: (nodeRunId: string, callId: string) =>
+  /** View a call_llm call's continuation: the persisted thread if it's been
+   * started, else a not-yet-persisted seed (id=""). Read-only — the row is
+   * materialized lazily by the first turn, so viewing never writes. */
+  viewCallChat: (nodeRunId: string, callId: string) =>
     request<CallChat>(
-      'POST',
+      'GET',
       `/api/node-runs/${nodeRunId}/llm-calls/${encodeURIComponent(callId)}/chat`,
     ),
-  /** Send a follow-up turn. `sel` pins the provider/model/variant for this turn
-   * (defaults to the continuation's recorded model; overridden by the model switcher). */
-  sendCallChatTurn: (cid: string, text: string, sel: ModelSelection | null) =>
+  /** Send a follow-up turn (materializing the continuation on the first one).
+   * `sel` pins the provider/model/variant for this turn (defaults to the
+   * continuation's recorded model; overridden by the model switcher). */
+  sendCallChatTurn: (
+    nodeRunId: string,
+    callId: string,
+    text: string,
+    sel: ModelSelection | null,
+  ) =>
     request<{ turn_id: string }>(
       'POST',
-      `/api/call-chats/${cid}/turns`,
+      `/api/node-runs/${nodeRunId}/llm-calls/${encodeURIComponent(callId)}/turns`,
       // Only carry a model name when a provider is actually selected — the
       // provider rides in via headers (callChatTurnNodeHeaders also no-ops
       // without one), so sending a bare model would pair it with no/old

@@ -30,7 +30,7 @@ from app.runner.runner import drive_child_subprocess
 # row without bound. Larger than the seed budget (a continuation is *meant* to
 # accumulate), but still finite. Trimming happens at user-message boundaries so
 # an assistant tool_calls message is never split from its tool results.
-_TRANSCRIPT_BUDGET_BYTES = 512 * 1024
+_TRANSCRIPT_BUDGET_BYTES = 4 * 1024 * 1024
 
 
 def _serialized_len(messages: list) -> int:
@@ -103,15 +103,17 @@ def prepare_transcript(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
-def _cap_transcript(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Sanitize then trim the oldest whole turns so the persisted transcript
-    stays under budget. User messages delimit turns; the head is normalized to a
+def cap_transcript(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sanitize then trim the oldest whole turns so a transcript stays under
+    budget. Used both when persisting a grown continuation and when seeding a
+    chat from a recorded ``call_llm`` transcript (which is itself stored
+    uncapped). User messages delimit turns; the head is normalized to a
     system-only prefix first (so trimming can never orphan a leading tool/
     assistant message), and we never cut inside a turn.
 
-    Known limitation: when a continuation exceeds the budget the oldest turns
-    (which can include the first user instruction) are dropped silently. The
-    live session still shows them, so a reload of a >512 KB chat can lose
+    Known limitation: when a transcript exceeds the budget the oldest turns
+    (which can include the first user instruction) are dropped silently. A live
+    continuation session still shows them, so a reload of a >4 MB chat can lose
     earlier turns. The threshold is high enough that normal chats never hit it;
     we accept the divergence rather than reconcile live bubbles to the cap."""
     messages = prepare_transcript(messages)
@@ -261,7 +263,7 @@ def _persist_messages(chat_id: str, messages: list[dict[str, Any]]) -> None:
     try:
         chat = db.get(models.CallChat, chat_id)
         if chat is not None:
-            chat.messages = _cap_transcript(messages)
+            chat.messages = cap_transcript(messages)
             chat.updated_at = datetime.utcnow()
             db.commit()
     finally:
