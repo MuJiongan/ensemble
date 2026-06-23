@@ -55,6 +55,12 @@ function hasCredsForPreset(s: ReturnType<typeof loadSettings>): boolean {
   return !!sel && isConnected(s, sel.providerID);
 }
 
+// A continuation is addressed by the call it continues — (node_run_id, call_id)
+// — not by its surrogate CallChat id, which doesn't exist until the first turn
+// materializes the row. This composite is the stable key for all per-
+// continuation client state (messages, model selection, streaming, panel key).
+const contKey = (c: CallChat) => `${c.node_run_id}:${c.call_id}`;
+
 export default function App() {
   const [view, setView] = useState<View>('workflow');
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
@@ -88,9 +94,10 @@ export default function App() {
   // Workflows whose orchestrator is currently streaming.
   const [orchestratingIds, setOrchestratingIds] = useState<Set<string>>(new Set());
 
-  // Call-llm continuations, keyed by CallChat id. One continuation per call;
-  // they're reached only from a node's chat tab (not the orchestrator chat).
-  // State lives here so a streaming turn survives switching nodes/tabs.
+  // Call-llm continuations, keyed by contKey (node_run_id:call_id). One
+  // continuation per call; they're reached only from a node's chat tab (not the
+  // orchestrator chat). State lives here so a streaming turn survives switching
+  // nodes/tabs.
   const [callChatMessages, setCallChatMessages] = useState<Record<string, ChatMessage[]>>({});
   // Per-continuation model selection — defaults to the model the source call
   // ran with, overridable via the chat tab's model switcher.
@@ -671,15 +678,16 @@ export default function App() {
   // one), and show it in the chat pane.
   const openContinuation = async (nodeRunId: string, callId: string) => {
     try {
-      const chat = await api.openCallChat(nodeRunId, callId);
+      const chat = await api.viewCallChat(nodeRunId, callId);
+      const key = contKey(chat);
       setCallChatMessages((prev) =>
-        prev[chat.id] ? prev : { ...prev, [chat.id]: messagesToChat(chat.messages) });
+        prev[key] ? prev : { ...prev, [key]: messagesToChat(chat.messages) });
       setCallChatModelById((prev) =>
-        prev[chat.id]
+        prev[key]
           ? prev
           : {
               ...prev,
-              [chat.id]: {
+              [key]: {
                 providerID: chat.provider_id,
                 modelID: chat.model,
                 variant: chat.variant || null,
@@ -736,21 +744,20 @@ export default function App() {
         if (nr) {
           let chat: CallChat;
           try {
-            chat = await api.openCallChat(nr.id, target.callId);
+            chat = await api.viewCallChat(nr.id, target.callId);
           } catch (e) {
             // A 404 here is terminal, not transient: the call has no continuable
-            // transcript. That can mean it failed before finishing (an errored
-            // call_llm is never recorded) OR its transcript exceeded the persist
-            // budget — the backend returns distinct details, but both conclude
-            // "can't continue", so use one neutral message rather than parse the
-            // body. Stop retrying and drop the now-pointless read-only live view.
+            // transcript. A finished call always persists its conversation now
+            // (uncapped, in its own row), so this means the call never finished —
+            // an errored call_llm is never recorded. Stop retrying and drop the
+            // now-pointless read-only live view.
             if (e instanceof ApiError && e.status === 404) {
               if (cancelled) return;
               setActiveLiveCall((cur) => (cur === target ? null : cur));
               setDialog({
                 kind: 'alert',
                 message:
-                  'this call finished but can’t be continued — its conversation wasn’t saved (it may have failed, or its transcript was too large to persist).',
+                  'this call can’t be continued — its conversation wasn’t recorded, which usually means the call failed before it finished.',
                 variant: 'error',
               });
               return;
@@ -758,12 +765,13 @@ export default function App() {
             throw e; // transient (e.g. node_run not committed yet) → retry
           }
           if (cancelled) return;
+          const key = contKey(chat);
           setCallChatMessages((prev) =>
-            prev[chat.id] ? prev : { ...prev, [chat.id]: messagesToChat(chat.messages) });
+            prev[key] ? prev : { ...prev, [key]: messagesToChat(chat.messages) });
           setCallChatModelById((prev) =>
-            prev[chat.id]
+            prev[key]
               ? prev
-              : { ...prev, [chat.id]: { providerID: chat.provider_id, modelID: chat.model, variant: chat.variant || null } });
+              : { ...prev, [key]: { providerID: chat.provider_id, modelID: chat.model, variant: chat.variant || null } });
           setActiveLiveCall((cur) => (cur === target ? null : cur));
           setActiveContinuation(chat);
           return;
@@ -786,18 +794,18 @@ export default function App() {
   const chatMessages = activeLiveCall
     ? (liveCall ? liveCallToChat(liveCall) : [])
     : cont
-      ? (callChatMessages[cont.id] ?? [])
+      ? (callChatMessages[contKey(cont)] ?? [])
       : messages;
   // A live call is read-only (can't send while it streams / before it persists).
   const chatDisabled = activeLiveCall
     ? true
     : cont
-      ? streamingChatIds.has(cont.id)
+      ? streamingChatIds.has(contKey(cont))
       : isOrchestrating;
   const chatSelection: ModelSelection | null = activeLiveCall
     ? null
     : cont
-      ? (callChatModelById[cont.id] ?? null)
+      ? (callChatModelById[contKey(cont)] ?? null)
       : orchestratorSelection;
   const chatModelLabel = activeLiveCall
     ? (liveCall?.model ?? '')
@@ -807,12 +815,13 @@ export default function App() {
   const conversationLabel = activeLiveCall?.label ?? cont?.label;
   const onChatSend = (text: string) => {
     if (activeLiveCall) return; // read-only while live
-    if (cont) void streamToCallChat(cont.id, text, callChatModelById[cont.id] ?? null);
-    else void handleSend(text);
+    if (cont) {
+      void streamToCallChat(cont.node_run_id, cont.call_id, text, callChatModelById[contKey(cont)] ?? null);
+    } else void handleSend(text);
   };
   const onChatCancel = () => {
     if (activeLiveCall) return;
-    if (cont) cancelCallChat(cont.id);
+    if (cont) cancelCallChat(contKey(cont));
     else void cancelOrchestrator();
   };
   const backToOrchestrator = () => {
@@ -823,7 +832,7 @@ export default function App() {
   // persist to Settings. A live call's model is fixed, so no picker (below).
   const onChatPickModel = (sel: ModelSelection) => {
     if (cont) {
-      setCallChatModelById((prev) => ({ ...prev, [cont.id]: sel }));
+      setCallChatModelById((prev) => ({ ...prev, [contKey(cont)]: sel }));
     } else {
       const s = loadSettings();
       saveSettings({ ...s, orchestrator: sel });
@@ -832,8 +841,8 @@ export default function App() {
   const onChatCycleVariant = (next: string | null) => {
     if (cont) {
       setCallChatModelById((prev) => {
-        const cur = prev[cont.id];
-        return cur ? { ...prev, [cont.id]: { ...cur, variant: next } } : prev;
+        const cur = prev[contKey(cont)];
+        return cur ? { ...prev, [contKey(cont)]: { ...cur, variant: next } } : prev;
       });
     } else {
       const s = loadSettings();
@@ -1078,7 +1087,7 @@ export default function App() {
                           activeLiveCall
                             ? `live:${activeLiveCall.runId}:${activeLiveCall.nodeId}:${activeLiveCall.callId}`
                             : cont
-                              ? `cont:${cont.id}`
+                              ? `cont:${contKey(cont)}`
                               : `orch:${activeId ?? 'none'}`
                         }
                         messages={chatMessages}
