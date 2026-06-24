@@ -59,9 +59,6 @@ def test_add_node_creates_with_normalized_ports(db, workflow):
     assert n.inputs == [{"name": "folder", "type_hint": "path", "required": True}]
     # output's required defaults to False (since kind="output")
     assert n.outputs == [{"name": "files", "type_hint": "list[path]", "required": False}]
-    # default config sane
-    assert "tools_enabled" not in n.config
-    assert "timeout_s" not in n.config
 
 
 def test_add_node_always_starts_with_stub_code(db, workflow):
@@ -144,21 +141,17 @@ def test_add_edge_validates_ports(db, workflow):
 
 def test_rename_and_configure_node(db, workflow):
     nid = orch_tools.add_node(
-        db, workflow.id, name="old", description="old desc", model="",
+        db, workflow.id, name="old", description="old desc",
     )["node_id"]
     orch_tools.rename_node(db, workflow.id, node_id=nid, new_name="new")
     orch_tools.configure_node(
         db, workflow.id,
         node_id=nid,
         description="patched",
-        model="anthropic/claude-sonnet-4.5",
     )
     n = db.get(models.Node, nid)
     assert n.name == "new"
     assert n.description == "patched"
-    assert n.config["model"] == "anthropic/claude-sonnet-4.5"
-    assert "tools_enabled" not in n.config
-    assert "timeout_s" not in n.config
 
 
 def test_configure_node_partial_keeps_other_fields(db, workflow):
@@ -171,6 +164,32 @@ def test_configure_node_partial_keeps_other_fields(db, workflow):
     assert n.description == "just this"
     # outputs untouched
     assert n.outputs == [{"name": "out1", "type_hint": "any", "required": False}]
+
+
+def test_configure_node_patches_ports_when_provided(db, workflow):
+    nid = orch_tools.add_node(
+        db, workflow.id, name="x",
+        outputs=[{"name": "out1"}],
+    )["node_id"]
+    orch_tools.configure_node(
+        db, workflow.id,
+        node_id=nid,
+        inputs=[{"name": "folder", "type_hint": "path", "required": True}],
+        outputs=[{"name": "files", "type_hint": "list[path]"}],
+    )
+    n = db.get(models.Node, nid)
+    assert n.inputs == [{"name": "folder", "type_hint": "path", "required": True}]
+    assert n.outputs == [{"name": "files", "type_hint": "list[path]", "required": False}]
+
+
+def test_configure_node_rejects_model_arg(db, workflow):
+    """Model selection belongs in node code — `configure_node` must not accept it."""
+    nid = orch_tools.add_node(db, workflow.id, name="x")["node_id"]
+    res = orch_tools.execute(
+        db, workflow.id, "configure_node",
+        {"node_id": nid, "model": "anthropic/claude-sonnet-4.5"},
+    )
+    assert "error" in res
 
 
 def test_set_input_set_output(db, workflow):
@@ -268,7 +287,7 @@ def test_render_history_collapses_assistant_with_tool_cards(db, workflow):
             role="tool",
             tool_call_id="tc_1",
             name="add_node",
-            content=json.dumps({"node_id": "abc", "node": {"name": "loader"}}),
+            content=json.dumps({"node_id": "abc"}),
         )
     )
     db.commit()
@@ -328,7 +347,7 @@ def test_clean_canvas_wipes_nodes_edges_and_pointers(db, workflow):
     rid = run.id
 
     res = orch_tools.clean_canvas(db, workflow.id)
-    assert res == {"cleared": True, "removed_nodes": 2, "removed_edges": 1}
+    assert res == {"ok": True}
 
     db.refresh(workflow)
     assert workflow.input_node_id is None
@@ -433,7 +452,7 @@ def test_view_graph_returns_full_structural_state(db, workflow):
     orch_tools.set_output_node(db, workflow.id, node_id=b)
 
     res = orch_tools.view_graph(db, workflow.id)
-    assert res["workflow_id"] == workflow.id
+    assert "workflow_id" not in res
     assert res["input_node_id"] == a
     assert res["output_node_id"] == b
     names = {n["name"] for n in res["nodes"]}
@@ -448,20 +467,16 @@ def test_view_node_details_returns_full_untruncated_code(db, workflow):
     nid = orch_tools.add_node(
         db, workflow.id, name="big",
         description="huge node",
-        model="anthropic/claude-sonnet-4.5",
     )["node_id"]
     orch_tools.configure_node(db, workflow.id, node_id=nid, code=long_code)
 
     res = orch_tools.view_node_details(db, workflow.id, node_id=nid)
-    assert res["id"] == nid
+    assert "id" not in res
     assert res["name"] == "big"
     assert res["description"] == "huge node"
     # Full code returned, no truncation marker.
     assert res["code"] == long_code
     assert "<truncated" not in res["code"]
-    assert res["config"]["model"] == "anthropic/claude-sonnet-4.5"
-    assert "tools_enabled" not in res["config"]
-    assert "timeout_s" not in res["config"]
     # position is not exposed to the LLM — it can't move nodes.
     assert "position" not in res
 
@@ -556,7 +571,7 @@ def test_view_tools_work_during_active_run(db, workflow):
 
     d = orch_tools.execute(db, workflow.id, "view_node_details", {"node_id": nid})
     assert "error" not in d
-    assert d["id"] == nid
+    assert "id" not in d
 
 
 def test_view_run_requires_node_id(db, workflow):
@@ -688,8 +703,6 @@ def test_view_run_with_node_id_returns_node_inputs_outputs_logs(db, workflow):
         fields=["inputs", "outputs", "logs"], ports=["path", "items"],
     )
     assert res == {
-        "run_id": run.id,
-        "node_id": nid,
         "node_name": "loader",
         "status": "success",
         "inputs": {"path": "/tmp/x"},
@@ -785,7 +798,8 @@ def test_view_run_node_id_dispatches_via_execute(db, workflow):
             "ports": ["a", "b"],
         },
     )
-    assert res["node_id"] == nid
+    assert "run_id" not in res
+    assert "node_id" not in res
     assert res["inputs"] == {"a": 1}
     assert res["outputs"] == {"b": 2}
     assert res["logs"] == ["hi"]
@@ -1573,7 +1587,7 @@ def test_system_prompt_explains_editing_existing_nodes():
 
 
 def test_system_prompt_offers_both_direct_and_llm_tool_forms():
-    """Nodes can invoke tools two ways: through `ctx.call_llm(tools=[...])` so
+    """Nodes can invoke tools two ways: through `ctx.agent(tools=[...])` so
     the model decides, or directly via `ctx.tools.X(...)` for deterministic
     calls. The prompt must surface both — choosing between them is the
     orchestrator's call."""
@@ -1960,7 +1974,7 @@ def test_render_history_merges_multi_round_turn(db, workflow):
             role="tool",
             tool_call_id="tc_1",
             name="add_node",
-            content=json.dumps({"node_id": "abc", "node": {"name": "loader"}}),
+            content=json.dumps({"node_id": "abc"}),
         )
     )
     db.add(
@@ -1987,7 +2001,7 @@ def test_render_history_merges_multi_round_turn(db, workflow):
             role="tool",
             tool_call_id="tc_2",
             name="configure_node",
-            content=json.dumps({"node_id": "abc", "ok": True}),
+            content=json.dumps({"ok": True}),
         )
     )
     db.commit()

@@ -4,8 +4,8 @@ The runner can pass an `on_event` callback that fires for log lines, LLM calls,
 and tool invocations as they happen — used to stream events through the
 subprocess to the websocket layer.
 
-Each ``ctx.call_llm`` invocation gets a unique ``call_id`` so the run panel can
-render concurrent calls (a node spawning threads, each calling ``call_llm``)
+Each ``ctx.agent`` invocation gets a unique ``call_id`` so the run panel can
+render concurrent calls (a node spawning threads, each calling ``agent``)
 as parallel streaming cards instead of mashing them together.
 """
 from __future__ import annotations
@@ -182,7 +182,7 @@ class Ctx:
             self.logs.append(s)
         self._on_event({"type": "log", "msg": s})
 
-    def call_llm(
+    def agent(
         self,
         model: str | None = None,
         prompt=None,
@@ -192,7 +192,7 @@ class Ctx:
     ) -> dict:
         m = model or self._default_model
         if not m:
-            raise RuntimeError("call_llm: no model specified and no default configured")
+            raise RuntimeError("agent: no model specified and no default configured")
 
         call_id = self._next_call_id()
         call_label = (label or "").strip() or None

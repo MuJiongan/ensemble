@@ -18,10 +18,10 @@ How the on-screen vocabulary maps to the code:
 | Handoff | `Edge` | Wires one node's named output to another node's named input |
 | Run | `Run` | One end-to-end execution; freezes a snapshot of the graph |
 | Agent trace | `NodeRun` | The inputs/outputs/logs/LLM + tool calls for one node in a run |
-| Subagent chat | `CallChat` | A continued `ctx.call_llm` conversation — one ongoing thread per call |
+| Subagent chat | `CallChat` | A continued `ctx.agent` conversation — one ongoing thread per call |
 | Canvas | Canvas | The read-only visual board; topology is orchestrator-owned |
 
-The interface is a two-pane workspace: the canvas takes the left ~2/5, and the right ~3/5 toggles between **chat** (talk to the orchestrator, or continue a node's `call_llm` sub-agent) and **workspace** (the run console, or a node's code editor and trace). There is no hand-drawn graph editor — recruiting, deleting, renaming, and wiring agents all happen through the orchestrator.
+The interface is a two-pane workspace: the canvas takes the left ~2/5, and the right ~3/5 toggles between **chat** (talk to the orchestrator, or continue a node's `agent` sub-agent) and **workspace** (the run console, or a node's code editor and trace). There is no hand-drawn graph editor — recruiting, deleting, renaming, and wiring agents all happen through the orchestrator.
 
 ## Quick start
 
@@ -75,7 +75,7 @@ Each agent is a Python block exposing `run(inputs, ctx)`:
 
 ```python
 def run(inputs, ctx):
-    # ctx.call_llm(model=None, prompt=..., tools=[...], label="short name") -> dict
+    # ctx.agent(model=None, prompt=..., tools=[...], label="short name") -> dict
     #   Run an LLM-mediated sub-agent. Defaults to the node's configured model
     #   (raises if neither set). With tools, runs an agent loop: the model calls
     #   tools, results feed back, until it returns a final answer.
@@ -92,19 +92,19 @@ def run(inputs, ctx):
     return {"output_name": value_or_None}
 ```
 
-The six built-in tools available to every node are `shell`, `read_file`, `write_file`, `edit_file`, `web_search`, and `web_fetch`. `read_file` also returns images (PNG/JPEG/GIF/WebP) as attachments for vision-capable models; `web_search` and `web_fetch` are backed by parallel.ai. Tools can be invoked either *agentically* — named in `ctx.call_llm(tools=[...])` so the node's own model decides when to call them — or *directly* via `ctx.tools.<name>(...)`, which runs them deterministically with no model in the loop (see [Design decisions](#design-decisions)).
+The six built-in tools available to every node are `shell`, `read_file`, `write_file`, `edit_file`, `web_search`, and `web_fetch`. `read_file` also returns images (PNG/JPEG/GIF/WebP) as attachments for vision-capable models; `web_search` and `web_fetch` are backed by parallel.ai. Tools can be invoked either *agentically* — named in `ctx.agent(tools=[...])` so the node's own model decides when to call them — or *directly* via `ctx.tools.<name>(...)`, which runs them deterministically with no model in the loop (see [Design decisions](#design-decisions)).
 
 ## Design decisions
 
 A few choices that shape how the system behaves in use:
 
-- **Nodes can trigger tools directly — but agentic is the default.** A node author names a tool in `ctx.call_llm(tools=[...])` and lets the node's own model decide when to call it (the default), *or* calls `ctx.tools.<name>(...)` to fire it deterministically with no model in the loop. Direct calls are the deliberate exception — for steps where you want a guaranteed, un-routed action rather than the model's judgement — and the same dual surface covers both built-in and MCP tools. So a node isn't forced to launder every action through an LLM: it can reason when reasoning helps and just *do the thing* when it doesn't.
+- **Nodes can trigger tools directly — but agentic is the default.** A node author names a tool in `ctx.agent(tools=[...])` and lets the node's own model decide when to call it (the default), *or* calls `ctx.tools.<name>(...)` to fire it deterministically with no model in the loop. Direct calls are the deliberate exception — for steps where you want a guaranteed, un-routed action rather than the model's judgement — and the same dual surface covers both built-in and MCP tools. So a node isn't forced to launder every action through an LLM: it can reason when reasoning helps and just *do the thing* when it doesn't.
 - **The orchestrator plans; it doesn't run the work itself.** It shapes the graph and writes node code, but it can't execute the workflow's tools directly — `run_workflow` starts a run and hands back only `{run_id, status, total_cost}`, while the live outputs stream to *you* in the run console. Nothing auto-dumps into the model's context: when the orchestrator needs a result — to summarize it for you, or to debug a failure — it pulls just the node outputs it asks for via `view_run`, the same pull-not-push discipline it uses for the graph. So the build conversation stays lean instead of bloating with every run's full output.
 - **The graph is pulled, not pushed.** The orchestrator's prompt never carries the current topology or node code; it calls `view_graph()` / `view_node_details()` on demand. Structure and code are also split across `add_node` (recruit a stub) and `configure_node` (inject the Python) so no single tool call carries both. Both keep context small and turns fast.
 - **Branching is data, not control flow.** There are no cyclic or conditional edges — a node returns `None` on an output to skip a downstream path (the [skip rule](#node-runtime)), and any looping lives inside one node's Python. The graph stays a DAG you can read at a glance.
 - **The orchestrator and node models are independent.** The chat agent and the agents it builds run on separate provider/key/reasoning settings, so you can pair an expensive planner with cheap workers (or the reverse) without coupling the two.
-- **A runaway loop is a cancel button, not a turn cap.** Neither the orchestrator turn nor a node's `call_llm` loop has an iteration limit; each runs until the model stops calling tools, and is stopped — when it needs to be — by cancel (a `SIGTERM` to the run subprocess).
-- **Subagent chats are separate from the orchestrator.** Each finished `ctx.call_llm` in a run trace can be continued as its own chat — seeded from that call's recorded conversation, with the same tools reconnected — but it lives in a `CallChat` row, not in the orchestrator session. One continuation per call (not a branch); the chat pane swaps to it from a node's **llm calls** tab and returns to the orchestrator via **‹ orchestrator**. Continuations pin the provider/model/variant the source call ran with, overridable per-chat via the header model switcher.
+- **A runaway loop is a cancel button, not a turn cap.** Neither the orchestrator turn nor a node's `agent` loop has an iteration limit; each runs until the model stops calling tools, and is stopped — when it needs to be — by cancel (a `SIGTERM` to the run subprocess).
+- **Subagent chats are separate from the orchestrator.** Each finished `ctx.agent` in a run trace can be continued as its own chat — seeded from that call's recorded conversation, with the same tools reconnected — but it lives in a `CallChat` row, not in the orchestrator session. One continuation per call (not a branch); the chat pane swaps to it from a node's **llm calls** tab and returns to the orchestrator via **‹ orchestrator**. Continuations pin the provider/model/variant the source call ran with, overridable per-chat via the header model switcher.
 
 ## External MCP tool integrations
 
@@ -113,7 +113,7 @@ A few choices that shape how the system behaves in use:
 At the start of every run the child subprocess connects to each enabled server, calls `tools/list`, and registers the discovered tools into the same in-process registry the built-ins live in. Node code reaches them two ways:
 
 - **Direct** — `ctx.tools.<server>.<tool>(arg=...)` (dotted) or the flat `ctx.tools.<server>_<tool>(...)`.
-- **Agentic** — name the flat `<server>_<tool>` form in `ctx.call_llm(tools=[...])`.
+- **Agentic** — name the flat `<server>_<tool>` form in `ctx.agent(tools=[...])`.
 
 The orchestrator never executes MCP tools itself. Instead, each orchestrator turn receives a system message listing every discovered tool with a one-line summary and the exact names to call it by; `get_mcp_tool_schema(server, tool)` fetches a tool's untruncated input schema on demand. Per-server `disabled_tools` opt-outs are applied before both the orchestrator listing and the runtime registry, so a disabled tool is invisible everywhere.
 
@@ -130,7 +130,7 @@ The orchestrator never executes MCP tools itself. Instead, each orchestrator tur
 - **Theme.** A light/dark toggle; the interface uses a paper-and-ink editorial aesthetic.
 - **Cost.** Per-turn and per-run cost is shown in USD where the provider reports it (currently OpenRouter).
 - **Markdown.** Chat renders Markdown with currency-safe math: `$50K` stays literal text; only `$$...$$` is treated as a math block.
-- **Continue subagent chat.** Open any node's **llm calls** tab and click **continue →** on a finished `call_llm` to keep talking to that sub-agent in the shared chat pane — same model, tools, and transcript, grown turn by turn. While a run is in flight, **watch →** streams the call live (read-only) until it persists, then the composer enables. Optional `label=` on `ctx.call_llm` names calls when a node makes several (shown in the tab and as the continuation title).
+- **Continue subagent chat.** Open any node's **llm calls** tab and click **continue →** on a finished `agent` to keep talking to that sub-agent in the shared chat pane — same model, tools, and transcript, grown turn by turn. While a run is in flight, **watch →** streams the call live (read-only) until it persists, then the composer enables. Optional `label=` on `ctx.agent` names calls when a node makes several (shown in the tab and as the continuation title).
 - **Chat model switcher.** The chat header's model control (▾ picker + reasoning-variant pill) applies to whichever conversation is active: the orchestrator (persists to Settings) or a subagent continuation (per-call, in memory). In-flight live calls have a fixed model — no picker until they land.
 
 ## Configuring providers & models
@@ -138,7 +138,7 @@ The orchestrator never executes MCP tools itself. Instead, each orchestrator tur
 Settings ("providers & models") is where you connect providers and choose models. Everything here lives in your browser's `localStorage` and rides along each request as headers; the backend never writes your keys to disk.
 
 - **Provider catalog.** The provider and model lists are fetched live from [models.dev](https://models.dev) by the backend (`/api/catalog/*`), cached on disk and in the browser. There is no hardcoded preset list — connect any catalog provider with an API key, sign in to a subscription provider, or add a **Custom** OpenAI-compatible endpoint with its own base URL.
-- **Two model roles.** You pick an **orchestrator** model (drives the chat agent) and a separate **node** model (the default for `ctx.call_llm` inside agents). They can use different providers and keys; a run uses the *node* provider/model, deliberately decoupled from whatever the orchestrator chat is signed into.
+- **Two model roles.** You pick an **orchestrator** model (drives the chat agent) and a separate **node** model (the default for `ctx.agent` inside agents). They can use different providers and keys; a run uses the *node* provider/model, deliberately decoupled from whatever the orchestrator chat is signed into.
 - **Reasoning variants.** Reasoning-capable models expose ordered effort variants (e.g. low → medium → high → max); a pill in the UI cycles them, and the choice rides as a per-request header.
 - **Subscription sign-in.** Two providers support OAuth login instead of an API key: `codex` (your ChatGPT Pro/Plus subscription, routed through the Responses API on the ChatGPT backend) and `xai`. Both use a PKCE flow against a pinned loopback callback; tokens are stored server-side and never returned to the browser.
 - **Web tools key.** A [parallel.ai](https://parallel.ai) API key enables the `web_search` and `web_fetch` node tools.
@@ -212,10 +212,10 @@ backend/
       prompt.py tools.py               # System prompt + 16-tool surface
     runner/
       runner.py child.py service.py    # Subprocess spawn, scheduler, run lifecycle + persistence
-      chat.py chat_child.py            # Continue-chat turn runner + single-call_llm child
+      chat.py chat_child.py            # Continue-chat turn runner + single-agent child
       subprocess_io.py                 # Shared stdin/stdout/MCP plumbing for child subprocesses
       ctx.py tools.py                  # Injected node context + built-in tool registry
-      llm.py mcp.py                    # Node-side call_llm + MCP client
+      llm.py mcp.py                    # Node-side agent + MCP client
       events.py                        # In-memory run event pub/sub → WebSocket
   tests/               # pytest: runner, orchestrator, mcp, llm transport, catalog, compaction, images, run recovery, workflow export, call chats
 frontend/

@@ -1,4 +1,4 @@
-"""Continue-chat (call_llm continuation) API + persistence.
+"""Continue-chat (agent continuation) API + persistence.
 
 Covers read-only viewing (no row written) vs lazy create-on-first-turn, get-or-
 create idempotency, the no-transcript/missing-call 404s, the model the

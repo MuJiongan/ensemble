@@ -21,10 +21,6 @@ export interface FsFile {
   note?: string;
 }
 
-export interface NodeConfig {
-  model: string;
-}
-
 export interface WFNode {
   id: string;
   workflow_id: string;
@@ -33,7 +29,6 @@ export interface WFNode {
   code: string;
   inputs: IOPort[];
   outputs: IOPort[];
-  config: NodeConfig;
   position: { x: number; y: number };
 }
 
@@ -92,7 +87,6 @@ export interface RunWorkflowSnapshotNode {
   code: string;
   inputs: IOPort[];
   outputs: IOPort[];
-  config: NodeConfig;
   position?: { x: number; y: number };
 }
 
@@ -150,7 +144,7 @@ export interface Settings {
   parallel_api_key: string;
   /** Model + variant used by the orchestrator chat. */
   orchestrator: ModelSelection | null;
-  /** Default model + variant for ctx.call_llm inside nodes. */
+  /** Default model + variant for ctx.agent inside nodes. */
   node: ModelSelection | null;
   /**
    * MCP (Model Context Protocol) server config as a raw JSON string, in
@@ -264,7 +258,7 @@ export type RunEvent =
   // deleted out from under a subscriber (or a subscriber attaches to a run
   // that no longer exists). Terminal — the server closes the socket after.
   | { type: 'run_deleted'; run_id: string }
-  // Emitted by a node's ctx.call_llm loop when it summarized older history to
+  // Emitted by a node's ctx.agent loop when it summarized older history to
   // stay within the model's context window. `summarized` is the number of
   // messages folded into the anchor. Rendered as a marker in the node trace.
   | {
@@ -386,7 +380,7 @@ export type OrchestratorEvent =
   | { kind: 'error'; message: string }
   | { kind: 'done' };
 
-// --- continue-chat (call_llm continuations) -------------------------------
+// --- continue-chat (agent continuations) -------------------------------
 
 /** A call's continuation with its full OpenAI-shape transcript. */
 export interface CallChat {
@@ -403,7 +397,7 @@ export interface CallChat {
 }
 
 /** Events streamed for one continue-chat turn. Mirrors the run event contract
- * a node's ctx.call_llm emits — minus node_id (a continuation belongs to no node). The
+ * a node's ctx.agent emits — minus node_id (a continuation belongs to no node). The
  * terminal `run_finished` carries the grown conversation so the client can sync
  * against the persisted transcript. */
 export type CallChatTurnEvent =

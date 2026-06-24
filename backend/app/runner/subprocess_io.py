@@ -19,7 +19,7 @@ _emit_lock = threading.Lock()
 
 def _emit(event: dict) -> None:
     """Write one JSON-line event to stdout. Locked so events emitted from
-    concurrent threads (e.g. a node's parallel ``ctx.call_llm`` calls) don't
+    concurrent threads (e.g. a node's parallel ``ctx.agent`` calls) don't
     interleave mid-line."""
     line = json.dumps(event, default=str) + "\n"
     with _emit_lock:
@@ -49,7 +49,7 @@ def _read_payload() -> dict:
 def _load_mcp_tools():
     """Connect to configured MCP servers and register their tools into the
     runtime registry so node / chat code can use them via
-    ``ctx.call_llm(tools=[...])`` or ``ctx.tools.<name>(...)``. Best-effort: a
+    ``ctx.agent(tools=[...])`` or ``ctx.tools.<name>(...)``. Best-effort: a
     connection failure is logged to stderr (captured by the parent for
     diagnostics) but never fails the run. Returns the live manager so the
     caller can shut it down on exit."""

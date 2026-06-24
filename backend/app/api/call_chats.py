@@ -1,6 +1,6 @@
-"""Continue-chat (call_llm continuation) API.
+"""Continue-chat (agent continuation) API.
 
-Each finished ``ctx.call_llm`` in a run trace can be continued as a chat: we
+Each finished ``ctx.agent`` in a run trace can be continued as a chat: we
 seed it from the call's recorded conversation and let the user keep talking to
 the same model, with the same tools reconnected. One continuation per call — a
 single ongoing thread, not a branch.
@@ -71,7 +71,7 @@ def _node_name(db: Session, node_run: models.NodeRun) -> str:
 
 
 def _build_continuation(db: Session, nrid: str, call_id: str) -> models.CallChat:
-    """Build — but do NOT persist — the continuation for one call_llm call,
+    """Build — but do NOT persist — the continuation for one agent call,
     seeded from its recorded transcript. Raises 404 if the node run, the call,
     or its transcript isn't there.
 

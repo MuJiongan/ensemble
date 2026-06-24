@@ -306,7 +306,7 @@ interface Props {
   onViewRun?: (runId: string) => void;
 
   // --- continuation mode ------------------------------------------------
-  /** When set, this pane shows a call_llm continuation (entered from a node's
+  /** When set, this pane shows an agent continuation (entered from a node's
    * "llm calls" tab) rather than the orchestrator chat: the header shows this
    * label + a "‹ orchestrator" back link instead of the orchestrator title. */
   conversationLabel?: string;

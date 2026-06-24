@@ -10,7 +10,7 @@ import { NodeIOBlock } from './NodeIOBlock';
 
 // --- types ----------------------------------------------------------------
 //
-// One entry per ctx.call_llm invocation, broken down by agent-loop round so
+// One entry per ctx.agent invocation, broken down by agent-loop round so
 // reasoning / content / tool-arg streams render in chronological order rather
 // than as one concatenated blob.
 
@@ -37,7 +37,7 @@ export interface CallRound {
 
 export interface LiveLLMCall {
   call_id: string;
-  /** Short human name from ctx.call_llm(label=...); falls back to "call N". */
+  /** Short human name from ctx.agent(label=...); falls back to "call N". */
   label?: string;
   model: string;
   tools: string[];
@@ -77,7 +77,7 @@ export interface NodeTrace {
   llmCallById: Map<string, LiveLLMCall>;
   directToolCalls: DirectToolCall[];
   directToolCallById: Map<string, DirectToolCall>;
-  // One entry per time the node's call_llm loop summarized older history to
+  // One entry per time the node's agent loop summarized older history to
   // fit the context window; `summarized` is the message count folded in.
   compactions: { summarized: number }[];
   error?: string | null;
@@ -578,7 +578,7 @@ export function NodeTraceCard({
             {trace.compactions.length > 0 && (
               <div
                 className="trace-compaction-note fade-in"
-                title="Older turns were summarized to keep this node's call_llm loop within the model's context window."
+                title="Older turns were summarized to keep this node's agent loop within the model's context window."
               >
                 <span aria-hidden>⤵</span>
                 context compacted
@@ -596,7 +596,7 @@ export function NodeTraceCard({
 // --- llm calls tab --------------------------------------------------------
 //
 // The node's LLM calls, lifted out of the trace tab into their own tab. Per
-// model stats up top, then one card per ctx.call_llm. Clicking a card opens the
+// model stats up top, then one card per ctx.agent. Clicking a card opens the
 // call in the shared chat pane: a finished call as a continuation (composer
 // enabled), an in-flight call streaming live (read-only until it lands). A rare
 // finished-but-unsaved call (over the persist budget) keeps the inline rounds.

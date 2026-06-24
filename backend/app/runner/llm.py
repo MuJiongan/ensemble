@@ -10,7 +10,7 @@ Responses API and is dispatched separately at the top.
 
 When an ``on_event`` callback is provided, the call streams the response and
 emits per-token events tagged with ``call_id`` so the run panel can render
-live content/reasoning/tool-arg deltas. Multiple ``ctx.call_llm`` invocations
+live content/reasoning/tool-arg deltas. Multiple ``ctx.agent`` invocations
 within the same node are disambiguated by their ``call_id``. Without
 ``on_event`` the adapters still stream internally and assemble the final
 message — the caller just doesn't see deltas.

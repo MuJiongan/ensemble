@@ -1,5 +1,5 @@
 import type {
-  Workflow, WorkflowDetail, WorkflowExport, WFNode, WFEdge, Run, IOPort, NodeConfig,
+  Workflow, WorkflowDetail, WorkflowExport, WFNode, WFEdge, Run, IOPort,
   OrchestratorSession, ChatHistory, OrchestratorEvent, FsFile,
   CallChat, ModelSelection,
 } from './types';
@@ -48,7 +48,6 @@ export interface NewNodePayload {
   code?: string;
   inputs?: IOPort[];
   outputs?: IOPort[];
-  config?: NodeConfig;
   position?: { x: number; y: number };
 }
 
@@ -58,7 +57,6 @@ export interface PatchNodePayload {
   code?: string;
   inputs?: IOPort[];
   outputs?: IOPort[];
-  config?: NodeConfig;
   position?: { x: number; y: number };
 }
 
@@ -114,8 +112,8 @@ export const api = {
   cancelOrchestratorTurn: (sid: string) =>
     request<{ cancelled: boolean }>('POST', `/api/sessions/${sid}/cancel`),
 
-  // --- continue-chat (call_llm continuations) -------------------------------------
-  /** View a call_llm call's continuation: the persisted thread if it's been
+  // --- continue-chat (agent continuations) -------------------------------------
+  /** View an agent call's continuation: the persisted thread if it's been
    * started, else a not-yet-persisted seed (id=""). Read-only — the row is
    * materialized lazily by the first turn, so viewing never writes. */
   viewCallChat: (nodeRunId: string, callId: string) =>

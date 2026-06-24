@@ -29,7 +29,7 @@ Event types (all on a single line, JSON):
                             "error": null|"...", "duration_ms": N, "cost": 0.0}
   {"type": "run_finished",  "status": "...", "outputs": {...}, "error": null|"...", "total_cost": 0.0}
 
-A node may invoke ``ctx.call_llm`` from multiple threads concurrently; each
+A node may invoke ``ctx.agent`` from multiple threads concurrently; each
 invocation gets its own ``call_id`` and the stdout write below is locked so
 the per-line JSON frames don't get interleaved.
 """
@@ -216,8 +216,7 @@ def _run_node(state: _RunState, node_id: str) -> None:
     node = state.sched.nodes_by_id[node_id]
     input_ports = node.get("inputs") or []
     output_ports = node.get("outputs") or []
-    config = node.get("config") or {}
-    node_model = config.get("model") or state.default_model
+    node_model = state.default_model
 
     inputs = _gather_node_inputs(state, node_id, input_ports)
 
@@ -375,7 +374,7 @@ def main() -> None:
         state.terminate_event.set()
 
     # On cancel, don't wait for in-flight node threads — they may be blocked
-    # in `ctx.call_llm` (httpx with no timeout, deliberately, so streams don't
+    # in `ctx.agent` (httpx with no timeout, deliberately, so streams don't
     # truncate). Python signals are delivered to the main thread only, so a
     # node thread won't see SIGTERM. Waiting here means the user has to click
     # cancel a second time; skip the wait and forcibly exit below.

@@ -184,7 +184,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           />
           <ModelRow
             label="node model"
-            hint="default for ctx.call_llm inside nodes when a node doesn't specify one."
+            hint="default for ctx.agent inside nodes when a node doesn't specify one."
             catalog={catalog}
             selection={s.node}
             onChange={(sel) => setSelection('node', sel)}

@@ -1,4 +1,4 @@
-"""Smoke tests for the workflow runner. No API keys required (no call_llm in tests)."""
+"""Smoke tests for the workflow runner. No API keys required (no agent in tests)."""
 from __future__ import annotations
 
 from app.runner import runner as runner_mod

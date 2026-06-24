@@ -37,7 +37,6 @@ class Node(Base):
     code = Column(Text, default="def run(inputs, ctx):\n    return {}\n")
     inputs = Column(JSON, default=list)
     outputs = Column(JSON, default=list)
-    config = Column(JSON, default=dict)
     position = Column(JSON, default=dict)
     workflow = relationship("Workflow", back_populates="nodes")
 
@@ -99,7 +98,7 @@ class NodeRun(Base):
 
 
 class CallTranscript(Base):
-    """Verbatim recorded conversation for one node's ``ctx.call_llm`` call — the
+    """Verbatim recorded conversation for one node's ``ctx.agent`` call — the
     seed for continuing that call as a chat.
 
     Deliberately kept OUT of ``NodeRun.llm_calls`` (a JSON blob deserialized on
@@ -206,11 +205,11 @@ class Session(Base):
 
 
 class CallChat(Base):
-    """The continuation of one node's ``ctx.call_llm`` call — a single ongoing
+    """The continuation of one node's ``ctx.agent`` call — a single ongoing
     conversation, not a branch (exactly one per ``(node_run_id, call_id)``).
 
     Seeded with that call's recorded message history (the same OpenAI-shape
-    transcript ``call_llm`` returns) and grown by follow-up turns the user
+    transcript ``agent`` returns) and grown by follow-up turns the user
     sends from the node's chat tab. Kept deliberately separate from the
     immutable ``NodeRun`` trace it continues from. ``messages`` is the single
     source of truth, rewritten after each turn completes.

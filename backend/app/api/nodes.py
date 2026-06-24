@@ -21,7 +21,6 @@ def create_node(wid: str, body: schemas.NodeIn, db: Session = Depends(get_db)):
         code=body.code,
         inputs=[p.model_dump() for p in body.inputs],
         outputs=[p.model_dump() for p in body.outputs],
-        config=body.config.model_dump(),
         position=body.position.model_dump(),
     )
     db.add(n)
@@ -45,8 +44,6 @@ def patch_node(nid: str, body: schemas.NodePatch, db: Session = Depends(get_db))
         n.inputs = [p.model_dump() for p in body.inputs]
     if body.outputs is not None:
         n.outputs = [p.model_dump() for p in body.outputs]
-    if body.config is not None:
-        n.config = body.config.model_dump()
     if body.position is not None:
         n.position = body.position.model_dump()
     db.commit()

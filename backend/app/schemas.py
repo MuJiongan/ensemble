@@ -9,10 +9,6 @@ class IOPort(BaseModel):
     required: bool = True
 
 
-class NodeConfig(BaseModel):
-    model: str = ""
-
-
 class Position(BaseModel):
     x: float = 0
     y: float = 0
@@ -27,7 +23,6 @@ class NodeIn(BaseModel):
     code: str = DEFAULT_CODE
     inputs: list[IOPort] = Field(default_factory=list)
     outputs: list[IOPort] = Field(default_factory=list)
-    config: NodeConfig = Field(default_factory=NodeConfig)
     position: Position = Field(default_factory=Position)
 
 
@@ -42,7 +37,6 @@ class NodePatch(BaseModel):
     code: str | None = None
     inputs: list[IOPort] | None = None
     outputs: list[IOPort] | None = None
-    config: NodeConfig | None = None
     position: Position | None = None
 
 
@@ -198,7 +192,7 @@ class UserMessageIn(BaseModel):
     attachments: list[AttachmentIn] = []
 
 
-# --- continue-chat (call_llm continuation) schemas ------------------------
+# --- continue-chat (agent continuation) schemas ------------------------
 
 
 class CallChatOut(BaseModel):

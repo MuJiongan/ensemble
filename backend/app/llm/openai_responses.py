@@ -41,7 +41,7 @@ DEFAULT_BASE_URL = "https://api.openai.com/v1"
 REASONING_FORMAT = "openai-responses-v1"
 
 # Chat-completions body fields whose Responses-API spelling differs. Caller
-# opts arrive in chat shape (ctx.call_llm(**opts)); remap on the way out.
+# opts arrive in chat shape (ctx.agent(**opts)); remap on the way out.
 _EXTRA_KEY_MAP = {"max_tokens": "max_output_tokens", "max_completion_tokens": "max_output_tokens"}
 
 

@@ -13,6 +13,8 @@ from sqlalchemy.orm import Session as DbSession
 
 from app import models, schemas
 
+_OK: dict[str, bool] = {"ok": True}
+
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -62,32 +64,17 @@ def _next_position(db: DbSession, wid: str) -> dict:
     return {"x": float(x), "y": float(y)}
 
 
-def _node_summary(n: models.Node) -> dict:
-    return {
-        "id": n.id,
-        "name": n.name,
-        "description": n.description or "",
-        "inputs": n.inputs or [],
-        "outputs": n.outputs or [],
-        "config": n.config or {},
-    }
-
-
 def _node_full(n: models.Node) -> dict:
     """Full node payload — used by view_node_details. No truncation.
-    `position` is deliberately omitted: the LLM can't move nodes (no
+    ``id`` is omitted (the caller already passed ``node_id``). ``position``
+    is deliberately omitted too: the LLM can't move nodes (no
     `set_position` tool — `add_node` auto-lays them out)."""
-    cfg = n.config or {}
     return {
-        "id": n.id,
         "name": n.name,
         "description": n.description or "",
         "code": n.code or "",
         "inputs": n.inputs or [],
         "outputs": n.outputs or [],
-        "config": {
-            "model": cfg.get("model", ""),
-        },
     }
 
 
@@ -114,11 +101,10 @@ def add_node(
     description: str = "",
     inputs: list[dict] | None = None,
     outputs: list[dict] | None = None,
-    model: str = "",
 ) -> dict:
     """Create a new node in the workflow. The node is created with the
     default code stub — call ``configure_node`` to write its actual code.
-    Returns the new node id + summary."""
+    Returns the new node id."""
     _get_workflow(db, wid)
     n = models.Node(
         workflow_id=wid,
@@ -127,15 +113,12 @@ def add_node(
         code=schemas.DEFAULT_CODE,
         inputs=_normalize_ports(inputs, "input"),
         outputs=_normalize_ports(outputs, "output"),
-        config={
-            "model": model or "",
-        },
         position=_next_position(db, wid),
     )
     db.add(n)
     db.commit()
     db.refresh(n)
-    return {"node_id": n.id, "node": _node_summary(n)}
+    return {"node_id": n.id}
 
 
 def remove_node(db: DbSession, wid: str, *, node_id: str) -> dict:
@@ -143,7 +126,7 @@ def remove_node(db: DbSession, wid: str, *, node_id: str) -> dict:
     from app.services.graph import cascade_delete_node
     cascade_delete_node(db, n)
     db.commit()
-    return {"removed_node_id": node_id}
+    return _OK
 
 
 def rename_node(db: DbSession, wid: str, *, node_id: str, new_name: str) -> dict:
@@ -152,7 +135,7 @@ def rename_node(db: DbSession, wid: str, *, node_id: str, new_name: str) -> dict
     n = _get_node(db, wid, node_id)
     n.name = new_name
     db.commit()
-    return {"node_id": node_id, "name": new_name}
+    return _OK
 
 
 def rename_project(db: DbSession, wid: str, *, new_name: str) -> dict:
@@ -162,7 +145,7 @@ def rename_project(db: DbSession, wid: str, *, new_name: str) -> dict:
     w = _get_workflow(db, wid)
     w.name = new_name.strip()
     db.commit()
-    return {"workflow_id": w.id, "name": w.name}
+    return _OK
 
 
 def configure_node(
@@ -174,9 +157,10 @@ def configure_node(
     code: str | None = None,
     inputs: list[dict] | None = None,
     outputs: list[dict] | None = None,
-    model: str | None = None,
 ) -> dict:
-    """Patch any subset of a node's mutable fields."""
+    """Patch a node's description, code, and/or ports.
+
+    Omitted optional fields are left unchanged."""
     n = _get_node(db, wid, node_id)
     if description is not None:
         n.description = description
@@ -186,17 +170,9 @@ def configure_node(
         n.inputs = _normalize_ports(inputs, "input")
     if outputs is not None:
         n.outputs = _normalize_ports(outputs, "output")
-    cfg = dict(n.config or {})
-    if model is not None:
-        cfg["model"] = model
-    # Drop legacy fields that no longer mean anything so we don't carry
-    # them forward on existing rows.
-    cfg.pop("timeout_s", None)
-    cfg.pop("tools_enabled", None)
-    n.config = cfg
     db.commit()
     db.refresh(n)
-    return {"node_id": node_id, "node": _node_summary(n)}
+    return _OK
 
 
 def add_edge(
@@ -209,7 +185,7 @@ def add_edge(
     to_input: str,
 ) -> dict:
     """Connect one node's output to another node's input. Validates the ports
-    exist on each side."""
+    exist on each side. Returns the new edge id."""
     src = _get_node(db, wid, from_node_id)
     dst = _get_node(db, wid, to_node_id)
     src_out_names = [p.get("name") for p in (src.outputs or [])]
@@ -232,7 +208,7 @@ def add_edge(
     db.add(e)
     db.commit()
     db.refresh(e)
-    return {"edge_id": e.id, "edge": _edge_summary(e)}
+    return {"edge_id": e.id}
 
 
 def remove_edge(db: DbSession, wid: str, *, edge_id: str) -> dict:
@@ -241,7 +217,7 @@ def remove_edge(db: DbSession, wid: str, *, edge_id: str) -> dict:
         raise ValueError(f"edge {edge_id} not found in workflow {wid}")
     db.delete(e)
     db.commit()
-    return {"removed_edge_id": edge_id}
+    return _OK
 
 
 def clean_canvas(db: DbSession, wid: str) -> dict:
@@ -260,7 +236,7 @@ def clean_canvas(db: DbSession, wid: str) -> dict:
     w.input_node_id = None
     w.output_node_id = None
     db.commit()
-    return {"cleared": True, "removed_nodes": int(n_nodes), "removed_edges": int(n_edges)}
+    return _OK
 
 
 def set_input_node(db: DbSession, wid: str, *, node_id: str) -> dict:
@@ -268,7 +244,7 @@ def set_input_node(db: DbSession, wid: str, *, node_id: str) -> dict:
     w = _get_workflow(db, wid)
     w.input_node_id = n.id
     db.commit()
-    return {"input_node_id": n.id}
+    return _OK
 
 
 def set_output_node(db: DbSession, wid: str, *, node_id: str) -> dict:
@@ -276,7 +252,7 @@ def set_output_node(db: DbSession, wid: str, *, node_id: str) -> dict:
     w = _get_workflow(db, wid)
     w.output_node_id = n.id
     db.commit()
-    return {"output_node_id": n.id}
+    return _OK
 
 
 # ---------------------------------------------------------------------------
@@ -286,12 +262,11 @@ def set_output_node(db: DbSession, wid: str, *, node_id: str) -> dict:
 
 def view_graph(db: DbSession, wid: str) -> dict:
     """Return a structural snapshot of the workflow — node ids, names,
-    descriptions, ports, model. Code is intentionally omitted; call
+    descriptions, ports. Code is intentionally omitted; call
     `view_node_details` for the full body of a specific node."""
     w = _get_workflow(db, wid)
     nodes = []
     for n in w.nodes:
-        cfg = n.config or {}
         nodes.append(
             {
                 "id": n.id,
@@ -299,12 +274,10 @@ def view_graph(db: DbSession, wid: str) -> dict:
                 "description": n.description or "",
                 "inputs": n.inputs or [],
                 "outputs": n.outputs or [],
-                "model": cfg.get("model", ""),
             }
         )
     edges = [_edge_summary(e) for e in w.edges]
     return {
-        "workflow_id": w.id,
         "name": w.name,
         "input_node_id": w.input_node_id,
         "output_node_id": w.output_node_id,
@@ -579,7 +552,7 @@ def view_run(
     node and the slice it's after.
 
     Always includes the lightweight metadata
-    ``{run_id, node_id, node_name, status, error, duration_ms, cost}``; the
+    ``{node_name, status, error, duration_ms, cost}``; the
     heavy fields ``inputs``, ``outputs``, ``logs`` are gated by ``fields`` —
     a non-empty subset of ``["inputs", "outputs", "logs"]``. The workflow's
     result lives on the output node: ``node_id=<output node id>,
@@ -635,10 +608,10 @@ def view_run(
         }
 
     out = _materialise_node_run(db, wid, run_id, node_id, selected)
-    # Bare error dicts (run/node not found) have no node_id; the per-node
+    # Bare error dicts (run/node not found) have no `status`; the per-node
     # record always does — and its `error` key is None on success, so the
     # key's presence can't distinguish the two shapes.
-    if not wants_dicts or "node_id" not in out:
+    if not wants_dicts or "status" not in out:
         return out
 
     available: set[str] = set()
@@ -721,8 +694,6 @@ def _materialise_node_run(
             node_name = live.name
 
     out: dict = {
-        "run_id": run_id,
-        "node_id": node_id,
         "node_name": node_name,
         "status": nr.status,
         "error": nr.error,
@@ -853,10 +824,10 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "function": {
             "name": "add_node",
             "description": (
-                "Create a new node with its structure — name, description, ports, model. "
+                "Create a new node with its structure — name, description, and ports. "
                 "The node is created with a stub `def run(inputs, ctx): return {}` body; "
                 "follow up with `configure_node` to write its actual Python code. "
-                "Returns {node_id, node}."
+                "Returns {node_id}."
             ),
             "parameters": {
                 "type": "object",
@@ -865,7 +836,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
                     "description": {"type": "string", "description": "one-line italic description for the canvas"},
                     "inputs": _PORT_SCHEMA,
                     "outputs": _PORT_SCHEMA,
-                    "model": {"type": "string", "description": "OpenRouter model id (optional)"},
                 },
                 "required": ["name"],
             },
@@ -917,8 +887,8 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "function": {
             "name": "configure_node",
             "description": (
-                "Patch any subset of a node's fields (description, code, inputs, outputs, model). "
-                "Omitted fields are left unchanged."
+                "Patch a node's description, code, and/or ports. Omitted fields are left "
+                "unchanged — omit `inputs`/`outputs` to preserve existing ports."
             ),
             "parameters": {
                 "type": "object",
@@ -926,9 +896,14 @@ TOOL_SCHEMAS: dict[str, dict] = {
                     "node_id": {"type": "string"},
                     "description": {"type": "string"},
                     "code": {"type": "string"},
-                    "inputs": _PORT_SCHEMA,
-                    "outputs": _PORT_SCHEMA,
-                    "model": {"type": "string"},
+                    "inputs": {
+                        **_PORT_SCHEMA,
+                        "description": "Optional. Omit to leave existing input ports unchanged.",
+                    },
+                    "outputs": {
+                        **_PORT_SCHEMA,
+                        "description": "Optional. Omit to leave existing output ports unchanged.",
+                    },
                 },
                 "required": ["node_id"],
             },
@@ -940,7 +915,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
             "name": "add_edge",
             "description": (
                 "Connect one node's named output to another node's named input. Both ports must "
-                "already exist."
+                "already exist. Returns {edge_id}."
             ),
             "parameters": {
                 "type": "object",
@@ -1083,7 +1058,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 "There is no run-level dump: every call names the node (`node_id`), the "
                 "slice it needs (`fields`), and — when reading `inputs`/`outputs` — the "
                 "specific port names (`ports`). Always includes the lightweight metadata "
-                "{run_id, node_id, node_name, status, error, duration_ms, cost}; the heavy "
+                "{node_name, status, error, duration_ms, cost}; the heavy "
                 "fields (`inputs`, `outputs`, `logs`) are gated by `fields`. The workflow's "
                 "result lives on the output node — `node_id=<output node id>, "
                 "fields=[\"outputs\"], ports=[<the output port(s) you need>]`."
