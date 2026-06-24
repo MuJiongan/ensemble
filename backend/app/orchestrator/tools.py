@@ -69,7 +69,6 @@ def _node_summary(n: models.Node) -> dict:
         "description": n.description or "",
         "inputs": n.inputs or [],
         "outputs": n.outputs or [],
-        "config": n.config or {},
     }
 
 
@@ -77,7 +76,6 @@ def _node_full(n: models.Node) -> dict:
     """Full node payload — used by view_node_details. No truncation.
     `position` is deliberately omitted: the LLM can't move nodes (no
     `set_position` tool — `add_node` auto-lays them out)."""
-    cfg = n.config or {}
     return {
         "id": n.id,
         "name": n.name,
@@ -85,9 +83,6 @@ def _node_full(n: models.Node) -> dict:
         "code": n.code or "",
         "inputs": n.inputs or [],
         "outputs": n.outputs or [],
-        "config": {
-            "model": cfg.get("model", ""),
-        },
     }
 
 
@@ -126,7 +121,6 @@ def add_node(
         code=schemas.DEFAULT_CODE,
         inputs=_normalize_ports(inputs, "input"),
         outputs=_normalize_ports(outputs, "output"),
-        config={},
         position=_next_position(db, wid),
     )
     db.add(n)
@@ -169,23 +163,21 @@ def configure_node(
     node_id: str,
     description: str | None = None,
     code: str | None = None,
+    inputs: list[dict] | None = None,
+    outputs: list[dict] | None = None,
 ) -> dict:
-    """Patch a node's description and/or code.
+    """Patch a node's description, code, and/or ports.
 
-    Input/output ports are set at creation time via ``add_node`` only — this
-    tool never touches ``Node.inputs`` or ``Node.outputs``. Model selection
-    belongs in node code (``ctx.agent``) or the user's default in Settings."""
+    Omitted optional fields are left unchanged."""
     n = _get_node(db, wid, node_id)
     if description is not None:
         n.description = description
     if code is not None:
         n.code = code
-    cfg = dict(n.config or {})
-    # Drop legacy fields that no longer mean anything so we don't carry
-    # them forward on existing rows.
-    cfg.pop("timeout_s", None)
-    cfg.pop("tools_enabled", None)
-    n.config = cfg
+    if inputs is not None:
+        n.inputs = _normalize_ports(inputs, "input")
+    if outputs is not None:
+        n.outputs = _normalize_ports(outputs, "output")
     db.commit()
     db.refresh(n)
     return {"node_id": node_id, "node": _node_summary(n)}
@@ -278,12 +270,11 @@ def set_output_node(db: DbSession, wid: str, *, node_id: str) -> dict:
 
 def view_graph(db: DbSession, wid: str) -> dict:
     """Return a structural snapshot of the workflow — node ids, names,
-    descriptions, ports, model. Code is intentionally omitted; call
+    descriptions, ports. Code is intentionally omitted; call
     `view_node_details` for the full body of a specific node."""
     w = _get_workflow(db, wid)
     nodes = []
     for n in w.nodes:
-        cfg = n.config or {}
         nodes.append(
             {
                 "id": n.id,
@@ -291,7 +282,6 @@ def view_graph(db: DbSession, wid: str) -> dict:
                 "description": n.description or "",
                 "inputs": n.inputs or [],
                 "outputs": n.outputs or [],
-                "model": cfg.get("model", ""),
             }
         )
     edges = [_edge_summary(e) for e in w.edges]
@@ -908,9 +898,8 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "function": {
             "name": "configure_node",
             "description": (
-                "Patch a node's description and/or code. Omitted fields are left unchanged. "
-                "Input/output ports are set on `add_node` — this tool does not modify them. "
-                "Model selection belongs in node code (`ctx.agent`) or Settings."
+                "Patch a node's description, code, and/or ports. Omitted fields are left "
+                "unchanged — omit `inputs`/`outputs` to preserve existing ports."
             ),
             "parameters": {
                 "type": "object",
@@ -918,6 +907,14 @@ TOOL_SCHEMAS: dict[str, dict] = {
                     "node_id": {"type": "string"},
                     "description": {"type": "string"},
                     "code": {"type": "string"},
+                    "inputs": {
+                        **_PORT_SCHEMA,
+                        "description": "Optional. Omit to leave existing input ports unchanged.",
+                    },
+                    "outputs": {
+                        **_PORT_SCHEMA,
+                        "description": "Optional. Omit to leave existing output ports unchanged.",
+                    },
                 },
                 "required": ["node_id"],
             },

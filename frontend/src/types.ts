@@ -21,10 +21,6 @@ export interface FsFile {
   note?: string;
 }
 
-export interface NodeConfig {
-  model: string;
-}
-
 export interface WFNode {
   id: string;
   workflow_id: string;
@@ -33,7 +29,6 @@ export interface WFNode {
   code: string;
   inputs: IOPort[];
   outputs: IOPort[];
-  config: NodeConfig;
   position: { x: number; y: number };
 }
 
@@ -92,7 +87,6 @@ export interface RunWorkflowSnapshotNode {
   code: string;
   inputs: IOPort[];
   outputs: IOPort[];
-  config: NodeConfig;
   position?: { x: number; y: number };
 }
 

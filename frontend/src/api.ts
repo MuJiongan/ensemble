@@ -1,5 +1,5 @@
 import type {
-  Workflow, WorkflowDetail, WorkflowExport, WFNode, WFEdge, Run, IOPort, NodeConfig,
+  Workflow, WorkflowDetail, WorkflowExport, WFNode, WFEdge, Run, IOPort,
   OrchestratorSession, ChatHistory, OrchestratorEvent, FsFile,
   CallChat, ModelSelection,
 } from './types';
@@ -48,7 +48,6 @@ export interface NewNodePayload {
   code?: string;
   inputs?: IOPort[];
   outputs?: IOPort[];
-  config?: NodeConfig;
   position?: { x: number; y: number };
 }
 
@@ -58,7 +57,6 @@ export interface PatchNodePayload {
   code?: string;
   inputs?: IOPort[];
   outputs?: IOPort[];
-  config?: NodeConfig;
   position?: { x: number; y: number };
 }
 

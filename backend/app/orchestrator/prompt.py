@@ -272,7 +272,7 @@ After you've built or refined the graph, decide whether to call `run_workflow` f
 
 # editing existing nodes
 
-Before changing a node, always `view_node_details(node_id)` first — you can't patch what you haven't seen. Patch surgically with `configure_node` to preserve existing structure (`description` and `code` only — ports are fixed at `add_node` time); replace the entire `code` field only when the user explicitly asks you to.
+Before changing a node, always `view_node_details(node_id)` first — you can't patch what you haven't seen. Patch surgically with `configure_node` to preserve existing structure — omit `inputs`/`outputs` unless you're deliberately changing ports; replace the entire `code` field only when the user explicitly asks you to.
 
 # reading the graph
 

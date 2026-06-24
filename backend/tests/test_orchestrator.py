@@ -59,9 +59,6 @@ def test_add_node_creates_with_normalized_ports(db, workflow):
     assert n.inputs == [{"name": "folder", "type_hint": "path", "required": True}]
     # output's required defaults to False (since kind="output")
     assert n.outputs == [{"name": "files", "type_hint": "list[path]", "required": False}]
-    # default config sane
-    assert "tools_enabled" not in n.config
-    assert "timeout_s" not in n.config
 
 
 def test_add_node_always_starts_with_stub_code(db, workflow):
@@ -155,8 +152,6 @@ def test_rename_and_configure_node(db, workflow):
     n = db.get(models.Node, nid)
     assert n.name == "new"
     assert n.description == "patched"
-    assert "tools_enabled" not in n.config
-    assert "timeout_s" not in n.config
 
 
 def test_configure_node_partial_keeps_other_fields(db, workflow):
@@ -171,19 +166,20 @@ def test_configure_node_partial_keeps_other_fields(db, workflow):
     assert n.outputs == [{"name": "out1", "type_hint": "any", "required": False}]
 
 
-def test_configure_node_rejects_port_args(db, workflow):
-    """Ports are set on `add_node` only — `configure_node` must not accept them."""
+def test_configure_node_patches_ports_when_provided(db, workflow):
     nid = orch_tools.add_node(
         db, workflow.id, name="x",
         outputs=[{"name": "out1"}],
     )["node_id"]
-    res = orch_tools.execute(
-        db, workflow.id, "configure_node",
-        {"node_id": nid, "inputs": [{"name": "x"}]},
+    orch_tools.configure_node(
+        db, workflow.id,
+        node_id=nid,
+        inputs=[{"name": "folder", "type_hint": "path", "required": True}],
+        outputs=[{"name": "files", "type_hint": "list[path]"}],
     )
-    assert "error" in res
     n = db.get(models.Node, nid)
-    assert n.outputs == [{"name": "out1", "type_hint": "any", "required": False}]
+    assert n.inputs == [{"name": "folder", "type_hint": "path", "required": True}]
+    assert n.outputs == [{"name": "files", "type_hint": "list[path]", "required": False}]
 
 
 def test_configure_node_rejects_model_arg(db, workflow):
@@ -481,8 +477,6 @@ def test_view_node_details_returns_full_untruncated_code(db, workflow):
     # Full code returned, no truncation marker.
     assert res["code"] == long_code
     assert "<truncated" not in res["code"]
-    assert "tools_enabled" not in res["config"]
-    assert "timeout_s" not in res["config"]
     # position is not exposed to the LLM — it can't move nodes.
     assert "position" not in res
 

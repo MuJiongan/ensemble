@@ -167,7 +167,6 @@ export function snapshotToExport(run: Run, projectName?: string): WorkflowExport
       code: n.code,
       inputs: n.inputs,
       outputs: n.outputs,
-      config: n.config,
       position: n.position ?? { x: 0, y: 0 },
     })),
     edges: s.edges.map((e) => ({
@@ -217,7 +216,6 @@ export function snapshotToDetail(run: Run): WorkflowDetail | null {
       code: n.code,
       inputs: n.inputs,
       outputs: n.outputs,
-      config: n.config,
       position: n.position ?? { x: 0, y: 0 },
     })),
     edges: s.edges.map((e) => ({

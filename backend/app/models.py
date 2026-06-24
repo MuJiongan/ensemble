@@ -37,7 +37,6 @@ class Node(Base):
     code = Column(Text, default="def run(inputs, ctx):\n    return {}\n")
     inputs = Column(JSON, default=list)
     outputs = Column(JSON, default=list)
-    config = Column(JSON, default=dict)
     position = Column(JSON, default=dict)
     workflow = relationship("Workflow", back_populates="nodes")
 

@@ -42,7 +42,6 @@ def _serialize_workflow(w: models.Workflow) -> dict:
                 "code": n.code,
                 "inputs": n.inputs or [],
                 "outputs": n.outputs or [],
-                "config": n.config or {},
                 # Captured so a snapshot can be rendered on the canvas later
                 # without an extra layout pass.
                 "position": n.position or {"x": 0, "y": 0},

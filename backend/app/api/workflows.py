@@ -21,7 +21,6 @@ def to_node_out(n: models.Node) -> schemas.NodeOut:
         code=n.code or schemas.DEFAULT_CODE,
         inputs=[schemas.IOPort(**p) for p in (n.inputs or [])],
         outputs=[schemas.IOPort(**p) for p in (n.outputs or [])],
-        config=schemas.NodeConfig(**(n.config or {})),
         position=schemas.Position(**(n.position or {})),
     )
 
@@ -51,7 +50,6 @@ def to_workflow_export(w: models.Workflow) -> schemas.WorkflowExport:
                 code=n.code or schemas.DEFAULT_CODE,
                 inputs=[schemas.IOPort(**p) for p in (n.inputs or [])],
                 outputs=[schemas.IOPort(**p) for p in (n.outputs or [])],
-                config=schemas.NodeConfig(**(n.config or {})),
                 position=schemas.Position(**(n.position or {})),
             )
             for n in w.nodes

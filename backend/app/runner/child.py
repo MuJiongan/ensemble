@@ -216,8 +216,7 @@ def _run_node(state: _RunState, node_id: str) -> None:
     node = state.sched.nodes_by_id[node_id]
     input_ports = node.get("inputs") or []
     output_ports = node.get("outputs") or []
-    config = node.get("config") or {}
-    node_model = config.get("model") or state.default_model
+    node_model = state.default_model
 
     inputs = _gather_node_inputs(state, node_id, input_ports)
 
