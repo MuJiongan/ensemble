@@ -13,6 +13,8 @@ from sqlalchemy.orm import Session as DbSession
 
 from app import models, schemas
 
+_OK: dict[str, bool] = {"ok": True}
+
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -62,22 +64,12 @@ def _next_position(db: DbSession, wid: str) -> dict:
     return {"x": float(x), "y": float(y)}
 
 
-def _node_summary(n: models.Node) -> dict:
-    return {
-        "id": n.id,
-        "name": n.name,
-        "description": n.description or "",
-        "inputs": n.inputs or [],
-        "outputs": n.outputs or [],
-    }
-
-
 def _node_full(n: models.Node) -> dict:
     """Full node payload — used by view_node_details. No truncation.
-    `position` is deliberately omitted: the LLM can't move nodes (no
+    ``id`` is omitted (the caller already passed ``node_id``). ``position``
+    is deliberately omitted too: the LLM can't move nodes (no
     `set_position` tool — `add_node` auto-lays them out)."""
     return {
-        "id": n.id,
         "name": n.name,
         "description": n.description or "",
         "code": n.code or "",
@@ -112,7 +104,7 @@ def add_node(
 ) -> dict:
     """Create a new node in the workflow. The node is created with the
     default code stub — call ``configure_node`` to write its actual code.
-    Returns the new node id + summary."""
+    Returns the new node id."""
     _get_workflow(db, wid)
     n = models.Node(
         workflow_id=wid,
@@ -126,7 +118,7 @@ def add_node(
     db.add(n)
     db.commit()
     db.refresh(n)
-    return {"node_id": n.id, "node": _node_summary(n)}
+    return {"node_id": n.id}
 
 
 def remove_node(db: DbSession, wid: str, *, node_id: str) -> dict:
@@ -134,7 +126,7 @@ def remove_node(db: DbSession, wid: str, *, node_id: str) -> dict:
     from app.services.graph import cascade_delete_node
     cascade_delete_node(db, n)
     db.commit()
-    return {"removed_node_id": node_id}
+    return _OK
 
 
 def rename_node(db: DbSession, wid: str, *, node_id: str, new_name: str) -> dict:
@@ -143,7 +135,7 @@ def rename_node(db: DbSession, wid: str, *, node_id: str, new_name: str) -> dict
     n = _get_node(db, wid, node_id)
     n.name = new_name
     db.commit()
-    return {"node_id": node_id, "name": new_name}
+    return _OK
 
 
 def rename_project(db: DbSession, wid: str, *, new_name: str) -> dict:
@@ -153,7 +145,7 @@ def rename_project(db: DbSession, wid: str, *, new_name: str) -> dict:
     w = _get_workflow(db, wid)
     w.name = new_name.strip()
     db.commit()
-    return {"workflow_id": w.id, "name": w.name}
+    return _OK
 
 
 def configure_node(
@@ -180,7 +172,7 @@ def configure_node(
         n.outputs = _normalize_ports(outputs, "output")
     db.commit()
     db.refresh(n)
-    return {"node_id": node_id, "node": _node_summary(n)}
+    return _OK
 
 
 def add_edge(
@@ -193,7 +185,7 @@ def add_edge(
     to_input: str,
 ) -> dict:
     """Connect one node's output to another node's input. Validates the ports
-    exist on each side."""
+    exist on each side. Returns the new edge id."""
     src = _get_node(db, wid, from_node_id)
     dst = _get_node(db, wid, to_node_id)
     src_out_names = [p.get("name") for p in (src.outputs or [])]
@@ -216,7 +208,7 @@ def add_edge(
     db.add(e)
     db.commit()
     db.refresh(e)
-    return {"edge_id": e.id, "edge": _edge_summary(e)}
+    return {"edge_id": e.id}
 
 
 def remove_edge(db: DbSession, wid: str, *, edge_id: str) -> dict:
@@ -225,7 +217,7 @@ def remove_edge(db: DbSession, wid: str, *, edge_id: str) -> dict:
         raise ValueError(f"edge {edge_id} not found in workflow {wid}")
     db.delete(e)
     db.commit()
-    return {"removed_edge_id": edge_id}
+    return _OK
 
 
 def clean_canvas(db: DbSession, wid: str) -> dict:
@@ -244,7 +236,7 @@ def clean_canvas(db: DbSession, wid: str) -> dict:
     w.input_node_id = None
     w.output_node_id = None
     db.commit()
-    return {"cleared": True, "removed_nodes": int(n_nodes), "removed_edges": int(n_edges)}
+    return _OK
 
 
 def set_input_node(db: DbSession, wid: str, *, node_id: str) -> dict:
@@ -252,7 +244,7 @@ def set_input_node(db: DbSession, wid: str, *, node_id: str) -> dict:
     w = _get_workflow(db, wid)
     w.input_node_id = n.id
     db.commit()
-    return {"input_node_id": n.id}
+    return _OK
 
 
 def set_output_node(db: DbSession, wid: str, *, node_id: str) -> dict:
@@ -260,7 +252,7 @@ def set_output_node(db: DbSession, wid: str, *, node_id: str) -> dict:
     w = _get_workflow(db, wid)
     w.output_node_id = n.id
     db.commit()
-    return {"output_node_id": n.id}
+    return _OK
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +278,6 @@ def view_graph(db: DbSession, wid: str) -> dict:
         )
     edges = [_edge_summary(e) for e in w.edges]
     return {
-        "workflow_id": w.id,
         "name": w.name,
         "input_node_id": w.input_node_id,
         "output_node_id": w.output_node_id,
@@ -838,7 +829,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 "Create a new node with its structure — name, description, and ports. "
                 "The node is created with a stub `def run(inputs, ctx): return {}` body; "
                 "follow up with `configure_node` to write its actual Python code. "
-                "Returns {node_id, node}."
+                "Returns {node_id}."
             ),
             "parameters": {
                 "type": "object",
@@ -926,7 +917,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
             "name": "add_edge",
             "description": (
                 "Connect one node's named output to another node's named input. Both ports must "
-                "already exist."
+                "already exist. Returns {edge_id}."
             ),
             "parameters": {
                 "type": "object",

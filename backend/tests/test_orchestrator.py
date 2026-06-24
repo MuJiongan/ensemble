@@ -287,7 +287,7 @@ def test_render_history_collapses_assistant_with_tool_cards(db, workflow):
             role="tool",
             tool_call_id="tc_1",
             name="add_node",
-            content=json.dumps({"node_id": "abc", "node": {"name": "loader"}}),
+            content=json.dumps({"node_id": "abc"}),
         )
     )
     db.commit()
@@ -347,7 +347,7 @@ def test_clean_canvas_wipes_nodes_edges_and_pointers(db, workflow):
     rid = run.id
 
     res = orch_tools.clean_canvas(db, workflow.id)
-    assert res == {"cleared": True, "removed_nodes": 2, "removed_edges": 1}
+    assert res == {"ok": True}
 
     db.refresh(workflow)
     assert workflow.input_node_id is None
@@ -452,7 +452,7 @@ def test_view_graph_returns_full_structural_state(db, workflow):
     orch_tools.set_output_node(db, workflow.id, node_id=b)
 
     res = orch_tools.view_graph(db, workflow.id)
-    assert res["workflow_id"] == workflow.id
+    assert "workflow_id" not in res
     assert res["input_node_id"] == a
     assert res["output_node_id"] == b
     names = {n["name"] for n in res["nodes"]}
@@ -471,7 +471,7 @@ def test_view_node_details_returns_full_untruncated_code(db, workflow):
     orch_tools.configure_node(db, workflow.id, node_id=nid, code=long_code)
 
     res = orch_tools.view_node_details(db, workflow.id, node_id=nid)
-    assert res["id"] == nid
+    assert "id" not in res
     assert res["name"] == "big"
     assert res["description"] == "huge node"
     # Full code returned, no truncation marker.
@@ -571,7 +571,7 @@ def test_view_tools_work_during_active_run(db, workflow):
 
     d = orch_tools.execute(db, workflow.id, "view_node_details", {"node_id": nid})
     assert "error" not in d
-    assert d["id"] == nid
+    assert "id" not in d
 
 
 def test_view_run_requires_node_id(db, workflow):
@@ -1975,7 +1975,7 @@ def test_render_history_merges_multi_round_turn(db, workflow):
             role="tool",
             tool_call_id="tc_1",
             name="add_node",
-            content=json.dumps({"node_id": "abc", "node": {"name": "loader"}}),
+            content=json.dumps({"node_id": "abc"}),
         )
     )
     db.add(
@@ -2002,7 +2002,7 @@ def test_render_history_merges_multi_round_turn(db, workflow):
             role="tool",
             tool_call_id="tc_2",
             name="configure_node",
-            content=json.dumps({"node_id": "abc", "ok": True}),
+            content=json.dumps({"ok": True}),
         )
     )
     db.commit()
