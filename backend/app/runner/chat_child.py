@@ -1,9 +1,9 @@
 """Continue-chat turn subprocess entrypoint.
 
 Where `app.runner.child` executes a whole graph, this child runs exactly one
-``ctx.call_llm`` invocation: it re-seeds a recorded conversation, lets the model
+``ctx.agent`` invocation: it re-seeds a recorded conversation, lets the model
 continue it (with the same tools — built-ins + MCP — reconnected just like a
-run), and streams the result back. One turn of a continued call_llm conversation.
+run), and streams the result back. One turn of a continued agent conversation.
 
 Reads a JSON payload from stdin::
 
@@ -55,7 +55,7 @@ def main() -> None:
 
     cancelled = False
     try:
-        result = ctx.call_llm(model=model, prompt=messages, tools=tools)
+        result = ctx.agent(model=model, prompt=messages, tools=tools)
     except KeyboardInterrupt:
         cancelled = True
         _emit({

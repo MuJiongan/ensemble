@@ -57,7 +57,7 @@ def build_child_env() -> dict[str, str]:
         "LLM_BASE_URL": os.getenv("NODE_BASE_URL", ""),
         "PARALLEL_API_KEY": os.getenv("PARALLEL_API_KEY", ""),
         # Provider id + node reasoning variant so the child can apply the
-        # catalog-computed reasoning options to each ``ctx.call_llm`` body.
+        # catalog-computed reasoning options to each ``ctx.agent`` body.
         "LLM_PROVIDER_ID": (os.getenv("NODE_PROVIDER_ID") or "").strip(),
         "DEFAULT_NODE_VARIANT": os.getenv("DEFAULT_NODE_VARIANT", ""),
         # MCP server config (opencode-style JSON); the child connects to these

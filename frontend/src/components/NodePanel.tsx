@@ -23,7 +23,7 @@ interface Props {
   currentRun?: CurrentRun | null;
   /** Forward a node-level error from the trace tab to the orchestrator. */
   onSendErrorToOrchestrator?: (message: string) => void;
-  /** Continue a *finished* call_llm's conversation in the shared right-pane
+  /** Continue a *finished* agent's conversation in the shared right-pane
    * chat (full height), entered from the "llm calls" tab. */
   onContinue?: (nodeRunId: string, callId: string) => void;
   /** Watch an *in-flight* call stream into the shared chat pane. */
@@ -95,7 +95,7 @@ export function NodePanel({
     setTab('code');
   }, [node.id]);
 
-  // The "llm calls" tab needs a run with at least one call_llm recorded.
+  // The "llm calls" tab needs a run with at least one agent recorded.
   const callsTabAvailable = traceTabAvailable && !!trace && trace.llmCalls.length > 0;
 
   // If the selected tab disappears (run cleared, snapshot exited, no calls)

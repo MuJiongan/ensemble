@@ -278,7 +278,7 @@ export function settingsHeaders(_target: LlmTarget = 'base'): Record<string, str
 /**
  * Node-target header overrides for a continue-chat turn. Pins the node
  * provider / model / variant to `sel` — the continuation's chosen model, which defaults
- * to the model the source call_llm ran with — instead of the current
+ * to the model the source agent ran with — instead of the current
  * node-default selection. Merged *over* the base settings headers by the
  * request helper, so the rest (MCP, parallel, custom instructions) is unchanged.
  *

@@ -114,7 +114,6 @@ def add_node(
     description: str = "",
     inputs: list[dict] | None = None,
     outputs: list[dict] | None = None,
-    model: str = "",
 ) -> dict:
     """Create a new node in the workflow. The node is created with the
     default code stub — call ``configure_node`` to write its actual code.
@@ -127,9 +126,7 @@ def add_node(
         code=schemas.DEFAULT_CODE,
         inputs=_normalize_ports(inputs, "input"),
         outputs=_normalize_ports(outputs, "output"),
-        config={
-            "model": model or "",
-        },
+        config={},
         position=_next_position(db, wid),
     )
     db.add(n)
@@ -172,23 +169,18 @@ def configure_node(
     node_id: str,
     description: str | None = None,
     code: str | None = None,
-    inputs: list[dict] | None = None,
-    outputs: list[dict] | None = None,
-    model: str | None = None,
 ) -> dict:
-    """Patch any subset of a node's mutable fields."""
+    """Patch a node's description and/or code.
+
+    Input/output ports are set at creation time via ``add_node`` only — this
+    tool never touches ``Node.inputs`` or ``Node.outputs``. Model selection
+    belongs in node code (``ctx.agent``) or the user's default in Settings."""
     n = _get_node(db, wid, node_id)
     if description is not None:
         n.description = description
     if code is not None:
         n.code = code
-    if inputs is not None:
-        n.inputs = _normalize_ports(inputs, "input")
-    if outputs is not None:
-        n.outputs = _normalize_ports(outputs, "output")
     cfg = dict(n.config or {})
-    if model is not None:
-        cfg["model"] = model
     # Drop legacy fields that no longer mean anything so we don't carry
     # them forward on existing rows.
     cfg.pop("timeout_s", None)
@@ -853,7 +845,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "function": {
             "name": "add_node",
             "description": (
-                "Create a new node with its structure — name, description, ports, model. "
+                "Create a new node with its structure — name, description, and ports. "
                 "The node is created with a stub `def run(inputs, ctx): return {}` body; "
                 "follow up with `configure_node` to write its actual Python code. "
                 "Returns {node_id, node}."
@@ -865,7 +857,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
                     "description": {"type": "string", "description": "one-line italic description for the canvas"},
                     "inputs": _PORT_SCHEMA,
                     "outputs": _PORT_SCHEMA,
-                    "model": {"type": "string", "description": "OpenRouter model id (optional)"},
                 },
                 "required": ["name"],
             },
@@ -917,8 +908,9 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "function": {
             "name": "configure_node",
             "description": (
-                "Patch any subset of a node's fields (description, code, inputs, outputs, model). "
-                "Omitted fields are left unchanged."
+                "Patch a node's description and/or code. Omitted fields are left unchanged. "
+                "Input/output ports are set on `add_node` — this tool does not modify them. "
+                "Model selection belongs in node code (`ctx.agent`) or Settings."
             ),
             "parameters": {
                 "type": "object",
@@ -926,9 +918,6 @@ TOOL_SCHEMAS: dict[str, dict] = {
                     "node_id": {"type": "string"},
                     "description": {"type": "string"},
                     "code": {"type": "string"},
-                    "inputs": _PORT_SCHEMA,
-                    "outputs": _PORT_SCHEMA,
-                    "model": {"type": "string"},
                 },
                 "required": ["node_id"],
             },

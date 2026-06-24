@@ -3,7 +3,7 @@
 Connects to user-configured MCP servers, discovers their tools, and exposes
 them to node code the same way the built-in tools (`shell`, `web_search`,
 `web_fetch`) are exposed: as entries in the runner tool ``REGISTRY`` +
-``TOOL_SCHEMAS``, callable via ``ctx.call_llm(tools=[...])`` or
+``TOOL_SCHEMAS``, callable via ``ctx.agent(tools=[...])`` or
 ``ctx.tools.<name>(...)``.
 
 Config shape mirrors opencode's ``mcp`` block — a JSON object mapping a server

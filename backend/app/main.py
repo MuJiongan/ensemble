@@ -17,7 +17,7 @@ from app.runner import service as run_service
 
 
 # Settings live client-side in localStorage; the frontend forwards them on every
-# LLM-bound request and we apply them to the process env so call_llm / the runner
+# LLM-bound request and we apply them to the process env so agent / the runner
 # / the orchestrator keep working.
 #
 # Two independent credential groups ride on every request:

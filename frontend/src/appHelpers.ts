@@ -302,7 +302,7 @@ export function historyToChatMessages(history: ChatHistoryMessage[]): ChatMessag
   });
 }
 
-// --- continue-chat (call_llm continuation) transcript -----------------------------
+// --- continue-chat (agent continuation) transcript -----------------------------
 
 interface OAIToolCall {
   id?: string;
@@ -355,7 +355,7 @@ function parseToolResult(content: unknown): unknown {
 export function messagesToChat(messages: Array<Record<string, unknown>>): ChatMessage[] {
   const out: ChatMessage[] = [];
   const toolBlockById = new Map<string, ChatToolCall>();
-  // One `call_llm` is an agent loop — assistant → tool → assistant → … → final
+  // One `agent` call is an agent loop — assistant → tool → assistant → … → final
   // — i.e. several assistant messages. Render them as ONE assistant bubble per
   // turn (collapsing consecutive assistant/tool messages), splitting only on a
   // user message. Matches the single-bubble live view.
@@ -416,7 +416,7 @@ export function messagesToChat(messages: Array<Record<string, unknown>>): ChatMe
         block.result = parsed;
       }
     }
-    // system messages (rare for call_llm — there's no implicit system prompt)
+    // system messages (rare for agent — there's no implicit system prompt)
     // are skipped: they aren't part of the visible conversation.
   }
   // Drop any assistant turn that ended up empty (defensive).
@@ -425,7 +425,7 @@ export function messagesToChat(messages: Array<Record<string, unknown>>): ChatMe
 
 /**
  * Render an in-flight call's streamed rounds as a single streaming assistant
- * bubble, so a live call_llm shows in the chat pane the same way a persisted
+ * bubble, so a live agent shows in the chat pane the same way a persisted
  * continuation does. (The initial prompt isn't in the event stream, so the live
  * view is the assistant side only — the full transcript loads once the run
  * persists and the conversation becomes continuable.)

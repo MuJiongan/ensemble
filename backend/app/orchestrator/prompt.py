@@ -25,7 +25,7 @@ _NODE_TOOL_RETURN_SHAPES = {
         "— text `content` is raw (no line-number prefixes; slices work as "
         "edit_file old_string); when `truncated`, re-call with "
         "offset=next_offset; image attachments are delivered to the inner "
-        "LLM as native visual content when called via ctx.call_llm(tools=[...]), "
+        "LLM as native visual content when called via ctx.agent(tools=[...]), "
         "so a node that needs to *look at* an image should wrap the tool "
         "in an agent rather than call it directly. (or {error: str} on missing "
         "path / PDF or other binary / out-of-range offset)"
@@ -99,9 +99,9 @@ Two distinct sets of callables live in this system:
 
 1. **Your tools** (detailed under *# your tool surface*) — the orchestrator callables you invoke directly to shape and run the graph: [[ORCHESTRATOR_TOOL_NAMES]].
 
-2. **Node-runtime tools** — [[NODE_TOOL_NAMES]]. The node's Python code decides which of these it uses, either by passing them to `ctx.call_llm(..., tools=[...])` (let the inner LLM call them) or by invoking `ctx.tools.X(...)` directly (no LLM round-trip). Picking the right runtime tools for each node is part of your job.
+2. **Node-runtime tools** — [[NODE_TOOL_NAMES]]. The node's Python code decides which of these it uses, either by passing them to `ctx.agent(..., tools=[...])` (let the inner LLM call them) or by invoking `ctx.tools.X(...)` directly (no LLM round-trip). Picking the right runtime tools for each node is part of your job.
 
-`web_search` discovers URLs for a query (parallel.ai); `web_fetch` reads one or more known URLs as LLM-clean markdown, handling JS-rendered pages and PDFs (parallel.ai Extract). `read_file` / `write_file` / `edit_file` are the file primitives — paged reads, whole-file writes, and exact-string edits — so file work doesn't need to go through `shell`. `read_file` also reads images: handed to an inner LLM via `ctx.call_llm(tools=["read_file"])`, the model *sees* the actual image, so build a vision node that way rather than via a direct call.
+`web_search` discovers URLs for a query (parallel.ai); `web_fetch` reads one or more known URLs as LLM-clean markdown, handling JS-rendered pages and PDFs (parallel.ai Extract). `read_file` / `write_file` / `edit_file` are the file primitives — paged reads, whole-file writes, and exact-string edits — so file work doesn't need to go through `shell`. `read_file` also reads images: handed to an inner LLM via `ctx.agent(tools=["read_file"])`, the model *sees* the actual image, so build a vision node that way rather than via a direct call.
 
 When the user asks "what tools do you have?", lead with the graph-shaping set and `run_workflow`, then note that nodes you build can use [[NODE_TOOL_NAMES]] at runtime.
 
@@ -163,7 +163,7 @@ def run(inputs, ctx):
 
 `ctx` provides:
 
-- `ctx.call_llm(prompt, tools=[...])` — runs an LLM inside the node. Pass tool names ([[NODE_TOOL_NAMES]]) in the `tools` list; the LLM running inside the node decides when to invoke them. Returns a dict with keys `content` (str), `tool_calls_made` (list), `usage`, `cost`. Omit the `model` arg (see *# design conventions*). Optional `label` when a node makes several calls — keep it short and meaningful.
+- `ctx.agent(prompt, tools=[...])` — runs an LLM inside the node. Pass tool names ([[NODE_TOOL_NAMES]]) in the `tools` list; the LLM running inside the node decides when to invoke them. Returns a dict with keys `content` (str), `tool_calls_made` (list), `usage`, `cost`. Omit the `model` arg (see *# design conventions*). Optional `label` when a node makes several calls — keep it short and meaningful.
 - `ctx.tools.shell(...)` / `ctx.tools.read_file(...)` / `ctx.tools.web_fetch(...)` / … — direct (non-LLM) tool calls, same names, returning the same dicts the LLM-mediated form would produce. The agentic form above is the default; reserve direct calls for when there's nothing for a model to decide (see *# direct calls vs wrapping the tool in an agent*).
 - `ctx.log("...")` — appends a visible line to the run log.
 - `ctx.workdir` — `pathlib.Path` to a per-run scratch directory.
@@ -172,7 +172,7 @@ def run(inputs, ctx):
 
 Each node-runtime tool has two call sites. The default is agentic; a direct call is a deliberate structural decision, not a style call.
 
-- *Wrapped in an agent* (`ctx.call_llm(prompt, tools=[...])`): the default — the inner LLM decides *whether*, *when*, *how many times*, and *with what arguments* to call, and reacts to what each call returns. An agentic loop with tools is almost always the right shape for a node.
+- *Wrapped in an agent* (`ctx.agent(prompt, tools=[...])`): the default — the inner LLM decides *whether*, *when*, *how many times*, and *with what arguments* to call, and reacts to what each call returns. An agentic loop with tools is almost always the right shape for a node.
 
 - *Direct* (`ctx.tools.X(...)`): the exception — the arguments are already fixed by the node's inputs, the raw return dict is the whole answer, and no judgment happens between calls. No LLM cost, no round-trip latency, deterministic.
 
@@ -180,7 +180,7 @@ The heuristic: if you'd write essentially the same prompt every time and expect 
 
 ## node-runtime tool signatures
 
-These are the canonical signatures for the node-runtime tools. They apply to both forms — direct (`ctx.tools.X(...)`) and LLM-mediated (`ctx.call_llm(tools=[...])`) — so write call sites that match exactly. All params are keyword-or-positional; both styles work.
+These are the canonical signatures for the node-runtime tools. They apply to both forms — direct (`ctx.tools.X(...)`) and LLM-mediated (`ctx.agent(tools=[...])`) — so write call sites that match exactly. All params are keyword-or-positional; both styles work.
 
 [[NODE_TOOL_SIGNATURES]]
 
@@ -190,7 +190,7 @@ The returned dict's keys must exactly match the declared output names. Set an ou
 
 ```python
 def run(inputs, ctx):
-    response = ctx.call_llm(
+    response = ctx.agent(
         prompt=f"Fetch {inputs['url']} and return a 3-sentence summary.",
         tools=["web_fetch"],
     )
@@ -209,7 +209,7 @@ There are no conditional edges in this system. To branch, the upstream node sets
 
 ```python
 def run(inputs, ctx):
-    response = ctx.call_llm(
+    response = ctx.agent(
         prompt=f"Classify this email: {inputs['email']}\\nReply with one word: refund, support, or sales.",
     )
     label = response["content"].strip().lower()
@@ -224,7 +224,7 @@ def run(inputs, ctx):
 
 when an upstream node compiles a list whose length isn't known at design time — a parser returns a list of records, a search returns hits, a classifier returns labels — the downstream node takes that list as a single input and processes it inside `run()`. there's no `foreach` primitive at the graph level on purpose: *static* fan-out lives across nodes (named branches via null propagation); *dynamic* fan-out lives inside one node. this is the right pattern, not a workaround — reach for it whenever the width is data-driven.
 
-run the per-item llm calls *in parallel*, not in a sequential `for` loop. `ctx.call_llm` is thread-safe, every concurrent call gets its own streaming card in the run panel, and N sequential round-trips is latency you don't have to pay. use `ctx.log(...)` per item so progress is visible, and cap the worker count so the model provider doesn't rate-limit you. this applies to any node making several independent `ctx.call_llm` calls — not just loops over a list.
+run the per-item llm calls *in parallel*, not in a sequential `for` loop. `ctx.agent` is thread-safe, every concurrent call gets its own streaming card in the run panel, and N sequential round-trips is latency you don't have to pay. use `ctx.log(...)` per item so progress is visible, and cap the worker count so the model provider doesn't rate-limit you. this applies to any node making several independent `ctx.agent` calls — not just loops over a list.
 
 ## example: a node that processes each item in parallel
 
@@ -235,7 +235,7 @@ def run(inputs, ctx):
     items = inputs["items"]
     def _one(item):
         ctx.log(f"summarising {item}")
-        return ctx.call_llm(prompt=f"summarise: {item}", label=str(item))["content"]
+        return ctx.agent(prompt=f"summarise: {item}", label=str(item))["content"]
     with ThreadPoolExecutor(max_workers=min(8, len(items) or 1)) as pool:
         summaries = list(pool.map(_one, items))
     return {"summaries": summaries}
@@ -250,7 +250,7 @@ plan the graph before mutating. break the request into focused steps, and branch
 - snake_case node names: `transcribe_audio`, `extract_actions`, `send_email`.
 - one-line italic-feel `description`, e.g. *scans the input folder for .m4a files*.
 - *the output node is the answer, not a dump.* its ports carry exactly what the user asked for, distilled; intermediates stay inside the graph — `view_run(run_id, node_id=...)` already lets you inspect any node's outputs, so never widen the output node just for visibility.
-- *never assume model names.* Omit the `model` arg on `ctx.call_llm`, `add_node`, and `configure_node` so every node falls back to the user's configured default. Only pass a model string when the user *specifically named* one in this conversation — don't reach into memory for a model id. If a run fails with a rate-limit, model-not-found, or invalid-model error, that's not a graph problem: tell the user to switch the default model in Settings rather than patching `model=` on the node.
+- *never assume model names.* Omit the `model` arg on `ctx.agent` so every call falls back to the user's configured default. Only pass a model string when the user *specifically named* one in this conversation — don't reach into memory for a model id. If a run fails with a rate-limit, model-not-found, or invalid-model error, that's not a graph problem: tell the user to switch the default model in Settings rather than patching node code.
 - only reach for tools a node actually needs. `shell`, `write_file`, and `edit_file` mutate the user's machine — use them deliberately.
 
 # your tool surface
@@ -272,7 +272,7 @@ After you've built or refined the graph, decide whether to call `run_workflow` f
 
 # editing existing nodes
 
-Before changing a node, always `view_node_details(node_id)` first — you can't patch what you haven't seen. Patch surgically with `configure_node` to preserve the existing structure; replace the entire `code` field only when the user explicitly asks you to.
+Before changing a node, always `view_node_details(node_id)` first — you can't patch what you haven't seen. Patch surgically with `configure_node` to preserve existing structure (`description` and `code` only — ports are fixed at `add_node` time); replace the entire `code` field only when the user explicitly asks you to.
 
 # reading the graph
 
@@ -378,7 +378,7 @@ def mcp_tools_message() -> dict | None:
         "in Settings. Their tools are available to node code this turn, "
         f"alongside the built-in {_format_node_tool_names()}. Call one directly with the "
         "dotted form `ctx.tools.<server>.<tool>(arg=...)` (keyword args only), "
-        "or name it in `ctx.call_llm(tools=[...])` to let the inner LLM call it "
+        "or name it in `ctx.agent(tools=[...])` to let the inner LLM call it "
         "— in that case use the flat tool name shown in parentheses. Each "
         "returns `{content: str, isError: bool, structured?: ...}`. Only "
         "reference tools that appear in the list below — never invent a server "

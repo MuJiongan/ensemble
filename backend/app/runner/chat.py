@@ -1,12 +1,12 @@
 """Continue-chat turn lifecycle.
 
-Runs one turn of a continued ``call_llm`` conversation: spawns the
+Runs one turn of a continued ``agent`` conversation: spawns the
 ``app.runner.chat_child`` subprocess (same MCP/credential plumbing a run uses),
 streams its events through the in-memory pub/sub keyed by a transient
 ``turn_id``, and persists the grown conversation back onto the ``CallChat`` row
 when the turn completes.
 
-Mirrors ``runner.service`` / ``runner.runner`` but for a single ``call_llm``
+Mirrors ``runner.service`` / ``runner.runner`` but for a single ``agent``
 instead of a whole graph.
 """
 from __future__ import annotations
@@ -43,8 +43,8 @@ def _serialized_len(messages: list) -> int:
 def _normalize_head(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Ensure the transcript head is ``system*`` then a user message.
 
-    A CallChat seed is the recorded ``ctx.call_llm`` conversation verbatim, so a
-    node that called ``call_llm(prompt=[{"role": "tool", ...}, ...])`` (or a
+    A CallChat seed is the recorded ``ctx.agent`` conversation verbatim, so a
+    node that called ``agent(prompt=[{"role": "tool", ...}, ...])`` (or a
     leading assistant/tool_calls message) yields a head that strict providers
     reject when re-seeded — a leading ``tool`` becomes an orphaned tool_result,
     and a leading ``assistant`` makes the first message non-user. Splice out any
@@ -96,7 +96,7 @@ def _merge_consecutive_users(messages: list[dict[str, Any]]) -> list[dict[str, A
 
 def prepare_transcript(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Sanitize a transcript so it is safe to persist AND to re-seed into
-    ``call_llm``: drop attachment base64, normalize the head to ``system*``-then-
+    ``agent``: drop attachment base64, normalize the head to ``system*``-then-
     user, and merge consecutive user turns. Idempotent."""
     return _merge_consecutive_users(
         _normalize_head(_strip_message_attachments(messages or []))
@@ -106,7 +106,7 @@ def prepare_transcript(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def cap_transcript(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Sanitize then trim the oldest whole turns so a transcript stays under
     budget. Used both when persisting a grown continuation and when seeding a
-    chat from a recorded ``call_llm`` transcript (which is itself stored
+    chat from a recorded ``agent`` transcript (which is itself stored
     uncapped). User messages delimit turns; the head is normalized to a
     system-only prefix first (so trimming can never orphan a leading tool/
     assistant message), and we never cut inside a turn.

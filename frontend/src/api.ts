@@ -114,8 +114,8 @@ export const api = {
   cancelOrchestratorTurn: (sid: string) =>
     request<{ cancelled: boolean }>('POST', `/api/sessions/${sid}/cancel`),
 
-  // --- continue-chat (call_llm continuations) -------------------------------------
-  /** View a call_llm call's continuation: the persisted thread if it's been
+  // --- continue-chat (agent continuations) -------------------------------------
+  /** View an agent call's continuation: the persisted thread if it's been
    * started, else a not-yet-persisted seed (id=""). Read-only — the row is
    * materialized lazily by the first turn, so viewing never writes. */
   viewCallChat: (nodeRunId: string, callId: string) =>

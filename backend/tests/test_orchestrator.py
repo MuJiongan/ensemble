@@ -144,19 +144,17 @@ def test_add_edge_validates_ports(db, workflow):
 
 def test_rename_and_configure_node(db, workflow):
     nid = orch_tools.add_node(
-        db, workflow.id, name="old", description="old desc", model="",
+        db, workflow.id, name="old", description="old desc",
     )["node_id"]
     orch_tools.rename_node(db, workflow.id, node_id=nid, new_name="new")
     orch_tools.configure_node(
         db, workflow.id,
         node_id=nid,
         description="patched",
-        model="anthropic/claude-sonnet-4.5",
     )
     n = db.get(models.Node, nid)
     assert n.name == "new"
     assert n.description == "patched"
-    assert n.config["model"] == "anthropic/claude-sonnet-4.5"
     assert "tools_enabled" not in n.config
     assert "timeout_s" not in n.config
 
@@ -171,6 +169,31 @@ def test_configure_node_partial_keeps_other_fields(db, workflow):
     assert n.description == "just this"
     # outputs untouched
     assert n.outputs == [{"name": "out1", "type_hint": "any", "required": False}]
+
+
+def test_configure_node_rejects_port_args(db, workflow):
+    """Ports are set on `add_node` only — `configure_node` must not accept them."""
+    nid = orch_tools.add_node(
+        db, workflow.id, name="x",
+        outputs=[{"name": "out1"}],
+    )["node_id"]
+    res = orch_tools.execute(
+        db, workflow.id, "configure_node",
+        {"node_id": nid, "inputs": [{"name": "x"}]},
+    )
+    assert "error" in res
+    n = db.get(models.Node, nid)
+    assert n.outputs == [{"name": "out1", "type_hint": "any", "required": False}]
+
+
+def test_configure_node_rejects_model_arg(db, workflow):
+    """Model selection belongs in node code — `configure_node` must not accept it."""
+    nid = orch_tools.add_node(db, workflow.id, name="x")["node_id"]
+    res = orch_tools.execute(
+        db, workflow.id, "configure_node",
+        {"node_id": nid, "model": "anthropic/claude-sonnet-4.5"},
+    )
+    assert "error" in res
 
 
 def test_set_input_set_output(db, workflow):
@@ -448,7 +471,6 @@ def test_view_node_details_returns_full_untruncated_code(db, workflow):
     nid = orch_tools.add_node(
         db, workflow.id, name="big",
         description="huge node",
-        model="anthropic/claude-sonnet-4.5",
     )["node_id"]
     orch_tools.configure_node(db, workflow.id, node_id=nid, code=long_code)
 
@@ -459,7 +481,6 @@ def test_view_node_details_returns_full_untruncated_code(db, workflow):
     # Full code returned, no truncation marker.
     assert res["code"] == long_code
     assert "<truncated" not in res["code"]
-    assert res["config"]["model"] == "anthropic/claude-sonnet-4.5"
     assert "tools_enabled" not in res["config"]
     assert "timeout_s" not in res["config"]
     # position is not exposed to the LLM — it can't move nodes.
@@ -1573,7 +1594,7 @@ def test_system_prompt_explains_editing_existing_nodes():
 
 
 def test_system_prompt_offers_both_direct_and_llm_tool_forms():
-    """Nodes can invoke tools two ways: through `ctx.call_llm(tools=[...])` so
+    """Nodes can invoke tools two ways: through `ctx.agent(tools=[...])` so
     the model decides, or directly via `ctx.tools.X(...)` for deterministic
     calls. The prompt must surface both — choosing between them is the
     orchestrator's call."""

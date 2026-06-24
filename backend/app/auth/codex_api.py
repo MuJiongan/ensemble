@@ -10,7 +10,7 @@ on top.
 
 Two entry points mirroring the existing callers:
 
-* :func:`call_codex_chat`        — node-runtime ``ctx.call_llm`` equivalent.
+* :func:`call_codex_chat`        — node-runtime ``ctx.agent`` equivalent.
 * :func:`call_codex_stream_orch` — orchestrator-loop equivalent (yields
   parsed chunks the agent loop already understands).
 """

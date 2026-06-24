@@ -3,7 +3,7 @@
 The loop calls the LLM, executes any returned tool calls (graph mutations),
 appends the results to the conversation, and repeats until the LLM stops
 calling tools. There's no turn cap — a runaway loop is a cancel-button
-concern, matching the node-runtime ``ctx.call_llm`` model. Each significant
+concern, matching the node-runtime ``ctx.agent`` model. Each significant
 step is yielded as an event dict for the SSE handler to forward to the chat
 UI.
 

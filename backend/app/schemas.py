@@ -198,7 +198,7 @@ class UserMessageIn(BaseModel):
     attachments: list[AttachmentIn] = []
 
 
-# --- continue-chat (call_llm continuation) schemas ------------------------
+# --- continue-chat (agent continuation) schemas ------------------------
 
 
 class CallChatOut(BaseModel):

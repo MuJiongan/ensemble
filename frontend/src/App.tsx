@@ -663,7 +663,7 @@ export default function App() {
     }
   };
 
-  // --- call_llm in the chat pane ----------------------------------------
+  // --- agent in the chat pane ----------------------------------------
   // The shared chat pane shows one of: the orchestrator (default), a finished
   // call's continuation (composer enabled), or an in-flight call streaming live
   // (composer disabled until it lands). Reached only from a node's "llm calls"
@@ -749,7 +749,7 @@ export default function App() {
             // A 404 here is terminal, not transient: the call has no continuable
             // transcript. A finished call always persists its conversation now
             // (uncapped, in its own row), so this means the call never finished —
-            // an errored call_llm is never recorded. Stop retrying and drop the
+            // an errored agent is never recorded. Stop retrying and drop the
             // now-pointless read-only live view.
             if (e instanceof ApiError && e.status === 404) {
               if (cancelled) return;

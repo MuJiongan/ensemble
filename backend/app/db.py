@@ -100,7 +100,7 @@ def _strip_legacy_node_config_keys() -> None:
     """One-shot cleanup: remove obsolete keys from `node.config` on every row.
 
     `tools_enabled` was an LLM tool allow-list that's been removed in favour
-    of trusting whatever the node's Python code passes to `ctx.call_llm`.
+    of trusting whatever the node's Python code passes to `ctx.agent`.
     Old rows can still carry it; strip it on startup so the orchestrator
     and frontend never see stale data.
     """

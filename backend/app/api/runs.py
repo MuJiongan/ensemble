@@ -202,7 +202,7 @@ def delete_run(rid: str, db: Session = Depends(get_db)):
         raise HTTPException(404)
     if run.status in ("running", "pending"):
         raise HTTPException(409, detail="cancel the run before deleting")
-    # Clean up any call_llm continuations tied to this run's node_runs. CallChat
+    # Clean up any agent continuations tied to this run's node_runs. CallChat
     # uses FK-free string refs (a continuation survives incidental node_run
     # changes), but an explicit run delete is deliberate destruction — drop its
     # continuations too rather than leave them orphaned.
