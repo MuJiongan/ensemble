@@ -703,8 +703,6 @@ def test_view_run_with_node_id_returns_node_inputs_outputs_logs(db, workflow):
         fields=["inputs", "outputs", "logs"], ports=["path", "items"],
     )
     assert res == {
-        "run_id": run.id,
-        "node_id": nid,
         "node_name": "loader",
         "status": "success",
         "inputs": {"path": "/tmp/x"},
@@ -800,7 +798,8 @@ def test_view_run_node_id_dispatches_via_execute(db, workflow):
             "ports": ["a", "b"],
         },
     )
-    assert res["node_id"] == nid
+    assert "run_id" not in res
+    assert "node_id" not in res
     assert res["inputs"] == {"a": 1}
     assert res["outputs"] == {"b": 2}
     assert res["logs"] == ["hi"]

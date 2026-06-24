@@ -552,7 +552,7 @@ def view_run(
     node and the slice it's after.
 
     Always includes the lightweight metadata
-    ``{run_id, node_id, node_name, status, error, duration_ms, cost}``; the
+    ``{node_name, status, error, duration_ms, cost}``; the
     heavy fields ``inputs``, ``outputs``, ``logs`` are gated by ``fields`` —
     a non-empty subset of ``["inputs", "outputs", "logs"]``. The workflow's
     result lives on the output node: ``node_id=<output node id>,
@@ -608,10 +608,10 @@ def view_run(
         }
 
     out = _materialise_node_run(db, wid, run_id, node_id, selected)
-    # Bare error dicts (run/node not found) have no node_id; the per-node
+    # Bare error dicts (run/node not found) have no `status`; the per-node
     # record always does — and its `error` key is None on success, so the
     # key's presence can't distinguish the two shapes.
-    if not wants_dicts or "node_id" not in out:
+    if not wants_dicts or "status" not in out:
         return out
 
     available: set[str] = set()
@@ -694,8 +694,6 @@ def _materialise_node_run(
             node_name = live.name
 
     out: dict = {
-        "run_id": run_id,
-        "node_id": node_id,
         "node_name": node_name,
         "status": nr.status,
         "error": nr.error,
@@ -1060,7 +1058,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 "There is no run-level dump: every call names the node (`node_id`), the "
                 "slice it needs (`fields`), and — when reading `inputs`/`outputs` — the "
                 "specific port names (`ports`). Always includes the lightweight metadata "
-                "{run_id, node_id, node_name, status, error, duration_ms, cost}; the heavy "
+                "{node_name, status, error, duration_ms, cost}; the heavy "
                 "fields (`inputs`, `outputs`, `logs`) are gated by `fields`. The workflow's "
                 "result lives on the output node — `node_id=<output node id>, "
                 "fields=[\"outputs\"], ports=[<the output port(s) you need>]`."
