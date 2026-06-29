@@ -273,6 +273,10 @@ export interface ChatThreadProps {
   onViewRun?: (runId: string) => void;
   /** Composer placeholder when idle. */
   placeholder?: string;
+  /** Controlled composer value. When provided, the host owns draft state. */
+  draft?: string;
+  /** Called when the composer draft changes. */
+  onDraftChange?: (next: string) => void;
   /** Tooltip on the stop button while streaming. */
   stopTitle?: string;
   /** Rendered in place of the messages when the thread is empty. */
@@ -287,6 +291,10 @@ export interface ChatThreadProps {
 interface Props {
   messages: ChatMessage[];
   onSend: (text: string) => void;
+  /** Optional controlled composer draft for persistence across pane/view switches. */
+  composerDraft?: string;
+  /** Called when the composer draft changes. */
+  onComposerDraftChange?: (next: string) => void;
   /** Pending attachments (owned by the App-level useImageAttachments hook
    * so drops/pastes land regardless of which panel is showing). */
   pendingAttachments?: PendingAttachment[];
@@ -1142,6 +1150,8 @@ export function ChatThread({
   onCancel,
   onViewRun,
   placeholder = 'type a message',
+  draft = '',
+  onDraftChange,
   stopTitle = 'stop',
   emptyState,
   pendingAttachments,
@@ -1149,7 +1159,16 @@ export function ChatThread({
   draggingFile,
   attachmentNotice,
 }: ChatThreadProps) {
-  const [draft, setDraft] = useState('');
+  // Keep local state as a fallback if this thread is used without a controlled
+  // draft. When controlled, state is fully owned by the host.
+  const [localDraft, setLocalDraft] = useState(draft);
+  const draftText = onDraftChange ? draft : localDraft;
+  const setDraftText = onDraftChange ?? setLocalDraft;
+
+  useEffect(() => {
+    if (onDraftChange) setLocalDraft(draft);
+  }, [draft, onDraftChange]);
+
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const attachments = pendingAttachments ?? [];
   // Stick to the bottom only while the user is already there. A live call's
@@ -1169,10 +1188,10 @@ export function ChatThread({
 
   const submit = (e?: React.FormEvent) => {
     e?.preventDefault();
-    const text = draft.trim();
+    const text = draftText.trim();
     if ((!text && attachments.length === 0) || disabled) return;
     onSend(text);
-    setDraft('');
+    setDraftText('');
   };
 
   return (
@@ -1225,8 +1244,8 @@ export function ChatThread({
           >
             <span className="chat-composer__mark" aria-hidden="true">✽</span>
             <input
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
+              value={draftText}
+              onChange={(e) => setDraftText(e.target.value)}
               placeholder={
                 draggingFile
                   ? 'drop file to attach'
@@ -1250,7 +1269,7 @@ export function ChatThread({
             <button
               type="submit"
               className="text-btn"
-              disabled={(!draft.trim() && attachments.length === 0) || disabled}
+              disabled={(!draftText.trim() && attachments.length === 0) || disabled}
             >
               send
             </button>
@@ -1264,6 +1283,8 @@ export function ChatThread({
 export function ChatPanel({
   messages,
   onSend,
+  composerDraft,
+  onComposerDraftChange,
   pendingAttachments,
   onRemoveAttachment,
   draggingFile,
@@ -1403,6 +1424,8 @@ export function ChatPanel({
         disabled={disabled}
         onCancel={onCancel}
         onViewRun={onViewRun}
+        draft={composerDraft}
+        onDraftChange={onComposerDraftChange}
         placeholder={conversationLabel ? 'continue this conversation…' : 'refine, add a node, or ask anything'}
         stopTitle={conversationLabel ? 'stop this turn' : 'stop the orchestrator'}
         // Attachments are an orchestrator-chat affordance; a continuation turn
