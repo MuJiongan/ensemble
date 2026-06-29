@@ -1,10 +1,11 @@
-import { useState } from 'react';
 import { AttachmentChips, type PendingAttachment } from './ImageAttachments';
 import { HeroComposer } from './HeroComposer';
 
 export function Hero({
   hasApiKey,
   disabled,
+  value,
+  onChange,
   onSend,
   onImport,
   onOpenSettings,
@@ -15,6 +16,8 @@ export function Hero({
 }: {
   hasApiKey: boolean;
   disabled: boolean;
+  value: string;
+  onChange: (value: string) => void;
   onSend: (text: string) => void;
   onImport: () => void;
   onOpenSettings: () => void;
@@ -23,13 +26,13 @@ export function Hero({
   draggingFile?: boolean;
   attachmentNotice?: string | null;
 }) {
-  const [text, setText] = useState('');
+  const text = value;
   const attachments = pendingAttachments ?? [];
 
   const submit = () => {
     const t = text.trim();
     if ((!t && attachments.length === 0) || disabled) return;
-    setText('');
+    onChange('');
     onSend(t);
   };
 
@@ -119,7 +122,7 @@ export function Hero({
               >
                 <HeroComposer
                   value={text}
-                  onChange={setText}
+                  onChange={onChange}
                   autoFocus={hasApiKey}
                   disabled={disabled}
                   maxComposerHeight="min(40vh, 320px)"
