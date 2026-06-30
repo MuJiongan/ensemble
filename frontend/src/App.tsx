@@ -113,6 +113,8 @@ export default function App() {
   const [activeLiveCall, setActiveLiveCall] = useState<
     { runId: string; nodeId: string; callId: string; label: string } | null
   >(null);
+  // Preserve composer text per chat context while navigating the UI.
+  const [chatDraftByConversation, setChatDraftByConversation] = useState<Record<string, string>>({});
 
   type AppDialog =
     | { kind: 'none' }
@@ -791,6 +793,28 @@ export default function App() {
 
   // The active chat conversation: live > continuation > orchestrator.
   const cont = activeContinuation;
+  const activeChatDraftKey = activeLiveCall
+    ? null
+    : cont
+      ? `cont:${contKey(cont)}`
+      : `orch:${activeId ?? 'none'}`;
+  const setChatDraft = (key: string | null, next: string) => {
+    if (!key) return;
+    if (!next.trim()) {
+      setChatDraftByConversation((prev) => {
+        if (!(key in prev)) return prev;
+        const { [key]: _, ...rest } = prev;
+        return rest;
+      });
+      return;
+    }
+    setChatDraftByConversation((prev) =>
+      prev[key] === next ? prev : { ...prev, [key]: next },
+    );
+  };
+  const activeChatDraft = activeChatDraftKey ? (chatDraftByConversation[activeChatDraftKey] ?? '') : '';
+  const orchestratorDraftKey = `orch:${activeId ?? 'none'}`;
+  const orchestratorDraft = chatDraftByConversation[orchestratorDraftKey] ?? '';
   const chatMessages = activeLiveCall
     ? (liveCall ? liveCallToChat(liveCall) : [])
     : cont
@@ -815,6 +839,7 @@ export default function App() {
   const conversationLabel = activeLiveCall?.label ?? cont?.label;
   const onChatSend = (text: string) => {
     if (activeLiveCall) return; // read-only while live
+    setChatDraft(activeChatDraftKey, '');
     if (cont) {
       void streamToCallChat(cont.node_run_id, cont.call_id, text, callChatModelById[contKey(cont)] ?? null);
     } else void handleSend(text);
@@ -848,6 +873,9 @@ export default function App() {
       const s = loadSettings();
       if (s.orchestrator) saveSettings({ ...s, orchestrator: { ...s.orchestrator, variant: next } });
     }
+  };
+  const onChatDraftChange = (next: string) => {
+    setChatDraft(activeChatDraftKey, next);
   };
 
   const topBarStatus: 'idle' | 'building' | 'running' | 'ready' = isOrchestrating
@@ -913,6 +941,8 @@ export default function App() {
             <Hero
               hasApiKey={hasApiKey}
               disabled={isOrchestrating}
+              value={orchestratorDraft}
+              onChange={(next) => setChatDraft(orchestratorDraftKey, next)}
               onSend={(text) => {
                 setRightPanelMode('chat');
                 handleSend(text);
@@ -1102,6 +1132,8 @@ export default function App() {
                         onClearContext={clearChatContext}
                         conversationLabel={conversationLabel}
                         onBack={backToOrchestrator}
+                        composerDraft={activeChatDraft}
+                        onComposerDraftChange={onChatDraftChange}
                         modelSelection={chatSelection}
                         modelVariants={variantsFor(chatSelection)}
                         catalog={catalog}
