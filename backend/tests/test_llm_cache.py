@@ -79,3 +79,13 @@ def test_no_tools_no_system_is_graceful():
     assert tools == []
     assert system == []
     assert msgs[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_adaptive_thinking_maps_to_output_effort():
+    thinking, output_config, budget = am._thinking_config({
+        "thinking": {"type": "adaptive"},
+        "effort": "high",
+    })
+    assert thinking == {"type": "adaptive"}
+    assert output_config == {"effort": "high"}
+    assert budget is None

@@ -4,8 +4,9 @@ Port of opencode's anthropic-messages.ts, scoped to gorchestra's needs:
 translates chat-completions-shaped messages to Anthropic's content-block body
 (system / text / thinking / tool_use / tool_result), streams ``/v1/messages``,
 and re-emits gorchestra's event tuples. Reasoning variants apply as the native
-``thinking: {type: enabled, budget_tokens}`` field, or — for Opus 4.7+ class
-models — ``thinking: {type: adaptive}`` paired with ``output_config.effort``.
+``thinking: {type: enabled, budget_tokens}`` field, or — for adaptive-thinking
+Anthropic models — ``thinking: {type: adaptive}`` paired with
+``output_config.effort``.
 
 Transport rides the official ``anthropic`` SDK; lowering and event parsing
 stay ours (the body is built wire-shaped, with not-yet-typed fields like
@@ -49,7 +50,7 @@ def _thinking_budget(variant_opts: dict | None) -> int | None:
 def _thinking_config(variant_opts: dict | None) -> tuple[dict | None, dict | None, int | None]:
     """Resolve the reasoning fields for the request body.
 
-    Returns ``(thinking, output_config, budget)``. Opus 4.7+ / Sonnet 4.6-class
+    Returns ``(thinking, output_config, budget)``. Adaptive-thinking Anthropic
     models only accept ``thinking.type == "adaptive"`` paired with
     ``output_config.effort``; older models take ``thinking.type == "enabled"``
     with an explicit token budget.

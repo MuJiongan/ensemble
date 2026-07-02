@@ -47,6 +47,40 @@ def test_anthropic_adaptive_sonnet():
     assert m.variants["high"]["thinking"]["type"] == "adaptive"
 
 
+def test_anthropic_sonnet5_uses_adaptive_thinking():
+    m = _model(id="claude-sonnet-5", api_id="claude-sonnet-5", npm="@ai-sdk/anthropic")
+    assert list(m.variants) == ["low", "medium", "high", "xhigh", "max"]
+    assert m.variants["high"] == {
+        "thinking": {"type": "adaptive"},
+        "effort": "high",
+    }
+
+
+def test_anthropic_claude5_sonnet_name_uses_adaptive_thinking():
+    m = _model(id="claude-5-sonnet", api_id="claude-5-sonnet", npm="@ai-sdk/anthropic")
+    assert m.variants["max"]["thinking"]["type"] == "adaptive"
+
+
+def test_anthropic_fable5_uses_adaptive_thinking():
+    m = _model(id="claude-fable-5", api_id="claude-fable-5", npm="@ai-sdk/anthropic")
+    assert list(m.variants) == ["low", "medium", "high", "xhigh", "max"]
+    assert m.variants["xhigh"] == {
+        "thinking": {"type": "adaptive"},
+        "effort": "xhigh",
+    }
+
+
+def test_anthropic_mythos_adaptive_efforts():
+    m5 = _model(id="claude-mythos-5", api_id="claude-mythos-5", npm="@ai-sdk/anthropic")
+    preview = _model(
+        id="claude-mythos-preview",
+        api_id="claude-mythos-preview",
+        npm="@ai-sdk/anthropic",
+    )
+    assert list(m5.variants) == ["low", "medium", "high", "xhigh", "max"]
+    assert list(preview.variants) == ["low", "medium", "high", "max"]
+
+
 def test_anthropic_opus45_simple_effort():
     m = _model(id="claude-opus-4-5", api_id="claude-opus-4-5", npm="@ai-sdk/anthropic")
     assert list(m.variants) == ["low", "medium", "high"]
@@ -73,6 +107,11 @@ def test_to_openai_body_translation():
     assert V.to_openai_body({"reasoning": {"effort": "low"}}) == {"reasoning": {"effort": "low"}}
     # native thinking dicts are dropped on the OAI-compatible path
     assert V.to_openai_body({"thinking": {"type": "enabled", "budgetTokens": 16000}}) == {}
+    assert V.to_openai_body({"thinking": {"type": "adaptive"}, "effort": "high"}) == {}
+    # zai/zhipuai's OpenAI-compatible thinking enable flag is intentionally kept
+    assert V.to_openai_body({"thinking": {"type": "enabled", "clear_thinking": False}}) == {
+        "thinking": {"type": "enabled", "clear_thinking": False}
+    }
 
 
 def test_default_variant_prefers_medium():
