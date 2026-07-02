@@ -197,7 +197,6 @@ export function snapshotToExport(run: Run, projectName?: string): WorkflowExport
       code: n.code,
       inputs: n.inputs,
       outputs: n.outputs,
-      position: n.position ?? { x: 0, y: 0 },
     })),
     edges: s.edges.map((e) => ({
       id: e.id,

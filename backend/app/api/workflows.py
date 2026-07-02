@@ -50,7 +50,6 @@ def to_workflow_export(w: models.Workflow) -> schemas.WorkflowExport:
                 code=n.code or schemas.DEFAULT_CODE,
                 inputs=[schemas.IOPort(**p) for p in (n.inputs or [])],
                 outputs=[schemas.IOPort(**p) for p in (n.outputs or [])],
-                position=schemas.Position(**(n.position or {})),
             )
             for n in w.nodes
         ],

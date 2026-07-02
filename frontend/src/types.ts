@@ -59,7 +59,7 @@ export interface WorkflowExport {
   name: string;
   input_node_id: string | null;
   output_node_id: string | null;
-  nodes: Array<Omit<WFNode, 'workflow_id'>>;
+  nodes: Array<Omit<WFNode, 'workflow_id' | 'position'>>;
   edges: Array<Omit<WFEdge, 'workflow_id'>>;
 }
 

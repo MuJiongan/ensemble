@@ -51,7 +51,7 @@ def import_workflow_graph(
             code=src.get("code") or schemas.DEFAULT_CODE,
             inputs=src.get("inputs") or [],
             outputs=src.get("outputs") or [],
-            position=src.get("position") or {},
+            position={},
         )
         db.add(node)
         db.flush()

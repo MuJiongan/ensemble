@@ -75,10 +75,15 @@ class WorkflowPatch(BaseModel):
     output_node_id: str | None = None
 
 
-class WorkflowExportNode(NodeIn):
+class WorkflowExportNode(BaseModel):
     """Portable node record — ``id`` is preserved for edge remapping on import."""
 
     id: str
+    name: str = "node"
+    description: str = ""
+    code: str = DEFAULT_CODE
+    inputs: list[IOPort] = Field(default_factory=list)
+    outputs: list[IOPort] = Field(default_factory=list)
 
 
 class WorkflowExportEdge(EdgeIn):
