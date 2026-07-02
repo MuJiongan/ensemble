@@ -49,6 +49,9 @@ GPT5_VERSIONED_PRO_RE = re.compile(r"(?:^|/)gpt-5[.-]\d+[.-]pro(?:[.-]|$)")
 _OPUS_47_RE = re.compile(
     r"opus-(\d+)[.-](\d+)(?:[.@-]|$)|claude-(\d+)[.-](\d+)-opus(?:[.@-]|$)", re.I
 )
+_SONNET_VERSION_RE = re.compile(
+    r"sonnet-(\d+)(?:[.-](\d+))?(?:[.@-]|$)|claude-(\d+)(?:[.-](\d+))?-sonnet(?:[.@-]|$)", re.I
+)
 
 
 def _gpt5_version(api_id: str):
@@ -134,11 +137,35 @@ def anthropic_opus_47_or_later(api_id: str) -> bool:
     return major > 4 or (major == 4 and minor >= 7)
 
 
+def anthropic_sonnet_5_or_later(api_id: str) -> bool:
+    m = _SONNET_VERSION_RE.search(api_id)
+    if not m:
+        return False
+    major = int(m.group(1) or m.group(3))
+    return major >= 5
+
+
+def anthropic_fable_or_mythos_5(api_id: str) -> bool:
+    cid = api_id.lower()
+    return "fable-5" in cid or "mythos-5" in cid
+
+
+def anthropic_mythos_preview(api_id: str) -> bool:
+    return "mythos-preview" in api_id.lower()
+
+
 def anthropic_adaptive_efforts(api_id: str):
+    cid = api_id.lower()
     if anthropic_opus_47_or_later(api_id):
         return ["low", "medium", "high", "xhigh", "max"]
+    if anthropic_fable_or_mythos_5(api_id):
+        return ["low", "medium", "high", "xhigh", "max"]
+    if anthropic_sonnet_5_or_later(api_id):
+        return ["low", "medium", "high", "xhigh", "max"]
+    if anthropic_mythos_preview(api_id):
+        return ["low", "medium", "high", "max"]
     if any(
-        v in api_id
+        v in cid
         for v in (
             "opus-4-6", "opus-4.6", "4-6-opus", "4.6-opus",
             "sonnet-4-6", "sonnet-4.6", "4-6-sonnet", "4.6-sonnet",
@@ -542,10 +569,10 @@ def to_openai_body(variant_opts: dict) -> dict:
         if k in variant_opts:
             body[k] = variant_opts[k]
     # zai/zhipuai pass a `thinking` *enable flag* on the OAI-compatible wire.
-    # Anthropic's native `thinking` (a token-budget dict) is consumed by the
-    # anthropic adapter, never this path — drop it so it can't leak onto the wire.
+    # Anthropic's native `thinking` dict is consumed by the anthropic adapter,
+    # never this path — drop it so it can't leak onto the wire.
     t = variant_opts.get("thinking")
-    if isinstance(t, dict) and "budgetTokens" not in t and "budget_tokens" not in t:
+    if isinstance(t, dict) and "clear_thinking" in t:
         body["thinking"] = t
     return body
 
