@@ -69,6 +69,7 @@ def test_export_bundle_contains_graph(db_factory):
     assert len(exported.edges) == 1
     assert exported.input_node_id == exported.nodes[0].id
     assert exported.edges[0].from_node_id == exported.nodes[0].id
+    assert "position" not in exported.nodes[0].model_dump()
 
 
 def test_import_regenerates_ids_and_preserves_graph(db_factory):
@@ -91,7 +92,7 @@ def test_import_regenerates_ids_and_preserves_graph(db_factory):
 
         by_name = {n.name: n for n in imported.nodes}
         assert by_name["input"].code == source.nodes[0].code
-        assert by_name["output"].position == source.nodes[1].position
+        assert by_name["output"].position == {}
 
         edge = imported.edges[0]
         assert edge.from_node_id == by_name["input"].id

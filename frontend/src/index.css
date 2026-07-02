@@ -849,12 +849,49 @@ button.port-card:hover .port-card__open {
   width: 100%;
   padding: 7px 8px;
   margin: 0 -8px;
-  align-items: center;
-  gap: 8px;
+  align-items: flex-start;
+  gap: 10px;
   border-bottom: 1px solid var(--rule-2);
   border-left: 2px solid transparent;
   text-align: left;
   transition: background .2s ease;
+}
+.run-row__main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.run-row__title {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.run-row__title.mono {
+  font-size: 10.5px;
+  color: var(--ink-4);
+  letter-spacing: 0;
+}
+.run-row__side {
+  flex: 0 0 auto;
+  max-width: 45%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+.run-row__duration {
+  flex: none;
+  white-space: nowrap;
+  font-size: 10px;
+  letter-spacing: 0;
+  color: var(--ink-3);
 }
 .run-row--clickable { cursor: pointer; }
 .run-row--clickable:hover:not(.run-row--active) { background: var(--hover-subtle); }

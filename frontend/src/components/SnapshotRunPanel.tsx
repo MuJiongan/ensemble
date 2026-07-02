@@ -2,7 +2,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { IOSection } from './IOSection';
 import type { CurrentRun, Run, RunStatus } from '../types';
 import { api } from '../api';
-import { modelStatsForRun, summariseRun, toolCallCountForRun } from '../appHelpers';
+import {
+  formatDuration,
+  modelStatsForRun,
+  runDurationMs,
+  summariseRun,
+  toolCallCountForRun,
+} from '../appHelpers';
 import { ExecutionStats } from './ExecutionStats';
 
 export function SnapshotRunPanel({
@@ -123,6 +129,7 @@ export function SnapshotRunPanel({
           currentRun && currentRun.id === run.id ? currentRun.events : undefined;
         const modelStats = modelStatsForRun(run, liveEvents);
         const toolCalls = toolCallCountForRun(run, liveEvents);
+        const totalDuration = runDurationMs(run);
         return (
           <div>
             <div
@@ -198,6 +205,15 @@ export function SnapshotRunPanel({
                 <StatusDot status={liveStatus} />
                 <span style={{ color: runStatusColor(liveStatus) }}>{liveStatus}</span>
               </span>
+              {totalDuration !== null && (
+                <>
+                  <span className="asterisk" style={{ margin: '0 10px' }}>·</span>
+                  <span style={{ color: 'var(--ink-2)' }}>
+                    {inFlight ? 'elapsed ' : 'total '}
+                    <span className="mono">{formatDuration(totalDuration)}</span>
+                  </span>
+                </>
+              )}
               <span className="asterisk" style={{ margin: '0 10px' }}>·</span>
               <span className="mono" style={{ color: 'var(--ink-2)' }}>
                 ${(run.total_cost ?? 0).toFixed(4)}
@@ -446,4 +462,3 @@ function StatusDot({ status }: { status: RunStatus }) {
     />
   );
 }
-

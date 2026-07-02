@@ -3,7 +3,12 @@ import type {
   WorkflowDetail, Run, RunStatus, IOPort, CurrentRun,
 } from '../types';
 import { api } from '../api';
-import { DEFAULT_WORKFLOW_NAME, summariseRun } from '../appHelpers';
+import {
+  DEFAULT_WORKFLOW_NAME,
+  formatDuration,
+  runDurationMs,
+  summariseRun,
+} from '../appHelpers';
 import { AlertDialog, ConfirmDialog } from './ConfirmDialog';
 import { CloseButton } from './CloseButton';
 
@@ -218,6 +223,7 @@ export function RunPanel({
               const summary = summariseRun(h);
               const isId = summary.kind === 'id';
               const rowRunning = h.status === 'running' || h.status === 'pending';
+              const totalDuration = runDurationMs(h);
               const canView = !!onViewRunOnCanvas;
               const canDelete = !rowRunning;
               const onView = () => onViewRunOnCanvas?.(h.id);
@@ -251,78 +257,83 @@ export function RunPanel({
                         : summary.text
                   }
                 >
-                  <span
-                    className={isId ? 'mono' : 'serif'}
-                    style={{
-                      fontSize: isId ? 10.5 : 12.5,
-                      color: isId ? 'var(--ink-4)' : 'var(--ink-2)',
-                      flex: 1,
-                      minWidth: 0,
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {summary.text}
-                  </span>
-                  <span
-                    className="smallcaps"
-                    style={{
-                      fontSize: 9,
-                      color: runStatusColor(h.status),
-                      fontWeight: rowRunning ? 600 : undefined,
-                    }}
-                  >
-                    {h.status}
-                  </span>
-                  {rowRunning && (
-                    <button
-                      type="button"
-                      onClick={onCancelRow}
-                      title="cancel this run"
-                      aria-label="cancel run"
+                  <div className="run-row__main">
+                    <span
+                      className={isId ? 'mono run-row__title' : 'serif run-row__title'}
+                      title={isId ? h.id : summary.text}
+                    >
+                      {summary.text}
+                    </span>
+                  </div>
+                  <div className="run-row__side">
+                    {totalDuration !== null && (
+                      <span
+                        className="mono run-row__duration"
+                        title={rowRunning ? 'elapsed run time' : 'total run time'}
+                      >
+                        {rowRunning ? 'elapsed ' : 'total '}
+                        {formatDuration(totalDuration)}
+                      </span>
+                    )}
+                    <span
                       className="smallcaps"
                       style={{
-                        background: 'transparent',
-                        border: '1px solid var(--rule)',
-                        borderRadius: 3,
-                        padding: '1px 7px',
-                        cursor: 'pointer',
-                        color: 'var(--state-err)',
                         fontSize: 9,
-                        lineHeight: 1.5,
-                      }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.borderColor = 'var(--state-err)';
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.borderColor = 'var(--rule)';
+                        color: runStatusColor(h.status),
+                        fontWeight: rowRunning ? 600 : undefined,
                       }}
                     >
-                      cancel
+                      {h.status}
+                    </span>
+                    {rowRunning && (
+                      <button
+                        type="button"
+                        onClick={onCancelRow}
+                        title="cancel this run"
+                        aria-label="cancel run"
+                        className="smallcaps"
+                        style={{
+                          background: 'transparent',
+                          border: '1px solid var(--rule)',
+                          borderRadius: 3,
+                          padding: '1px 7px',
+                          cursor: 'pointer',
+                          color: 'var(--state-err)',
+                          fontSize: 9,
+                          lineHeight: 1.5,
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.borderColor = 'var(--state-err)';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.borderColor = 'var(--rule)';
+                        }}
+                      >
+                        cancel
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={onDelete}
+                      disabled={!canDelete}
+                      title={canDelete ? 'delete this run' : 'cancel the run before deleting'}
+                      aria-label="delete run"
+                      style={{
+                        background: 'transparent',
+                        border: 0,
+                        padding: '0 4px',
+                        cursor: canDelete ? 'pointer' : 'not-allowed',
+                        color: 'var(--ink-4)',
+                        fontSize: 14,
+                        lineHeight: 1,
+                        opacity: canDelete ? 0.6 : 0.25,
+                      }}
+                      onMouseEnter={(e) => { if (canDelete) e.currentTarget.style.opacity = '1'; }}
+                      onMouseLeave={(e) => { if (canDelete) e.currentTarget.style.opacity = '0.6'; }}
+                    >
+                      ×
                     </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={onDelete}
-                    disabled={!canDelete}
-                    title={canDelete ? 'delete this run' : 'cancel the run before deleting'}
-                    aria-label="delete run"
-                    style={{
-                      background: 'transparent',
-                      border: 0,
-                      padding: '0 4px',
-                      cursor: canDelete ? 'pointer' : 'not-allowed',
-                      color: 'var(--ink-4)',
-                      fontSize: 14,
-                      lineHeight: 1,
-                      opacity: canDelete ? 0.6 : 0.25,
-                    }}
-                    onMouseEnter={(e) => { if (canDelete) e.currentTarget.style.opacity = '1'; }}
-                    onMouseLeave={(e) => { if (canDelete) e.currentTarget.style.opacity = '0.6'; }}
-                  >
-                    ×
-                  </button>
+                  </div>
                 </div>
               );
             })
@@ -483,4 +494,3 @@ export function RunPanel({
     </div>
   );
 }
-

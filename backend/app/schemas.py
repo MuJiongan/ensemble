@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import Any
+from datetime import datetime
 from pydantic import BaseModel, Field
 
 
@@ -74,10 +75,15 @@ class WorkflowPatch(BaseModel):
     output_node_id: str | None = None
 
 
-class WorkflowExportNode(NodeIn):
+class WorkflowExportNode(BaseModel):
     """Portable node record — ``id`` is preserved for edge remapping on import."""
 
     id: str
+    name: str = "node"
+    description: str = ""
+    code: str = DEFAULT_CODE
+    inputs: list[IOPort] = Field(default_factory=list)
+    outputs: list[IOPort] = Field(default_factory=list)
 
 
 class WorkflowExportEdge(EdgeIn):
@@ -125,6 +131,8 @@ class RunOut(BaseModel):
     inputs: dict[str, Any]
     outputs: dict[str, Any]
     error: str | None = None
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
     total_cost: float
     # Frozen graph the runner actually executed (nodes + code + edges + in/out
     # node ids). `None` for legacy rows created before snapshotting landed.

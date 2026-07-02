@@ -59,7 +59,7 @@ export interface WorkflowExport {
   name: string;
   input_node_id: string | null;
   output_node_id: string | null;
-  nodes: Array<Omit<WFNode, 'workflow_id'>>;
+  nodes: Array<Omit<WFNode, 'workflow_id' | 'position'>>;
   edges: Array<Omit<WFEdge, 'workflow_id'>>;
 }
 
@@ -114,6 +114,8 @@ export interface Run {
   inputs: Record<string, unknown>;
   outputs: Record<string, unknown>;
   error: string | null;
+  started_at: string | null;
+  ended_at: string | null;
   total_cost: number;
   workflow_snapshot: RunWorkflowSnapshot | null;
   node_runs: NodeRun[];
