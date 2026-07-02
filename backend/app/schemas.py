@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import Any
+from datetime import datetime
 from pydantic import BaseModel, Field
 
 
@@ -125,6 +126,8 @@ class RunOut(BaseModel):
     inputs: dict[str, Any]
     outputs: dict[str, Any]
     error: str | None = None
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
     total_cost: float
     # Frozen graph the runner actually executed (nodes + code + edges + in/out
     # node ids). `None` for legacy rows created before snapshotting landed.

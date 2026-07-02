@@ -147,6 +147,14 @@ A workflow is a directed graph:
 
 A complete graph has every non-trivial node wired into the data flow, with input and output nodes designated.
 
+# passing large information between nodes
+
+Edges are not the only channel. For large artifacts (documents, transcripts, datasets, logs, bulky JSON), prefer passing a compact reference: write the artifact to a file and return its path plus a short summary. Downstream nodes can use that path with `ctx.agent(tools=["read_file", "shell", "edit_file", "write_file"])`, or direct `ctx.tools.*` calls when fixed. Use `ctx.workdir` for same-run scratch files; use an explicit user-facing path when the file must survive. Put full text on an edge only when it is small or truly required as the value.
+
+# build large artifacts iteratively
+
+Avoid one-shotting a large JSON/output. Have an agentic loop use `read_file` / `edit_file` / `write_file` / `shell` to build or revise the file iteratively, then pass the path along.
+
 # node code contract
 
 Every node defines a `run(inputs, ctx)` function. Top-level `import`s and small helper functions alongside `run` are fine — the whole code blob is `exec`'d into a fresh namespace per run, so reach for `json`, `re`, `pathlib`, etc. when they're cleaner than routing through an LLM.

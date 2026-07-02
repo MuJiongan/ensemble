@@ -91,6 +91,36 @@ export function formatTokenCount(n: number): string {
   return String(n);
 }
 
+export function formatDuration(ms: number): string {
+  const safeMs = Math.max(0, Math.round(ms));
+  if (safeMs < 1000) return `${safeMs}ms`;
+  if (safeMs < 10_000) return `${(safeMs / 1000).toFixed(1)}s`;
+  if (safeMs < 60_000) return `${Math.round(safeMs / 1000)}s`;
+
+  const totalSeconds = Math.round(safeMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return `${minutes}m ${seconds}s`;
+
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  return `${hours}h ${remMinutes}m`;
+}
+
+function parseRunTimestamp(ts: string): number {
+  const hasTimeZone = /(?:z|[+-]\d{2}:?\d{2})$/i.test(ts);
+  return Date.parse(hasTimeZone ? ts : `${ts}Z`);
+}
+
+export function runDurationMs(run: Run, now = Date.now()): number | null {
+  if (!run.started_at) return null;
+  const started = parseRunTimestamp(run.started_at);
+  if (!Number.isFinite(started)) return null;
+  const ended = run.ended_at ? parseRunTimestamp(run.ended_at) : now;
+  if (!Number.isFinite(ended)) return null;
+  return Math.max(0, ended - started);
+}
+
 /** Total tool calls across all node_runs (direct + LLM-mediated). */
 export function toolCallCountFromRun(run: Run): number {
   let n = 0;

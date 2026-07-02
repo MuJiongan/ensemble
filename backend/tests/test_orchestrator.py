@@ -1646,6 +1646,23 @@ def test_system_prompt_distinguishes_orchestrator_vs_node_tools():
     assert "what tools do you have" in lower
 
 
+def test_system_prompt_prefers_file_paths_for_large_handoffs():
+    """Large intermediate artifacts should move through file paths plus
+    runtime tools instead of being dumped through edge values."""
+    p = SYSTEM_PROMPT
+    lower = p.lower()
+
+    assert "passing large information between nodes" in lower
+    assert "edges are not the only channel" in lower
+    assert "prefer passing a compact reference" in lower
+    assert "build large artifacts iteratively" in lower
+    assert "avoid one-shotting a large json/output" in lower
+    assert "iteratively" in lower
+    assert "ctx.workdir" in p
+    assert "read_file" in p
+    assert "edit_file" in p
+
+
 # ---------------------------------------------------------------------------
 # gap 3 — turn cancellation
 # ---------------------------------------------------------------------------

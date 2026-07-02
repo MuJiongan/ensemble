@@ -1,7 +1,7 @@
 import type {
   WorkflowDetail, NodeRun, NodeRunStatus, RunEvent,
 } from '../types';
-import { modelStatsFromCalls, formatTokenCount } from '../appHelpers';
+import { formatDuration, formatTokenCount, modelStatsFromCalls } from '../appHelpers';
 import { JsonView } from './JsonView';
 import { ExecutionStats } from './ExecutionStats';
 import { LogsView } from './LogsView';
@@ -497,7 +497,7 @@ export function NodeTraceCard({
           }}
         >
           {trace.status}
-          {typeof trace.duration_ms === 'number' ? ` · ${trace.duration_ms}ms` : ''}
+          {typeof trace.duration_ms === 'number' ? ` · ${formatDuration(trace.duration_ms)}` : ''}
           {typeof trace.cost === 'number' && trace.cost > 0
             ? ` · $${trace.cost.toFixed(4)}`
             : ''}

@@ -114,6 +114,8 @@ export interface Run {
   inputs: Record<string, unknown>;
   outputs: Record<string, unknown>;
   error: string | null;
+  started_at: string | null;
+  ended_at: string | null;
   total_cost: number;
   workflow_snapshot: RunWorkflowSnapshot | null;
   node_runs: NodeRun[];

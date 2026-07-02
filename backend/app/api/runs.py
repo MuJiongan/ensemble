@@ -70,6 +70,8 @@ def _run_to_out(run: models.Run, node_runs) -> schemas.RunOut:
         inputs=run.inputs or {},
         outputs=run.outputs or {},
         error=run.error,
+        started_at=run.started_at,
+        ended_at=run.ended_at,
         total_cost=run.total_cost or 0.0,
         workflow_snapshot=run.workflow_snapshot,
         node_runs=[

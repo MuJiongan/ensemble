@@ -210,7 +210,7 @@ export function NodePanel({
               whiteSpace: 'nowrap',
             }}
           >
-            {k === 'calls' ? 'llm calls' : k}
+            {k === 'trace' ? 'run' : k === 'calls' ? 'llm calls' : k}
           </button>
         ))}
       </div>
@@ -277,7 +277,7 @@ export function NodePanel({
               >
                 {liveRunForThisNode
                   ? 'waiting for this node to start…'
-                  : 'this node has no trace in the selected run.'}
+                  : 'this node has no run record in the selected run.'}
               </div>
             )}
           </div>
@@ -356,5 +356,4 @@ function PortSchemaCard({
     </div>
   );
 }
-
 
