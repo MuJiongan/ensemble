@@ -38,7 +38,8 @@ import { useImageAttachments } from './components/ImageAttachments';
 import { useRunWebSocket } from './runWebSocket';
 import { getCatalog, findModel, CATALOG_CHANGED_EVENT, type Catalog } from './providerCatalog';
 import type {
-  Workflow, WorkflowDetail, NodeRunStatus, Run, CurrentRun, ModelSelection, CallChat,
+  Workflow, WorkflowDetail, NodeRunStatus, Run, RunSummary, CurrentRun, ModelSelection,
+  CallChat,
 } from './types';
 
 type View = 'workflow' | 'settings';
@@ -60,6 +61,8 @@ function hasCredsForPreset(s: ReturnType<typeof loadSettings>): boolean {
 // materializes the row. This composite is the stable key for all per-
 // continuation client state (messages, model selection, streaming, panel key).
 const contKey = (c: CallChat) => `${c.node_run_id}:${c.call_id}`;
+const runIsActive = (run: Pick<RunSummary, 'status'>) =>
+  run.status === 'running' || run.status === 'pending';
 
 export default function App() {
   const [view, setView] = useState<View>('workflow');
@@ -93,6 +96,13 @@ export default function App() {
   const [chatByWorkflow, setChatByWorkflow] = useState<Record<string, ChatMessage[]>>({});
   // Workflows whose orchestrator is currently streaming.
   const [orchestratingIds, setOrchestratingIds] = useState<Set<string>>(new Set());
+  // Orchestrator turns discovered after a reload. These have no local SSE
+  // reader, so we poll the persisted session until the backend reports done.
+  const [recoveringOrchestratorIds, setRecoveringOrchestratorIds] = useState<Set<string>>(new Set());
+  const chatByWorkflowRef = useRef<Record<string, ChatMessage[]>>({});
+  useEffect(() => {
+    chatByWorkflowRef.current = chatByWorkflow;
+  }, [chatByWorkflow]);
 
   // Call-llm continuations, keyed by contKey (node_run_id:call_id). One
   // continuation per call; they're reached only from a node's chat tab (not the
@@ -344,10 +354,10 @@ export default function App() {
   }, [activeId]);
 
   // viewingRun is captured at the moment snapshot view opens, so for an
-  // in-flight run its outputs/node_runs/total_cost are empty. viewingRunLive
-  // streams the live deltas, but the SnapshotRunPanel reads its display
-  // fields off viewingRun. When the bound run finishes, refetch it so the
-  // panel picks up the final outputs, completed node_runs, and total cost.
+  // in-flight run its outputs/node-run summaries/total_cost are empty.
+  // viewingRunLive streams the live deltas, but the SnapshotRunPanel reads its
+  // display fields off viewingRun. When the bound run finishes, refetch it so
+  // the panel picks up final outputs, node-run summaries, and total cost.
   // The runner broadcasts `run_finished` over the WS *before* it commits the
   // final Run/NodeRun rows (the persist waits for the subprocess to exit),
   // so the first refetch can race the persist and read a row still marked
@@ -424,8 +434,13 @@ export default function App() {
       const sessions = await api.listSessions(wid);
       if (sessions.length === 0) return;
       const sid = sessions[0].id;
-      const history = await api.getSessionMessages(sid);
-      const bubbles = historyToChatMessages(history.messages);
+      const history = await api.getSessionMessages(wid, sid);
+      const hasLocalChat = (chatByWorkflowRef.current[wid]?.length ?? 0) > 0;
+      const bubbles = historyToChatMessages(
+        history.messages,
+        history.active_turn,
+        history.active_runs,
+      );
       // Race: if the user typed into a brand-new workflow, handleSend may have
       // already created a session and started a stream while we were fetching.
       // Trampling the optimistic [user, placeholder] would orphan the
@@ -436,8 +451,48 @@ export default function App() {
       setChatByWorkflow((prev) =>
         (prev[wid] && prev[wid].length > 0) ? prev : { ...prev, [wid]: bubbles },
       );
+      if (history.active_turn && !hasLocalChat) {
+        // Restored runs do not carry the original attach context. Treat them
+        // as snapshot-only so their node-state dots never paint on a diverged
+        // live canvas after reload.
+        for (const run of history.active_runs ?? []) {
+          attachToRunRef.current(run.id, run.workflow_id, run.status, /* executesOnSnapshot */ true);
+        }
+        setOrchestratingIds((prev) => {
+          const s = new Set(prev);
+          s.add(wid);
+          return s;
+        });
+        setRecoveringOrchestratorIds((prev) => {
+          const s = new Set(prev);
+          s.add(wid);
+          return s;
+        });
+      } else if (!history.active_turn) {
+        setRecoveringOrchestratorIds((prev) => {
+          if (!prev.has(wid)) return prev;
+          const s = new Set(prev);
+          s.delete(wid);
+          return s;
+        });
+      }
     } catch {
       /* ignore — leave panel empty */
+    }
+  };
+
+  const restoreActiveRuns = async (wid: string) => {
+    try {
+      const runs = await api.listRuns(wid);
+      for (const run of runs) {
+        if (runIsActive(run)) {
+          // Unknown restored runs are conservative: visible in run state, but
+          // excluded from live-graph node overlays unless explicitly attached.
+          attachToRunRef.current(run.id, run.workflow_id, run.status, /* executesOnSnapshot */ true);
+        }
+      }
+    } catch {
+      /* ignore — run panel history polling still covers the static list */
     }
   };
 
@@ -447,9 +502,66 @@ export default function App() {
 
   useEffect(() => {
     refreshDetail();
-    if (activeId) hydrateSession(activeId);
+    if (activeId) {
+      hydrateSession(activeId);
+      restoreActiveRuns(activeId);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
+
+  const activeSessionId = activeId ? sessionByWorkflow[activeId] : undefined;
+  const recoveringActiveOrchestrator =
+    !!activeId && recoveringOrchestratorIds.has(activeId);
+  useEffect(() => {
+    if (!activeId || !activeSessionId || !recoveringActiveOrchestrator) return;
+    const wid = activeId;
+    let cancelled = false;
+    let timer: number | undefined;
+
+    const poll = async () => {
+      try {
+        const history = await api.getSessionMessages(wid, activeSessionId);
+        if (cancelled) return;
+        setChatByWorkflow((prev) => ({
+          ...prev,
+          [wid]: historyToChatMessages(
+            history.messages,
+            history.active_turn,
+            history.active_runs,
+          ),
+        }));
+        if (history.active_turn) {
+          timer = window.setTimeout(poll, 2000);
+          return;
+        }
+      } catch {
+        if (!cancelled) timer = window.setTimeout(poll, 3000);
+        return;
+      }
+
+      setOrchestratingIds((prev) => {
+        if (!prev.has(wid)) return prev;
+        const s = new Set(prev);
+        s.delete(wid);
+        return s;
+      });
+      setRecoveringOrchestratorIds((prev) => {
+        if (!prev.has(wid)) return prev;
+        const s = new Set(prev);
+        s.delete(wid);
+        return s;
+      });
+      refreshDetail(wid);
+      void restoreActiveRuns(wid);
+    };
+
+    timer = window.setTimeout(poll, 1200);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId, activeSessionId, recoveringActiveOrchestrator]);
 
   // Live-run sockets stay open across workflow switches so background runs
   // keep streaming; only tear them down when the app unmounts.
@@ -506,6 +618,12 @@ export default function App() {
       api.patchWorkflow(wid, { name: nextName }).then(() => refreshWorkflows()).catch(() => {});
     }
 
+    setRecoveringOrchestratorIds((prev) => {
+      if (!prev.has(wid)) return prev;
+      const s = new Set(prev);
+      s.delete(wid);
+      return s;
+    });
     streamToOrchestrator(wid, sid, text, attachments);
   };
 
@@ -513,8 +631,20 @@ export default function App() {
     if (!activeId) return;
     const sid = sessionByWorkflow[activeId];
     if (!sid) return;
-    try { await api.cancelOrchestratorTurn(sid); } catch { /* ignore */ }
+    try { await api.cancelOrchestratorTurn(activeId, sid); } catch { /* ignore */ }
     abortStream(activeId);
+    setOrchestratingIds((prev) => {
+      if (!prev.has(activeId)) return prev;
+      const s = new Set(prev);
+      s.delete(activeId);
+      return s;
+    });
+    setRecoveringOrchestratorIds((prev) => {
+      if (!prev.has(activeId)) return prev;
+      const s = new Set(prev);
+      s.delete(activeId);
+      return s;
+    });
   };
 
   /**
@@ -597,7 +727,11 @@ export default function App() {
     try {
       let exported;
       if (viewingRun) {
-        exported = snapshotToExport(viewingRun, activeWorkflow?.name);
+        const full = await api.getRunSnapshot(viewingRun.id);
+        exported = snapshotToExport(
+          { ...viewingRun, workflow_snapshot: full.workflow_snapshot },
+          activeWorkflow?.name,
+        );
         if (!exported) throw new Error('this run has no graph snapshot to export');
       } else {
         if (!activeId) return;
@@ -654,7 +788,7 @@ export default function App() {
     if (!sid) return;
     setDialog({ kind: 'none' });
     try {
-      await api.clearSessionMessages(sid);
+      await api.clearSessionMessages(activeId, sid);
       setChatByWorkflow((prev) => ({ ...prev, [activeId]: [] }));
     } catch (e) {
       setDialog({
@@ -678,9 +812,9 @@ export default function App() {
   // "continue →" on a finished call: create-or-get its continuation, seed the
   // transcript on first open (re-opening must not clobber a live in-memory
   // one), and show it in the chat pane.
-  const openContinuation = async (nodeRunId: string, callId: string) => {
+  const openContinuation = async (runId: string, nodeRunId: string, callId: string) => {
     try {
-      const chat = await api.viewCallChat(nodeRunId, callId);
+      const chat = await api.viewCallChat(runId, nodeRunId, callId);
       const key = contKey(chat);
       setCallChatMessages((prev) =>
         prev[key] ? prev : { ...prev, [key]: messagesToChat(chat.messages) });
@@ -746,7 +880,7 @@ export default function App() {
         if (nr) {
           let chat: CallChat;
           try {
-            chat = await api.viewCallChat(nr.id, target.callId);
+            chat = await api.viewCallChat(target.runId, nr.id, target.callId);
           } catch (e) {
             // A 404 here is terminal, not transient: the call has no continuable
             // transcript. A finished call always persists its conversation now
@@ -841,7 +975,13 @@ export default function App() {
     if (activeLiveCall) return; // read-only while live
     setChatDraft(activeChatDraftKey, '');
     if (cont) {
-      void streamToCallChat(cont.node_run_id, cont.call_id, text, callChatModelById[contKey(cont)] ?? null);
+      void streamToCallChat(
+        cont.run_id,
+        cont.node_run_id,
+        cont.call_id,
+        text,
+        callChatModelById[contKey(cont)] ?? null,
+      );
     } else void handleSend(text);
   };
   const onChatCancel = () => {
@@ -1170,8 +1310,8 @@ export default function App() {
                               // bound to an in-flight run (rerun-from-snapshot,
                               // or recent-run click on a running run). Without
                               // it, the trace would fall back to
-                              // viewingRun.node_runs — empty for runs that
-                              // haven't materialised yet.
+                              // viewingRun.node_runs summaries — empty for
+                              // runs that haven't materialised yet.
                               currentRun={viewingRunLive}
                               onSendErrorToOrchestrator={sendErrorToOrchestrator}
                               onContinue={openContinuation}

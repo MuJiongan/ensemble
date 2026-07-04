@@ -67,7 +67,21 @@ def _seed_node_run(db, *, messages=SEED_MESSAGES, call_id="call-1") -> str:
         workflow_id=wf.id,
         status="success",
         inputs={},
-        workflow_snapshot={"nodes": [{"id": node_id, "name": "extract"}], "edges": []},
+        workflow_snapshot={
+            "id": wf.id,
+            "input_node_id": node_id,
+            "output_node_id": node_id,
+            "nodes": [{
+                "id": node_id,
+                "name": "extract",
+                "description": "extract facts",
+                "code": "def run(inputs, ctx):\n    return {'summary': 'ok'}\n",
+                "inputs": [{"name": "text", "type_hint": "str", "required": True}],
+                "outputs": [{"name": "summary", "type_hint": "str", "required": False}],
+                "position": {"x": 12, "y": 34},
+            }],
+            "edges": [],
+        },
     )
     db.add(run)
     db.commit()
@@ -100,13 +114,18 @@ def _seed_node_run(db, *, messages=SEED_MESSAGES, call_id="call-1") -> str:
     return nr.id
 
 
+def _run_id(db, nrid: str) -> str:
+    return db.get(models.NodeRun, nrid).run_id
+
+
 def test_view_call_chat_returns_seed_without_writing(db_factory):
     db = db_factory()
     nrid = _seed_node_run(db)
 
-    view = cc_api.view_call_chat(nrid, "call-1", db=db)
+    view = cc_api.view_call_chat(_run_id(db, nrid), nrid, "call-1", db=db)
     assert view.messages == SEED_MESSAGES
     assert view.model == "anthropic/claude-sonnet-4.5"
+    assert view.run_id == _run_id(db, nrid)
     # The continuation pins the provider + reasoning variant the call ran with,
     # so it stays on the same model regardless of the current node default.
     assert view.provider_id == "anthropic"
@@ -118,20 +137,26 @@ def test_view_call_chat_returns_seed_without_writing(db_factory):
     assert view.id == ""
     assert db.query(models.CallChat).count() == 0
 
+    other_nrid = _seed_node_run(db, call_id="call-2")
+    with pytest.raises(HTTPException) as exc:
+        cc_api.view_call_chat(_run_id(db, other_nrid), nrid, "call-1", db=db)
+    assert exc.value.status_code == 404
+
 
 def test_get_or_create_continuation_is_idempotent(db_factory):
     db = db_factory()
     nrid = _seed_node_run(db)
+    nr = db.get(models.NodeRun, nrid)
 
-    first = cc_api._get_or_create_continuation(db, nrid, "call-1")
+    first = cc_api._get_or_create_continuation(db, nr, "call-1")
     assert first.id  # a real persisted row now exists
     assert first.messages == SEED_MESSAGES
     # A second call returns the same row, not a duplicate.
-    second = cc_api._get_or_create_continuation(db, nrid, "call-1")
+    second = cc_api._get_or_create_continuation(db, nr, "call-1")
     assert second.id == first.id
     assert db.query(models.CallChat).count() == 1
     # Once started, viewing returns the persisted thread (with its real id).
-    view = cc_api.view_call_chat(nrid, "call-1", db=db)
+    view = cc_api.view_call_chat(nr.run_id, nrid, "call-1", db=db)
     assert view.id == first.id
 
 
@@ -141,7 +166,7 @@ def test_view_call_chat_404_when_no_transcript(db_factory):
     # has no CallTranscript row → not continuable.
     nrid = _seed_node_run(db, messages=None)
     with pytest.raises(HTTPException) as exc:
-        cc_api.view_call_chat(nrid, "call-1", db=db)
+        cc_api.view_call_chat(_run_id(db, nrid), nrid, "call-1", db=db)
     assert exc.value.status_code == 404
 
 
@@ -152,7 +177,7 @@ def test_view_call_chat_uses_call_label_when_set(db_factory):
     nr.llm_calls = [{**nr.llm_calls[0], "label": "summarise item 3"}]
     db.commit()
 
-    view = cc_api.view_call_chat(nrid, "call-1", db=db)
+    view = cc_api.view_call_chat(_run_id(db, nrid), nrid, "call-1", db=db)
     assert view.label == "extract · summarise item 3"
 
 
@@ -160,7 +185,7 @@ def test_view_call_chat_404_when_call_missing(db_factory):
     db = db_factory()
     nrid = _seed_node_run(db)
     with pytest.raises(HTTPException) as exc:
-        cc_api.view_call_chat(nrid, "no-such-call", db=db)
+        cc_api.view_call_chat(_run_id(db, nrid), nrid, "no-such-call", db=db)
     assert exc.value.status_code == 404
 
 
@@ -205,7 +230,7 @@ def test_view_call_chat_truncates_oversized_seed_instead_of_refusing(db_factory)
     db = db_factory()
     nrid = _seed_node_run(db, messages=msgs)
 
-    view = cc_api.view_call_chat(nrid, "call-1", db=db)
+    view = cc_api.view_call_chat(_run_id(db, nrid), nrid, "call-1", db=db)
     # Seeded under the continuation cap, with the latest turn kept and the
     # oldest dropped — never a refusal.
     assert len(json.dumps(view.messages)) <= _TRANSCRIPT_BUDGET_BYTES
@@ -222,7 +247,7 @@ def test_view_call_chat_does_not_read_blob_messages(db_factory):
     nr.llm_calls = [{**nr.llm_calls[0], "messages": SEED_MESSAGES}]  # stray blob seed
     db.commit()
     with pytest.raises(HTTPException) as exc:
-        cc_api.view_call_chat(nrid, "call-1", db=db)
+        cc_api.view_call_chat(_run_id(db, nrid), nrid, "call-1", db=db)
     assert exc.value.status_code == 404
 
 
@@ -239,12 +264,77 @@ def test_run_payload_carries_flag_not_transcript(db_factory):
         .first()
     )
     assert t is not None and t.messages == SEED_MESSAGES
-    # What the run endpoint actually serializes carries the flag, not the seed.
+    # What the node-run detail endpoint serializes carries the flag, not the seed.
     run = db.get(models.Run, db.get(models.NodeRun, nrid).run_id)
-    out = runs_api._run_to_out(run, run.node_runs)
-    call = out.node_runs[0].llm_calls[0]
+    out = runs_api.get_node_run(run.id, nrid, fields=["llm_calls"], db=db)
+    call = out.llm_calls[0]
     assert "messages" not in call
     assert call["has_chat"] is True
+
+
+def test_run_history_is_summary_only_and_node_run_loads_on_demand(db_factory):
+    db = db_factory()
+    nrid = _seed_node_run(db)
+    nr = db.get(models.NodeRun, nrid)
+    nr.inputs = {"big_input": "x" * 1000}
+    nr.outputs = {"big_output": "y" * 1000}
+    nr.logs = ["log " + "z" * 1000]
+    db.commit()
+
+    run = db.get(models.Run, nr.run_id)
+
+    history = runs_api.list_runs(run.workflow_id, db=db)
+    assert len(history) == 1
+    row = history[0]
+    assert not hasattr(row, "node_runs")
+    assert not hasattr(row, "workflow_snapshot")
+    assert row.id == run.id
+    assert row.inputs == {}
+
+    overview = runs_api.get_run(run.id, db=db)
+    assert len(overview.node_runs) == 1
+    summary = overview.node_runs[0]
+    assert summary.id == nrid
+    assert summary.node_id == nr.node_id
+    assert summary.llm_call_count == 1
+    assert summary.log_count == 1
+    assert not hasattr(overview, "outputs")
+    assert not hasattr(summary, "inputs")
+    assert not hasattr(summary, "outputs")
+    assert overview.workflow_snapshot["nodes"][0]["has_code"] is True
+    assert "code" not in overview.workflow_snapshot["nodes"][0]
+
+    outputs = runs_api.get_run_outputs(run.id, db=db)
+    assert outputs.outputs == run.outputs
+
+    snapshot = runs_api.get_run_snapshot(run.id, db=db)
+    assert snapshot.workflow_snapshot["nodes"][0]["code"].startswith("def run")
+    node_code = runs_api.get_run_snapshot_node_code(run.id, nr.node_id, db=db)
+    assert node_code.code == snapshot.workflow_snapshot["nodes"][0]["code"]
+
+    full = runs_api.get_node_run(
+        run.id,
+        nrid,
+        fields=["inputs", "outputs", "logs", "llm_calls"],
+        db=db,
+    )
+    assert full.inputs["big_input"].startswith("x")
+    assert full.outputs["big_output"].startswith("y")
+    assert full.logs[0].startswith("log ")
+    assert full.llm_calls[0]["has_chat"] is True
+    assert not hasattr(full, "tool_calls") or full.tool_calls is None
+
+    logs_only = runs_api.get_node_run(run.id, nrid, fields=["logs"], db=db)
+    assert logs_only.logs[0].startswith("log ")
+    assert logs_only.inputs is None
+    assert logs_only.outputs is None
+    assert logs_only.llm_calls is None
+
+    other_nrid = _seed_node_run(db, call_id="call-2")
+    other_run_id = db.get(models.NodeRun, other_nrid).run_id
+    with pytest.raises(HTTPException) as exc:
+        runs_api.get_node_run(other_run_id, nrid, fields=["logs"], db=db)
+    assert exc.value.status_code == 404
 
 
 def test_delete_run_cascades_transcripts(db_factory):
@@ -350,7 +440,11 @@ def test_send_turn_materializes_chat_lazily_and_persists(db_factory, monkeypatch
     monkeypatch.setattr(cc_api, "build_child_env", lambda: {})
 
     out = cc_api.send_call_chat_turn(
-        nrid, "call-1", schemas.CallChatTurnIn(text="now expand point 2"), db=db
+        _run_id(db, nrid),
+        nrid,
+        "call-1",
+        schemas.CallChatTurnIn(text="now expand point 2"),
+        db=db,
     )
     assert out.turn_id.startswith("turn-")
 
@@ -371,7 +465,9 @@ def test_send_turn_empty_message_400_without_materializing(db_factory):
     db = db_factory()
     nrid = _seed_node_run(db)
     with pytest.raises(HTTPException) as exc:
-        cc_api.send_call_chat_turn(nrid, "call-1", schemas.CallChatTurnIn(text="  "), db=db)
+        cc_api.send_call_chat_turn(
+            _run_id(db, nrid), nrid, "call-1", schemas.CallChatTurnIn(text="  "), db=db
+        )
     assert exc.value.status_code == 400
     # An empty send must not leave behind a continuation row.
     assert db.query(models.CallChat).count() == 0
@@ -396,7 +492,11 @@ def test_send_turn_uses_switched_model_and_persists_selection(db_factory, monkey
     monkeypatch.setenv("DEFAULT_NODE_VARIANT", "")
 
     cc_api.send_call_chat_turn(
-        nrid, "call-1", schemas.CallChatTurnIn(text="hi", model="openai/gpt-4o"), db=db
+        _run_id(db, nrid),
+        nrid,
+        "call-1",
+        schemas.CallChatTurnIn(text="hi", model="openai/gpt-4o"),
+        db=db,
     )
 
     # The turn uses the switched model, and the continuation remembers the new
@@ -488,7 +588,8 @@ def test_send_turn_coalesces_dangling_user_message(db_factory, monkeypatch):
     nrid = _seed_node_run(db)
     # Materialize the continuation, then mutate the ORM row to simulate a prior
     # failed turn that left a dangling trailing user message.
-    row = cc_api._get_or_create_continuation(db, nrid, "call-1")
+    nr = db.get(models.NodeRun, nrid)
+    row = cc_api._get_or_create_continuation(db, nr, "call-1")
     row.messages = [*SEED_MESSAGES, {"role": "user", "content": "first try"}]
     db.commit()
 
@@ -501,7 +602,11 @@ def test_send_turn_coalesces_dangling_user_message(db_factory, monkeypatch):
     monkeypatch.setattr(cc_api, "build_child_env", lambda: {})
 
     cc_api.send_call_chat_turn(
-        nrid, "call-1", schemas.CallChatTurnIn(text="second try"), db=db
+        nr.run_id,
+        nrid,
+        "call-1",
+        schemas.CallChatTurnIn(text="second try"),
+        db=db,
     )
 
     def _no_consecutive_users(msgs):

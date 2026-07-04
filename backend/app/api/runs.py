@@ -3,7 +3,8 @@ import os
 import sys
 import traceback
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from typing import Annotated
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal, get_db
@@ -61,43 +62,194 @@ def _serialize_workflow(w: models.Workflow) -> dict:
     }
 
 
-def _run_to_out(run: models.Run, node_runs) -> schemas.RunOut:
-    return schemas.RunOut(
+def _snapshot_summary(snapshot: dict | None) -> dict | None:
+    """Code-free graph shape for snapshot canvas rendering."""
+    if not snapshot:
+        return None
+    return {
+        "id": snapshot.get("id"),
+        "input_node_id": snapshot.get("input_node_id"),
+        "output_node_id": snapshot.get("output_node_id"),
+        "nodes": [
+            {
+                "id": n.get("id"),
+                "name": n.get("name") or n.get("id") or "",
+                "description": n.get("description") or "",
+                "inputs": n.get("inputs") or [],
+                "outputs": n.get("outputs") or [],
+                "position": n.get("position") or {"x": 0, "y": 0},
+                "has_code": bool(n.get("code")),
+            }
+            for n in (snapshot.get("nodes") or [])
+            if isinstance(n, dict) and n.get("id")
+        ],
+        "edges": [
+            {
+                "id": e.get("id"),
+                "from_node_id": e.get("from_node_id"),
+                "from_output": e.get("from_output"),
+                "to_node_id": e.get("to_node_id"),
+                "to_input": e.get("to_input"),
+            }
+            for e in (snapshot.get("edges") or [])
+            if isinstance(e, dict)
+        ],
+    }
+
+
+_NODE_RUN_FIELDS = ("inputs", "outputs", "logs", "llm_calls", "tool_calls")
+
+
+def _parse_node_run_fields(fields: list[str] | None) -> tuple[str, ...]:
+    # FastAPI sends repeated query params as a list, but accepting comma-joined
+    # values keeps the helper convenient for direct callers and URLs.
+    raw: list[str] = []
+    for item in fields or []:
+        raw.extend(part.strip() for part in item.split(","))
+    selected = tuple(dict.fromkeys(f for f in raw if f))
+    if not selected:
+        raise HTTPException(
+            400,
+            detail=f"`fields` is required; choose from {list(_NODE_RUN_FIELDS)}",
+        )
+    bad = [f for f in selected if f not in _NODE_RUN_FIELDS]
+    if bad:
+        raise HTTPException(
+            400,
+            detail=f"unknown field(s) {bad}; allowed: {list(_NODE_RUN_FIELDS)}",
+        )
+    return selected
+
+
+def _node_run_detail(nr: models.NodeRun, fields: tuple[str, ...]) -> schemas.NodeRunDetailOut:
+    payload: dict = {
+        "id": nr.id,
+        "node_id": nr.node_id,
+        "status": nr.status,
+        "error": nr.error,
+        "duration_ms": nr.duration_ms or 0,
+        "cost": nr.cost or 0.0,
+    }
+    if "inputs" in fields:
+        payload["inputs"] = nr.inputs or {}
+    if "outputs" in fields:
+        payload["outputs"] = nr.outputs or {}
+    if "logs" in fields:
+        payload["logs"] = nr.logs or []
+    if "llm_calls" in fields:
+        payload["llm_calls"] = nr.llm_calls or []
+    if "tool_calls" in fields:
+        payload["tool_calls"] = nr.tool_calls or []
+    return schemas.NodeRunDetailOut(**payload)
+
+
+def _node_run_summary(nr: models.NodeRun) -> schemas.NodeRunSummaryOut:
+    return schemas.NodeRunSummaryOut(
+        id=nr.id,
+        node_id=nr.node_id,
+        status=nr.status,
+        error=nr.error,
+        duration_ms=nr.duration_ms or 0,
+        cost=nr.cost or 0.0,
+        log_count=len(nr.logs or []),
+        llm_call_count=len(nr.llm_calls or []),
+        tool_call_count=len(nr.tool_calls or []),
+    )
+
+
+def _run_model_stats(node_runs) -> list[schemas.RunModelStatOut]:
+    by_model: dict[str, dict] = {}
+    for nr in node_runs:
+        for call in nr.llm_calls or []:
+            if not isinstance(call, dict):
+                continue
+            model = (call.get("model") or "unknown").strip() or "unknown"
+            cur = by_model.setdefault(
+                model,
+                {
+                    "model": model,
+                    "calls": 0,
+                    "promptTokens": 0,
+                    "completionTokens": 0,
+                    "cost": 0.0,
+                },
+            )
+            cur["calls"] += 1
+            usage = call.get("usage") if isinstance(call.get("usage"), dict) else {}
+            cur["promptTokens"] += int(usage.get("prompt_tokens") or 0)
+            cur["completionTokens"] += int(usage.get("completion_tokens") or 0)
+            cur["cost"] += float(call.get("cost") or 0.0)
+    rows = [schemas.RunModelStatOut(**v) for v in by_model.values()]
+    return sorted(rows, key=lambda r: (-r.cost, -r.calls))
+
+
+def _run_tool_call_count(node_runs) -> int:
+    return sum(len(nr.tool_calls or []) for nr in node_runs)
+
+
+def _run_overview(run: models.Run, node_runs) -> schemas.RunOverviewOut:
+    return schemas.RunOverviewOut(
         id=run.id,
         workflow_id=run.workflow_id,
         kind=run.kind,
         status=run.status,
         inputs=run.inputs or {},
-        outputs=run.outputs or {},
         error=run.error,
         started_at=run.started_at,
         ended_at=run.ended_at,
         total_cost=run.total_cost or 0.0,
-        workflow_snapshot=run.workflow_snapshot,
-        node_runs=[
-            schemas.NodeRunOut(
-                id=nr.id,
-                node_id=nr.node_id,
-                status=nr.status,
-                inputs=nr.inputs or {},
-                outputs=nr.outputs or {},
-                logs=nr.logs or [],
-                # The persisted blob already excludes the verbatim transcript
-                # (lifted into call_transcripts at persist time) and carries a
-                # has_chat flag for the trace UI's "open in chat" affordance, so
-                # it ships as-is — no transcript ever rides the run payload.
-                llm_calls=nr.llm_calls or [],
-                tool_calls=nr.tool_calls or [],
-                error=nr.error,
-                duration_ms=nr.duration_ms or 0,
-                cost=nr.cost or 0.0,
-            )
-            for nr in node_runs
-        ],
+        workflow_snapshot=_snapshot_summary(run.workflow_snapshot),
+        node_runs=[_node_run_summary(nr) for nr in node_runs],
+        model_stats=_run_model_stats(node_runs),
+        tool_call_count=_run_tool_call_count(node_runs),
     )
 
 
-@router.post("/workflows/{wid}/runs", response_model=schemas.RunOut)
+def _run_summary(run: models.Run) -> schemas.RunSummaryOut:
+    return schemas.RunSummaryOut(
+        id=run.id,
+        workflow_id=run.workflow_id,
+        kind=run.kind,
+        status=run.status,
+        inputs=run.inputs or {},
+        error=run.error,
+        started_at=run.started_at,
+        ended_at=run.ended_at,
+        total_cost=run.total_cost or 0.0,
+    )
+
+
+def _run_card(run, status_by_node: dict[str, str]) -> schemas.RunCardOut:
+    snapshot = run.workflow_snapshot or {}
+    nodes = snapshot.get("nodes") or []
+    node_names = {
+        n.get("id"): n.get("name") or n.get("id")
+        for n in nodes
+        if isinstance(n, dict)
+    }
+    card_nodes = [
+        schemas.RunCardNodeOut(
+            id=n.get("id") or "",
+            name=n.get("name") or n.get("id") or "",
+            status=status_by_node.get(n.get("id"), "pending"),
+        )
+        for n in nodes
+        if isinstance(n, dict) and n.get("id")
+    ]
+    return schemas.RunCardOut(
+        id=run.id,
+        workflow_id=run.workflow_id,
+        status=run.status,
+        error=run.error,
+        total_cost=run.total_cost or 0.0,
+        node_count=len(nodes),
+        nodes=card_nodes,
+        input_node_name=node_names.get(snapshot.get("input_node_id")),
+        output_node_name=node_names.get(snapshot.get("output_node_id")),
+    )
+
+
+@router.post("/workflows/{wid}/runs", response_model=schemas.RunOverviewOut)
 def start_run(wid: str, body: schemas.RunStartIn, db: Session = Depends(get_db)):
     w = db.get(models.Workflow, wid)
     if not w:
@@ -125,10 +277,10 @@ def start_run(wid: str, body: schemas.RunStartIn, db: Session = Depends(get_db))
 
     run_service.start_run(run.id, wf_data, body.inputs, default_model)
 
-    return _run_to_out(run, [])
+    return _run_overview(run, [])
 
 
-@router.post("/runs/{rid}/rerun", response_model=schemas.RunOut)
+@router.post("/runs/{rid}/rerun", response_model=schemas.RunOverviewOut)
 def rerun_from_snapshot(rid: str, body: schemas.RunStartIn, db: Session = Depends(get_db)):
     """Re-run a frozen graph snapshot with fresh inputs. The new run executes
     against the *stored* `workflow_snapshot` of the source run — not the
@@ -161,7 +313,7 @@ def rerun_from_snapshot(rid: str, body: schemas.RunStartIn, db: Session = Depend
     db.refresh(run)
 
     run_service.start_run(run.id, wf_data, body.inputs, default_model)
-    return _run_to_out(run, [])
+    return _run_overview(run, [])
 
 
 @router.post("/runs/{rid}/cancel")
@@ -218,23 +370,109 @@ def delete_run(rid: str, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
-@router.get("/runs/{rid}", response_model=schemas.RunOut)
+@router.get("/runs/{rid}", response_model=schemas.RunOverviewOut)
 def get_run(rid: str, db: Session = Depends(get_db)):
     run = db.get(models.Run, rid)
     if not run:
         raise HTTPException(404)
-    return _run_to_out(run, run.node_runs)
+    return _run_overview(run, run.node_runs)
 
 
-@router.get("/workflows/{wid}/runs", response_model=list[schemas.RunOut])
+@router.get("/runs/{rid}/outputs", response_model=schemas.RunOutputsOut)
+def get_run_outputs(rid: str, db: Session = Depends(get_db)):
+    run = db.get(models.Run, rid)
+    if not run:
+        raise HTTPException(404)
+    return schemas.RunOutputsOut(outputs=run.outputs or {})
+
+
+@router.get("/runs/{rid}/snapshot", response_model=schemas.RunSnapshotOut)
+def get_run_snapshot(rid: str, db: Session = Depends(get_db)):
+    run = db.get(models.Run, rid)
+    if not run:
+        raise HTTPException(404)
+    return schemas.RunSnapshotOut(workflow_snapshot=run.workflow_snapshot)
+
+
+@router.get("/runs/{rid}/snapshot/nodes/{nid}/code", response_model=schemas.SnapshotNodeCodeOut)
+def get_run_snapshot_node_code(rid: str, nid: str, db: Session = Depends(get_db)):
+    run = db.get(models.Run, rid)
+    if not run:
+        raise HTTPException(404)
+    for node in (run.workflow_snapshot or {}).get("nodes", []) or []:
+        if isinstance(node, dict) and node.get("id") == nid:
+            return schemas.SnapshotNodeCodeOut(
+                node_id=nid,
+                code=node.get("code") or schemas.DEFAULT_CODE,
+            )
+    raise HTTPException(404, detail="snapshot node not found")
+
+
+@router.get("/runs/{rid}/card", response_model=schemas.RunCardOut)
+def get_run_card(rid: str, db: Session = Depends(get_db)):
+    run = (
+        db.query(
+            models.Run.id,
+            models.Run.workflow_id,
+            models.Run.status,
+            models.Run.error,
+            models.Run.total_cost,
+            models.Run.workflow_snapshot,
+        )
+        .filter(models.Run.id == rid)
+        .first()
+    )
+    if not run:
+        raise HTTPException(404)
+    statuses = {
+        node_id: status
+        for node_id, status in db.query(models.NodeRun.node_id, models.NodeRun.status)
+        .filter_by(run_id=rid)
+        .all()
+    }
+    return _run_card(run, statuses)
+
+
+@router.get(
+    "/runs/{rid}/node-runs/{nrid}",
+    response_model=schemas.NodeRunDetailOut,
+    response_model_exclude_none=True,
+)
+def get_node_run(
+    rid: str,
+    nrid: str,
+    fields: Annotated[list[str] | None, Query()] = None,
+    db: Session = Depends(get_db),
+):
+    nr = (
+        db.query(models.NodeRun)
+        .filter_by(id=nrid, run_id=rid)
+        .first()
+    )
+    if not nr:
+        raise HTTPException(404)
+    return _node_run_detail(nr, _parse_node_run_fields(fields))
+
+
+@router.get("/workflows/{wid}/runs", response_model=list[schemas.RunSummaryOut])
 def list_runs(wid: str, db: Session = Depends(get_db)):
     rows = (
-        db.query(models.Run)
-        .filter_by(workflow_id=wid)
+        db.query(
+            models.Run.id,
+            models.Run.workflow_id,
+            models.Run.kind,
+            models.Run.status,
+            models.Run.inputs,
+            models.Run.error,
+            models.Run.started_at,
+            models.Run.ended_at,
+            models.Run.total_cost,
+        )
+        .filter(models.Run.workflow_id == wid)
         .order_by(models.Run.started_at.desc())
         .all()
     )
-    return [_run_to_out(r, r.node_runs) for r in rows]
+    return [_run_summary(r) for r in rows]
 
 
 def _run_row_exists(rid: str) -> bool:

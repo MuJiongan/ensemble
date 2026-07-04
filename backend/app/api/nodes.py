@@ -29,9 +29,9 @@ def create_node(wid: str, body: schemas.NodeIn, db: Session = Depends(get_db)):
     return to_node_out(n)
 
 
-@router.patch("/nodes/{nid}", response_model=schemas.NodeOut)
-def patch_node(nid: str, body: schemas.NodePatch, db: Session = Depends(get_db)):
-    n = db.get(models.Node, nid)
+@router.patch("/workflows/{wid}/nodes/{nid}", response_model=schemas.NodeOut)
+def patch_node(wid: str, nid: str, body: schemas.NodePatch, db: Session = Depends(get_db)):
+    n = db.query(models.Node).filter_by(id=nid, workflow_id=wid).first()
     if not n:
         raise HTTPException(404)
     if body.name is not None:
@@ -51,9 +51,9 @@ def patch_node(nid: str, body: schemas.NodePatch, db: Session = Depends(get_db))
     return to_node_out(n)
 
 
-@router.delete("/nodes/{nid}")
-def delete_node(nid: str, db: Session = Depends(get_db)):
-    n = db.get(models.Node, nid)
+@router.delete("/workflows/{wid}/nodes/{nid}")
+def delete_node(wid: str, nid: str, db: Session = Depends(get_db)):
+    n = db.query(models.Node).filter_by(id=nid, workflow_id=wid).first()
     if not n:
         raise HTTPException(404)
     cascade_delete_node(db, n)

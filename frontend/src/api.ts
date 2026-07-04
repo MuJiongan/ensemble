@@ -1,5 +1,6 @@
 import type {
-  Workflow, WorkflowDetail, WorkflowExport, WFNode, WFEdge, Run, IOPort,
+  Workflow, WorkflowDetail, WorkflowExport, WFNode, WFEdge, Run, RunSummary,
+  RunCard, NodeRun, IOPort, NodeRunField, RunOutputs, RunSnapshot, SnapshotNodeCode,
   OrchestratorSession, ChatHistory, OrchestratorEvent, FsFile,
   CallChat, ModelSelection,
 } from './types';
@@ -42,6 +43,20 @@ function wsUrl(path: string): string {
   return `${proto}//${window.location.host}${path}`;
 }
 
+function qs(params: Record<string, string | number | boolean | undefined | null | string[]>): string {
+  const p = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null) continue;
+    if (Array.isArray(value)) {
+      value.forEach((v) => p.append(key, v));
+    } else {
+      p.set(key, String(value));
+    }
+  }
+  const s = p.toString();
+  return s ? `?${s}` : '';
+}
+
 export interface NewNodePayload {
   name: string;
   description?: string;
@@ -74,13 +89,15 @@ export const api = {
 
   createNode: (wid: string, body: NewNodePayload) =>
     request<WFNode>('POST', `/api/workflows/${wid}/nodes`, body),
-  patchNode: (id: string, body: PatchNodePayload) =>
-    request<WFNode>('PATCH', `/api/nodes/${id}`, body),
-  deleteNode: (id: string) => request<{ ok: true }>('DELETE', `/api/nodes/${id}`),
+  patchNode: (wid: string, id: string, body: PatchNodePayload) =>
+    request<WFNode>('PATCH', `/api/workflows/${wid}/nodes/${id}`, body),
+  deleteNode: (wid: string, id: string) =>
+    request<{ ok: true }>('DELETE', `/api/workflows/${wid}/nodes/${id}`),
 
   createEdge: (wid: string, body: Omit<WFEdge, 'id' | 'workflow_id'>) =>
     request<WFEdge>('POST', `/api/workflows/${wid}/edges`, body),
-  deleteEdge: (id: string) => request<{ ok: true }>('DELETE', `/api/edges/${id}`),
+  deleteEdge: (wid: string, id: string) =>
+    request<{ ok: true }>('DELETE', `/api/workflows/${wid}/edges/${id}`),
 
   startRun: (wid: string, inputs: Record<string, unknown>) =>
     request<Run>('POST', `/api/workflows/${wid}/runs`, { inputs, kind: 'user' }, 'node'),
@@ -90,7 +107,14 @@ export const api = {
     request<{ cancelled: boolean }>('POST', `/api/runs/${rid}/cancel`),
   deleteRun: (rid: string) => request<{ ok: true }>('DELETE', `/api/runs/${rid}`),
   getRun: (rid: string) => request<Run>('GET', `/api/runs/${rid}`),
-  listRuns: (wid: string) => request<Run[]>('GET', `/api/workflows/${wid}/runs`),
+  getRunOutputs: (rid: string) => request<RunOutputs>('GET', `/api/runs/${rid}/outputs`),
+  getRunSnapshot: (rid: string) => request<RunSnapshot>('GET', `/api/runs/${rid}/snapshot`),
+  getSnapshotNodeCode: (rid: string, nid: string) =>
+    request<SnapshotNodeCode>('GET', `/api/runs/${rid}/snapshot/nodes/${nid}/code`),
+  getRunCard: (rid: string) => request<RunCard>('GET', `/api/runs/${rid}/card`),
+  getNodeRun: (rid: string, nrid: string, fields: NodeRunField[]) =>
+    request<NodeRun>('GET', `/api/runs/${rid}/node-runs/${nrid}${qs({ fields })}`),
+  listRuns: (wid: string) => request<RunSummary[]>('GET', `/api/workflows/${wid}/runs`),
   runEventsUrl: (rid: string) => wsUrl(`/api/runs/${rid}/events`),
 
   // --- file viewer ---------------------------------------------------------
@@ -105,26 +129,27 @@ export const api = {
     request<OrchestratorSession>('POST', `/api/workflows/${wid}/sessions`),
   listSessions: (wid: string) =>
     request<OrchestratorSession[]>('GET', `/api/workflows/${wid}/sessions`),
-  getSessionMessages: (sid: string) =>
-    request<ChatHistory>('GET', `/api/sessions/${sid}/messages`),
-  clearSessionMessages: (sid: string) =>
-    request<{ ok: true }>('DELETE', `/api/sessions/${sid}/messages`),
-  cancelOrchestratorTurn: (sid: string) =>
-    request<{ cancelled: boolean }>('POST', `/api/sessions/${sid}/cancel`),
+  getSessionMessages: (wid: string, sid: string) =>
+    request<ChatHistory>('GET', `/api/workflows/${wid}/sessions/${sid}/messages`),
+  clearSessionMessages: (wid: string, sid: string) =>
+    request<{ ok: true }>('DELETE', `/api/workflows/${wid}/sessions/${sid}/messages`),
+  cancelOrchestratorTurn: (wid: string, sid: string) =>
+    request<{ cancelled: boolean }>('POST', `/api/workflows/${wid}/sessions/${sid}/cancel`),
 
   // --- continue-chat (agent continuations) -------------------------------------
   /** View an agent call's continuation: the persisted thread if it's been
    * started, else a not-yet-persisted seed (id=""). Read-only — the row is
    * materialized lazily by the first turn, so viewing never writes. */
-  viewCallChat: (nodeRunId: string, callId: string) =>
+  viewCallChat: (runId: string, nodeRunId: string, callId: string) =>
     request<CallChat>(
       'GET',
-      `/api/node-runs/${nodeRunId}/llm-calls/${encodeURIComponent(callId)}/chat`,
+      `/api/runs/${runId}/node-runs/${nodeRunId}/llm-calls/${encodeURIComponent(callId)}/chat`,
     ),
   /** Send a follow-up turn (materializing the continuation on the first one).
    * `sel` pins the provider/model/variant for this turn (defaults to the
    * continuation's recorded model; overridden by the model switcher). */
   sendCallChatTurn: (
+    runId: string,
     nodeRunId: string,
     callId: string,
     text: string,
@@ -132,7 +157,7 @@ export const api = {
   ) =>
     request<{ turn_id: string }>(
       'POST',
-      `/api/node-runs/${nodeRunId}/llm-calls/${encodeURIComponent(callId)}/turns`,
+      `/api/runs/${runId}/node-runs/${nodeRunId}/llm-calls/${encodeURIComponent(callId)}/turns`,
       // Only carry a model name when a provider is actually selected — the
       // provider rides in via headers (callChatTurnNodeHeaders also no-ops
       // without one), so sending a bare model would pair it with no/old
@@ -151,13 +176,15 @@ export const api = {
    * EventSource only supports GET.
    */
   streamUserMessage: async (
+    wid: string,
     sid: string,
     text: string,
     onEvent: (ev: OrchestratorEvent) => void,
     signal?: AbortSignal,
     attachments?: { dataUrl: string; filename: string }[],
   ): Promise<void> => {
-    const res = await fetch(`/api/sessions/${sid}/messages`, {
+    const path = `/api/workflows/${wid}/sessions/${sid}/messages`;
+    const res = await fetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...settingsHeaders('orchestrator') },
       body: JSON.stringify({
@@ -171,7 +198,7 @@ export const api = {
     });
     if (!res.ok || !res.body) {
       const body = await res.text().catch(() => '');
-      throw new Error(`POST /api/sessions/${sid}/messages → ${res.status}: ${body}`);
+      throw new Error(`POST ${path} → ${res.status}: ${body}`);
     }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();

@@ -164,7 +164,7 @@ export function useOrchestratorStream({
     };
 
     try {
-      await api.streamUserMessage(sid, text, handleEvent, ctrl.signal, attachments);
+      await api.streamUserMessage(wid, sid, text, handleEvent, ctrl.signal, attachments);
     } catch (e) {
       if (ctrl.signal.aborted) {
         updateAssistant(wid, (a) => ({ ...a, streaming: false }));

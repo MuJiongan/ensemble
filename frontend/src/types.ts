@@ -70,21 +70,37 @@ export interface NodeRun {
   id: string;
   node_id: string;
   status: NodeRunStatus;
-  inputs: Record<string, unknown>;
-  outputs: Record<string, unknown>;
-  logs: unknown[];
-  llm_calls: unknown[];
-  tool_calls: unknown[];
+  inputs?: Record<string, unknown>;
+  outputs?: Record<string, unknown>;
+  logs?: unknown[];
+  llm_calls?: unknown[];
+  tool_calls?: unknown[];
   error: string | null;
   duration_ms: number;
   cost: number;
+}
+
+export type NodeRunField = 'inputs' | 'outputs' | 'logs' | 'llm_calls' | 'tool_calls';
+
+export interface NodeRunSummary {
+  id: string;
+  node_id: string;
+  status: NodeRunStatus;
+  error: string | null;
+  duration_ms: number;
+  cost: number;
+  log_count: number;
+  llm_call_count: number;
+  tool_call_count: number;
 }
 
 export interface RunWorkflowSnapshotNode {
   id: string;
   name: string;
   description?: string;
-  code: string;
+  /** Present only after loading a full snapshot or snapshot node code. */
+  code?: string;
+  has_code?: boolean;
   inputs: IOPort[];
   outputs: IOPort[];
   position?: { x: number; y: number };
@@ -106,19 +122,64 @@ export interface RunWorkflowSnapshot {
   edges: RunWorkflowSnapshotEdge[];
 }
 
-export interface Run {
+export interface RunSummary {
   id: string;
   workflow_id: string;
   kind: string;
   status: RunStatus;
   inputs: Record<string, unknown>;
-  outputs: Record<string, unknown>;
   error: string | null;
   started_at: string | null;
   ended_at: string | null;
   total_cost: number;
+}
+
+export interface RunModelStat {
+  model: string;
+  calls: number;
+  promptTokens: number;
+  completionTokens: number;
+  cost: number;
+}
+
+export interface Run extends RunSummary {
+  /** Code-free snapshot summary. Full snapshot/code loads on demand. */
   workflow_snapshot: RunWorkflowSnapshot | null;
-  node_runs: NodeRun[];
+  /** Lightweight per-node status rows. Full traces load via GET /api/runs/{run_id}/node-runs/{id}. */
+  node_runs: NodeRunSummary[];
+  model_stats: RunModelStat[];
+  tool_call_count: number;
+}
+
+export interface RunOutputs {
+  outputs: Record<string, unknown>;
+}
+
+export interface RunSnapshot {
+  workflow_snapshot: RunWorkflowSnapshot | null;
+}
+
+export interface SnapshotNodeCode {
+  node_id: string;
+  code: string;
+}
+
+export interface RunCardNode {
+  id: string;
+  name: string;
+  status: NodeRunStatus;
+}
+
+export interface RunCard {
+  id: string;
+  workflow_id: string;
+  status: RunStatus;
+  error: string | null;
+  total_cost: number;
+  node_count: number;
+  nodes: RunCardNode[];
+  input_node_name: string | null;
+  output_node_name: string | null;
 }
 
 /** How a provider was connected. ``api`` providers paste a bearer token (and
@@ -342,6 +403,10 @@ export type ChatHistoryMessage = ChatHistoryUser | ChatHistoryAssistant;
 
 export interface ChatHistory {
   messages: ChatHistoryMessage[];
+  /** True while the backend still has an in-flight orchestrator turn for this session. */
+  active_turn?: boolean;
+  /** Running/pending orchestrator-started runs for this workflow. */
+  active_runs?: Pick<Run, 'id' | 'workflow_id' | 'status'>[];
 }
 
 export type OrchestratorEvent =
@@ -388,6 +453,7 @@ export type OrchestratorEvent =
 export interface CallChat {
   id: string;
   workflow_id: string;
+  run_id: string;
   node_run_id: string;
   call_id: string;
   label: string;

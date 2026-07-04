@@ -53,6 +53,12 @@ def _signal_cancel(session_id: str) -> bool:
         return True
 
 
+def _is_turn_active(session_id: str) -> bool:
+    """Return True while a session owns an in-flight orchestrator turn."""
+    with _TURN_LOCK:
+        return session_id in _TURN_CANCEL_EVENTS
+
+
 def _was_superseded(session_id: str, my_event: threading.Event) -> bool:
     """True if some other turn replaced our event in the registry — i.e. the
     user sent a new message instead of clicking cancel."""

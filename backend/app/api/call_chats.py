@@ -10,10 +10,14 @@ is a pure read (it computes the seed from the recorded transcript on the fly),
 so merely opening a call to look at it never writes a row.
 
 Endpoints:
-  GET  /api/node-runs/{nrid}/llm-calls/{call_id}/chat   — view continuation (read-only)
-  POST /api/node-runs/{nrid}/llm-calls/{call_id}/turns  — send a turn → {turn_id}
-  WS   /api/call-chats/turns/{turn_id}/events           — stream turn events
-  POST /api/call-chats/turns/{turn_id}/cancel           — stop a streaming turn
+  GET  /api/runs/{rid}/node-runs/{nrid}/llm-calls/{call_id}/chat
+       view continuation (read-only)
+  POST /api/runs/{rid}/node-runs/{nrid}/llm-calls/{call_id}/turns
+       send a turn → {turn_id}
+  WS   /api/call-chats/turns/{turn_id}/events
+       stream turn events
+  POST /api/call-chats/turns/{turn_id}/cancel
+       stop a streaming turn
 """
 from __future__ import annotations
 import os
@@ -33,13 +37,14 @@ from app.runner.runner import build_child_env
 router = APIRouter(prefix="/api", tags=["call-chats"])
 
 
-def _chat_to_out(chat: models.CallChat) -> schemas.CallChatOut:
+def _chat_to_out(chat: models.CallChat, run_id: str) -> schemas.CallChatOut:
     return schemas.CallChatOut(
         # Empty for a not-yet-persisted view (no row exists until the first
         # turn); the frontend addresses a continuation by (node_run_id, call_id),
         # not this surrogate id.
         id=chat.id or "",
         workflow_id=chat.workflow_id,
+        run_id=run_id,
         node_run_id=chat.node_run_id,
         call_id=chat.call_id,
         label=chat.label or "",
@@ -59,6 +64,17 @@ def _find_call(llm_calls, call_id: str):
     return None, 0
 
 
+def _get_node_run(db: Session, rid: str, nrid: str) -> models.NodeRun:
+    nr = (
+        db.query(models.NodeRun)
+        .filter_by(id=nrid, run_id=rid)
+        .first()
+    )
+    if nr is None:
+        raise HTTPException(404, detail="node run not found")
+    return nr
+
+
 def _node_name(db: Session, node_run: models.NodeRun) -> str:
     """Resolve the node's display name from its run's frozen snapshot (stable
     even if the live node was later renamed or deleted)."""
@@ -70,7 +86,7 @@ def _node_name(db: Session, node_run: models.NodeRun) -> str:
     return node_run.node_id
 
 
-def _build_continuation(db: Session, nrid: str, call_id: str) -> models.CallChat:
+def _build_continuation(db: Session, nr: models.NodeRun, call_id: str) -> models.CallChat:
     """Build — but do NOT persist — the continuation for one agent call,
     seeded from its recorded transcript. Raises 404 if the node run, the call,
     or its transcript isn't there.
@@ -79,15 +95,12 @@ def _build_continuation(db: Session, nrid: str, call_id: str) -> models.CallChat
     it's trimmed to fit here — seed-into-chat time — via the same cap a
     continuation uses, so an oversized call degrades to "continue with the oldest
     turns dropped" rather than refusing outright."""
-    nr = db.get(models.NodeRun, nrid)
-    if nr is None:
-        raise HTTPException(404, detail="node run not found")
     call, idx = _find_call(nr.llm_calls, call_id)
     if call is None:
         raise HTTPException(404, detail="llm call not found")
     transcript = (
         db.query(models.CallTranscript)
-        .filter_by(node_run_id=nrid, call_id=call_id)
+        .filter_by(node_run_id=nr.id, call_id=call_id)
         .first()
     )
     seed = chat_service.cap_transcript(transcript.messages) if transcript else None
@@ -105,7 +118,7 @@ def _build_continuation(db: Session, nrid: str, call_id: str) -> models.CallChat
     )
     return models.CallChat(
         workflow_id=run.workflow_id if run else "",
-        node_run_id=nrid,
+        node_run_id=nr.id,
         call_id=call_id,
         label=label,
         model=call.get("model") or "",
@@ -116,17 +129,17 @@ def _build_continuation(db: Session, nrid: str, call_id: str) -> models.CallChat
     )
 
 
-def _get_or_create_continuation(db: Session, nrid: str, call_id: str) -> models.CallChat:
+def _get_or_create_continuation(db: Session, nr: models.NodeRun, call_id: str) -> models.CallChat:
     """Return the persisted continuation for one call, creating it from the
     recorded transcript on first use. One row per (node_run_id, call_id)."""
     existing = (
         db.query(models.CallChat)
-        .filter_by(node_run_id=nrid, call_id=call_id)
+        .filter_by(node_run_id=nr.id, call_id=call_id)
         .first()
     )
     if existing is not None:
         return existing
-    chat = _build_continuation(db, nrid, call_id)
+    chat = _build_continuation(db, nr, call_id)
     db.add(chat)
     try:
         db.commit()
@@ -137,7 +150,7 @@ def _get_or_create_continuation(db: Session, nrid: str, call_id: str) -> models.
         db.rollback()
         existing = (
             db.query(models.CallChat)
-            .filter_by(node_run_id=nrid, call_id=call_id)
+            .filter_by(node_run_id=nr.id, call_id=call_id)
             .first()
         )
         if existing is not None:
@@ -148,10 +161,10 @@ def _get_or_create_continuation(db: Session, nrid: str, call_id: str) -> models.
 
 
 @router.get(
-    "/node-runs/{nrid}/llm-calls/{call_id}/chat",
+    "/runs/{rid}/node-runs/{nrid}/llm-calls/{call_id}/chat",
     response_model=schemas.CallChatOut,
 )
-def view_call_chat(nrid: str, call_id: str, db: Session = Depends(get_db)):
+def view_call_chat(rid: str, nrid: str, call_id: str, db: Session = Depends(get_db)):
     """Read-only view of a call's continuation.
 
     If it has been started (a turn was sent), return the persisted thread.
@@ -159,22 +172,24 @@ def view_call_chat(nrid: str, call_id: str, db: Session = Depends(get_db)):
     transcript — ``id`` is empty because no row exists yet; the first turn
     materializes it. Never writes, so opening a call merely to look at it doesn't
     accumulate an empty continuation."""
+    nr = _get_node_run(db, rid, nrid)
     existing = (
         db.query(models.CallChat)
         .filter_by(node_run_id=nrid, call_id=call_id)
         .first()
     )
     if existing is not None:
-        return _chat_to_out(existing)
+        return _chat_to_out(existing, nr.run_id)
     # Built, not added to the session → returned for viewing without a write.
-    return _chat_to_out(_build_continuation(db, nrid, call_id))
+    return _chat_to_out(_build_continuation(db, nr, call_id), nr.run_id)
 
 
 @router.post(
-    "/node-runs/{nrid}/llm-calls/{call_id}/turns",
+    "/runs/{rid}/node-runs/{nrid}/llm-calls/{call_id}/turns",
     response_model=schemas.CallChatTurnOut,
 )
 def send_call_chat_turn(
+    rid: str,
     nrid: str,
     call_id: str,
     body: schemas.CallChatTurnIn,
@@ -183,11 +198,12 @@ def send_call_chat_turn(
     text = (body.text or "").strip()
     if not text:
         raise HTTPException(400, detail="empty message")
+    nr = _get_node_run(db, rid, nrid)
 
     # Materialize the continuation on first turn — viewing it is a pure read that
     # never created a row. The empty-message check is above so an empty send is
     # rejected without writing one.
-    chat = _get_or_create_continuation(db, nrid, call_id)
+    chat = _get_or_create_continuation(db, nr, call_id)
 
     # Resolve the model + provider/variant for this turn as a MATCHED pair, so
     # the turn never sends one provider's request with another's model id.

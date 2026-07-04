@@ -112,6 +112,7 @@ export function useCallChatStream({
   };
 
   const streamToCallChat = async (
+    runId: string,
     nodeRunId: string,
     callId: string,
     text: string,
@@ -133,7 +134,7 @@ export function useCallChatStream({
 
     let turnId: string;
     try {
-      const res = await api.sendCallChatTurn(nodeRunId, callId, text, sel);
+      const res = await api.sendCallChatTurn(runId, nodeRunId, callId, text, sel);
       turnId = res.turn_id;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

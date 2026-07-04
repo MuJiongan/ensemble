@@ -2,10 +2,10 @@
 
 POST   /api/workflows/{wid}/sessions       create a session for a workflow
 GET    /api/workflows/{wid}/sessions       list sessions on a workflow
-GET    /api/sessions/{sid}/messages        chat history rendered for the panel
-DELETE /api/sessions/{sid}/messages        clear chat history for the panel
-POST   /api/sessions/{sid}/messages        SSE stream of orchestrator events
-                                            for one user-message turn
+GET    /api/workflows/{wid}/sessions/{sid}/messages  chat history rendered for the panel
+DELETE /api/workflows/{wid}/sessions/{sid}/messages  clear chat history for the panel
+POST   /api/workflows/{wid}/sessions/{sid}/messages  SSE stream of orchestrator events
+                                                     for one user-message turn
 """
 from __future__ import annotations
 import json
@@ -20,6 +20,17 @@ from app.orchestrator import agent
 
 
 router = APIRouter(prefix="/api", tags=["orchestrator"])
+
+
+def _get_session(db: DbSession, wid: str, sid: str) -> models.Session:
+    sess = (
+        db.query(models.Session)
+        .filter_by(id=sid, workflow_id=wid)
+        .first()
+    )
+    if not sess:
+        raise HTTPException(404, f"session {sid} not found")
+    return sess
 
 
 @router.post("/workflows/{wid}/sessions", response_model=schemas.SessionOut)
@@ -46,39 +57,57 @@ def list_sessions(wid: str, db: DbSession = Depends(get_db)) -> list[schemas.Ses
     return [schemas.SessionOut(id=r.id, workflow_id=r.workflow_id) for r in rows]
 
 
-@router.get("/sessions/{sid}/messages", response_model=schemas.SessionMessagesOut)
-def get_messages(sid: str, db: DbSession = Depends(get_db)) -> schemas.SessionMessagesOut:
-    if not db.get(models.Session, sid):
-        raise HTTPException(404, f"session {sid} not found")
+@router.get("/workflows/{wid}/sessions/{sid}/messages", response_model=schemas.SessionMessagesOut)
+def get_messages(
+    wid: str,
+    sid: str,
+    db: DbSession = Depends(get_db),
+) -> schemas.SessionMessagesOut:
+    sess = _get_session(db, wid, sid)
     bubbles = agent.render_history(db, sid)
-    return schemas.SessionMessagesOut(messages=bubbles)  # type: ignore[arg-type]
+    active_runs = (
+        db.query(models.Run)
+        .filter(
+            models.Run.workflow_id == sess.workflow_id,
+            models.Run.kind == "orchestrator",
+            models.Run.status.in_(("running", "pending")),
+        )
+        .order_by(models.Run.started_at.desc())
+        .all()
+    )
+    return schemas.SessionMessagesOut(
+        messages=bubbles,  # type: ignore[arg-type]
+        active_turn=agent._is_turn_active(sid),
+        active_runs=[
+            schemas.ActiveRunOut(id=r.id, workflow_id=r.workflow_id, status=r.status)
+            for r in active_runs
+        ],
+    )
 
 
-@router.delete("/sessions/{sid}/messages")
-def clear_messages(sid: str, db: DbSession = Depends(get_db)) -> dict:
-    if not db.get(models.Session, sid):
-        raise HTTPException(404, f"session {sid} not found")
+@router.delete("/workflows/{wid}/sessions/{sid}/messages")
+def clear_messages(wid: str, sid: str, db: DbSession = Depends(get_db)) -> dict:
+    _get_session(db, wid, sid)
     db.query(models.Message).filter_by(session_id=sid).delete(synchronize_session=False)
     db.commit()
     return {"ok": True}
 
 
-@router.post("/sessions/{sid}/cancel")
-def cancel_session_turn(sid: str, db: DbSession = Depends(get_db)) -> dict:
+@router.post("/workflows/{wid}/sessions/{sid}/cancel")
+def cancel_session_turn(wid: str, sid: str, db: DbSession = Depends(get_db)) -> dict:
     """Signal the in-flight orchestrator turn for this session to stop.
 
     Idempotent: returns ``{cancelled: false}`` if no turn is currently running.
     The running ``run_turn`` generator detects the signal at its next checkpoint
     (between LLM rounds, mid-SSE-stream, or between tool calls) and exits.
     """
-    if not db.get(models.Session, sid):
-        raise HTTPException(404, f"session {sid} not found")
+    _get_session(db, wid, sid)
     ok = agent._signal_cancel(sid)
     return {"cancelled": ok}
 
 
-@router.post("/sessions/{sid}/messages")
-def post_message(sid: str, body: schemas.UserMessageIn) -> StreamingResponse:
+@router.post("/workflows/{wid}/sessions/{sid}/messages")
+def post_message(wid: str, sid: str, body: schemas.UserMessageIn) -> StreamingResponse:
     """Stream orchestrator events as Server-Sent Events.
 
     Each event is a single line `data: {json}\\n\\n`. Event kinds match
@@ -98,7 +127,9 @@ def post_message(sid: str, body: schemas.UserMessageIn) -> StreamingResponse:
     # We use our own DB session here (not Depends) because the generator runs
     # outside the FastAPI request handler's lifecycle.
     db = SessionLocal()
-    if not db.get(models.Session, sid):
+    try:
+        _get_session(db, wid, sid)
+    except HTTPException:
         db.close()
         raise HTTPException(404, f"session {sid} not found")
 
