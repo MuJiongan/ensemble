@@ -11,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from app.db import Base
 from app.llm import openai_chat
 from app import models
+from app.api import orchestrator as orchestrator_api
 from app.api import workflows as workflow_api
 from app.orchestrator import tools as orch_tools
 from app.orchestrator import agent as orch_agent
@@ -301,6 +302,37 @@ def test_render_history_collapses_assistant_with_tool_cards(db, workflow):
     assert blocks[1]["t"] == "tool"
     assert blocks[1]["tool"] == "add_node"
     assert blocks[1]["status"] == "ok"
+
+
+def test_get_messages_reports_active_turn(db, workflow):
+    sess = models.Session(workflow_id=workflow.id)
+    db.add(sess)
+    db.commit()
+    db.refresh(sess)
+    db.add(models.Message(session_id=sess.id, role="user", content="keep going"))
+    db.commit()
+
+    idle = orchestrator_api.get_messages(workflow.id, sess.id, db=db)
+    assert idle.active_turn is False
+    assert idle.active_runs == []
+
+    run = models.Run(
+        workflow_id=workflow.id,
+        kind="orchestrator",
+        status="running",
+        inputs={},
+    )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    ev = orch_agent._claim_turn(sess.id)
+    try:
+        active = orchestrator_api.get_messages(workflow.id, sess.id, db=db)
+        assert active.active_turn is True
+        assert active.messages[0].text == "keep going"
+        assert [r.id for r in active.active_runs] == [run.id]
+    finally:
+        orch_agent._release_turn(sess.id, ev)
 
 
 def test_llm_tool_specs_covers_full_surface():

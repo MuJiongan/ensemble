@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import Editor from '@monaco-editor/react';
-import type { WFNode, IOPort, WorkflowDetail, Run, CurrentRun } from '../types';
+import type {
+  WFNode, IOPort, WorkflowDetail, Run, CurrentRun, NodeRun, NodeRunField,
+} from '../types';
 import { api } from '../api';
 import {
   NodeTraceCard, NodeLlmCallsView, aggregateEvents, nodeRunToTrace, type LiveLLMCall, type NodeTrace,
@@ -25,7 +27,7 @@ interface Props {
   onSendErrorToOrchestrator?: (message: string) => void;
   /** Continue a *finished* agent's conversation in the shared right-pane
    * chat (full height), entered from the "llm calls" tab. */
-  onContinue?: (nodeRunId: string, callId: string) => void;
+  onContinue?: (runId: string, nodeRunId: string, callId: string) => void;
   /** Watch an *in-flight* call stream into the shared chat pane. */
   onViewLive?: (runId: string, nodeId: string, callId: string, label: string) => void;
 }
@@ -71,32 +73,136 @@ export function NodePanel({
       ? currentRun
       : null;
 
+  const [tab, setTab] = useState<Tab>('code');
+  const [code, setCode] = useState(node.code);
+  const [codeLoading, setCodeLoading] = useState(false);
+  const [codeError, setCodeError] = useState<string | null>(null);
+  const [snapshotCodeLoaded, setSnapshotCodeLoaded] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const historicalSummary = useMemo(
+    () => pinnedRun?.node_runs.find((x) => x.node_id === node.id) ?? null,
+    [pinnedRun, node.id],
+  );
+  const historicalFields: NodeRunField[] =
+    tab === 'trace'
+      ? ['inputs', 'outputs', 'logs', 'tool_calls']
+      : tab === 'calls'
+        ? ['llm_calls']
+        : [];
+  const historicalShouldLoad =
+    !!pinnedRun && !liveRunForThisNode && !!historicalSummary && historicalFields.length > 0;
+  const [historicalNodeRun, setHistoricalNodeRun] = useState<NodeRun | null>(null);
+  const [historicalLoadedFields, setHistoricalLoadedFields] = useState<Set<NodeRunField>>(new Set());
+  const [historicalLoading, setHistoricalLoading] = useState(false);
+  const [historicalError, setHistoricalError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setHistoricalNodeRun(null);
+    setHistoricalLoadedFields(new Set());
+    setHistoricalError(null);
+    setHistoricalLoading(false);
+  }, [historicalSummary?.id]);
+
+  useEffect(() => {
+    const runId = pinnedRun?.id;
+    if (!historicalShouldLoad || !historicalSummary || !runId) return;
+    const missing = historicalFields.filter((f) => !historicalLoadedFields.has(f));
+    if (missing.length === 0) return;
+    let cancelled = false;
+    setHistoricalLoading(true);
+    setHistoricalError(null);
+    api.getNodeRun(runId, historicalSummary.id, missing)
+      .then((nr) => {
+        if (cancelled) return;
+        setHistoricalNodeRun((prev) => ({ ...(prev ?? nr), ...nr }));
+        setHistoricalLoadedFields((prev) => {
+          const next = new Set(prev);
+          missing.forEach((f) => next.add(f));
+          return next;
+        });
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setHistoricalNodeRun(null);
+          setHistoricalError(e instanceof Error ? e.message : String(e));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setHistoricalLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    historicalShouldLoad,
+    pinnedRun?.id,
+    historicalSummary?.id,
+    historicalFields.join(','),
+    historicalLoadedFields,
+  ]);
+
   const trace: NodeTrace | null = useMemo(() => {
     if (liveRunForThisNode) {
       const all = aggregateEvents(liveRunForThisNode.events);
       return all.find((t) => t.node_id === node.id) ?? null;
     }
-    if (pinnedRun) {
-      const nr = pinnedRun.node_runs.find((x) => x.node_id === node.id);
-      return nr ? nodeRunToTrace(nr) : null;
+    if (historicalNodeRun) {
+      return nodeRunToTrace(historicalNodeRun);
     }
     return null;
-  }, [liveRunForThisNode?.events, pinnedRun, node.id]);
+  }, [liveRunForThisNode?.events, historicalNodeRun, node.id]);
 
   const traceTabAvailable = !!pinnedRun || !!liveRunForThisNode;
 
-  const [tab, setTab] = useState<Tab>('code');
-  const [code, setCode] = useState(node.code);
-  const [dirty, setDirty] = useState(false);
-
   useEffect(() => {
     setCode(node.code);
+    setCodeError(null);
+    setCodeLoading(false);
+    setSnapshotCodeLoaded(false);
     setDirty(false);
     setTab('code');
-  }, [node.id]);
+  }, [node.id, pinnedRun?.id]);
+
+  useEffect(() => {
+    if (!liveRunForThisNode || dirty) return;
+    const liveCallCount = trace?.llmCalls.length ?? 0;
+    setTab((cur) => {
+      if (liveCallCount > 0 && (cur === 'code' || cur === 'trace')) return 'calls';
+      if (liveCallCount === 0 && cur === 'code') return 'trace';
+      return cur;
+    });
+  }, [node.id, liveRunForThisNode?.id, dirty, trace?.llmCalls.length]);
+
+  useEffect(() => {
+    if (!readOnly || !pinnedRun || tab !== 'code' || snapshotCodeLoaded || codeError) return;
+    let cancelled = false;
+    setCodeLoading(true);
+    setCodeError(null);
+    api.getSnapshotNodeCode(pinnedRun.id, node.id)
+      .then((res) => {
+        if (!cancelled) {
+          setCode(res.code);
+          setSnapshotCodeLoaded(true);
+        }
+      })
+      .catch((e) => {
+        if (!cancelled) setCodeError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (!cancelled) setCodeLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [readOnly, pinnedRun?.id, node.id, tab, snapshotCodeLoaded, codeError]);
 
   // The "llm calls" tab needs a run with at least one agent recorded.
-  const callsTabAvailable = traceTabAvailable && !!trace && trace.llmCalls.length > 0;
+  const callsTabAvailable =
+    traceTabAvailable &&
+    (
+      (!!trace && trace.llmCalls.length > 0) ||
+      (!liveRunForThisNode && (historicalSummary?.llm_call_count ?? 0) > 0)
+    );
 
   // If the selected tab disappears (run cleared, snapshot exited, no calls)
   // fall back to code so we don't render an empty pane.
@@ -113,8 +219,7 @@ export function NodePanel({
     if (liveRunForThisNode && onViewLive) {
       onViewLive(liveRunForThisNode.id, node.id, call.call_id, `${node.name} · ${callName}`);
     } else if (pinnedRun && onContinue) {
-      const nr = pinnedRun.node_runs.find((x) => x.node_id === node.id);
-      if (nr) onContinue(nr.id, call.call_id);
+      if (historicalSummary) onContinue(pinnedRun.id, historicalSummary.id, call.call_id);
     }
   };
 
@@ -125,7 +230,7 @@ export function NodePanel({
     : isInput ? 'input' : isOutput ? 'output' : null;
 
   const save = async () => {
-    await api.patchNode(node.id, {
+    await api.patchNode(workflow.id, node.id, {
       code,
     });
     setDirty(false);
@@ -218,6 +323,16 @@ export function NodePanel({
       <div className="scroll" style={{ flex: 1, overflow: 'auto' }}>
         {tab === 'code' && (
           <div style={{ height: '100%', minHeight: 400 }}>
+            {codeLoading && (
+              <div className="serif" style={{ padding: 12, fontStyle: 'italic', color: 'var(--ink-3)', fontSize: 12 }}>
+                loading code…
+              </div>
+            )}
+            {codeError && (
+              <div className="serif" style={{ padding: 12, fontStyle: 'italic', color: 'var(--state-err)', fontSize: 12 }}>
+                couldn’t load snapshot code.
+              </div>
+            )}
             <Editor
               height="100%"
               theme="vs-dark"
@@ -270,6 +385,20 @@ export function NodePanel({
                 runId={pinnedRun?.id ?? liveRunForThisNode?.id}
                 onSendErrorToOrchestrator={onSendErrorToOrchestrator}
               />
+            ) : historicalLoading ? (
+              <div
+                className="serif"
+                style={{ fontStyle: 'italic', color: 'var(--ink-3)', fontSize: 13, lineHeight: 1.55 }}
+              >
+                loading trace…
+              </div>
+            ) : historicalError ? (
+              <div
+                className="serif"
+                style={{ fontStyle: 'italic', color: 'var(--state-err)', fontSize: 13, lineHeight: 1.55 }}
+              >
+                couldn’t load this node trace.
+              </div>
             ) : (
               <div
                 className="serif"
@@ -283,9 +412,32 @@ export function NodePanel({
           </div>
         )}
 
-        {tab === 'calls' && trace && (
+        {tab === 'calls' && (
           <div style={{ padding: 18 }}>
-            <NodeLlmCallsView trace={trace} live={!!liveRunForThisNode} onOpen={onOpenCall} />
+            {trace ? (
+              <NodeLlmCallsView trace={trace} live={!!liveRunForThisNode} onOpen={onOpenCall} />
+            ) : historicalLoading ? (
+              <div
+                className="serif"
+                style={{ fontStyle: 'italic', color: 'var(--ink-3)', fontSize: 13, lineHeight: 1.55 }}
+              >
+                loading calls…
+              </div>
+            ) : historicalError ? (
+              <div
+                className="serif"
+                style={{ fontStyle: 'italic', color: 'var(--state-err)', fontSize: 13, lineHeight: 1.55 }}
+              >
+                couldn’t load this node’s LLM calls.
+              </div>
+            ) : (
+              <div
+                className="serif"
+                style={{ fontStyle: 'italic', color: 'var(--ink-3)', fontSize: 13, lineHeight: 1.55 }}
+              >
+                this node made no LLM calls in the selected run.
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -356,4 +508,3 @@ function PortSchemaCard({
     </div>
   );
 }
-

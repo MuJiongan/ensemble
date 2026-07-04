@@ -34,7 +34,7 @@ def get_provider_models(provider_id: str, db: Session = Depends(get_db)) -> dict
     return {"models": info["models"]}
 
 
-@router.get("/models/{provider_id}/{model_id:path}/variants")
+@router.get("/providers/{provider_id}/models/{model_id:path}/variants")
 def get_model_variants(provider_id: str, model_id: str) -> dict:
     m = md.get_model(provider_id, model_id)
     if m is None:

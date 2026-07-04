@@ -109,35 +109,115 @@ class RunStartIn(BaseModel):
     kind: str = "user"
 
 
-class NodeRunOut(BaseModel):
+class NodeRunDetailOut(BaseModel):
+    """Field-gated node-run detail.
+
+    Lightweight metadata is always present. Heavy trace fields are included only
+    when requested through ``fields=...`` on the node-run endpoint.
+    """
+
     id: str
     node_id: str
     status: str
-    inputs: dict[str, Any]
-    outputs: dict[str, Any]
-    logs: list[Any]
-    llm_calls: list[Any]
-    tool_calls: list[Any]
     error: str | None = None
     duration_ms: int
     cost: float
+    inputs: dict[str, Any] | None = None
+    outputs: dict[str, Any] | None = None
+    logs: list[Any] | None = None
+    llm_calls: list[Any] | None = None
+    tool_calls: list[Any] | None = None
 
 
-class RunOut(BaseModel):
+class NodeRunSummaryOut(BaseModel):
+    id: str
+    node_id: str
+    status: str
+    error: str | None = None
+    duration_ms: int
+    cost: float
+    log_count: int = 0
+    llm_call_count: int = 0
+    tool_call_count: int = 0
+
+
+class RunModelStatOut(BaseModel):
+    model: str
+    calls: int
+    promptTokens: int
+    completionTokens: int
+    cost: float
+
+
+class RunOverviewOut(BaseModel):
+    """Run detail without heavy per-node trace payloads.
+
+    Carries enough to render the snapshot canvas and run-level panel. The
+    snapshot is a code-free graph summary; run outputs and full snapshot/code
+    load through focused endpoints. A node's inputs/outputs/logs/LLM/tool trace
+    is fetched lazily through field-gated node-run requests.
+    """
+
     id: str
     workflow_id: str
     kind: str
     status: str
     inputs: dict[str, Any]
-    outputs: dict[str, Any]
     error: str | None = None
     started_at: datetime | None = None
     ended_at: datetime | None = None
     total_cost: float
-    # Frozen graph the runner actually executed (nodes + code + edges + in/out
-    # node ids). `None` for legacy rows created before snapshotting landed.
     workflow_snapshot: dict[str, Any] | None = None
-    node_runs: list[NodeRunOut]
+    node_runs: list[NodeRunSummaryOut]
+    model_stats: list[RunModelStatOut] = Field(default_factory=list)
+    tool_call_count: int = 0
+
+
+class RunOutputsOut(BaseModel):
+    outputs: dict[str, Any] = Field(default_factory=dict)
+
+
+class RunSnapshotOut(BaseModel):
+    workflow_snapshot: dict[str, Any] | None = None
+
+
+class SnapshotNodeCodeOut(BaseModel):
+    node_id: str
+    code: str
+
+
+class RunSummaryOut(BaseModel):
+    """Lean run-list row: no graph snapshot and no node-run payloads."""
+
+    id: str
+    workflow_id: str
+    kind: str
+    status: str
+    inputs: dict[str, Any]
+    error: str | None = None
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    total_cost: float
+
+
+class RunCardNodeOut(BaseModel):
+    id: str
+    name: str
+    status: str
+
+
+class RunCardOut(BaseModel):
+    """Small payload for a chat run card; excludes snapshot code and traces."""
+
+    id: str
+    workflow_id: str
+    status: str
+    error: str | None = None
+    total_cost: float
+    node_count: int
+    nodes: list[RunCardNodeOut] = Field(default_factory=list)
+    input_node_name: str | None = None
+    output_node_name: str | None = None
 
 
 # --- orchestrator session schemas -----------------------------------------
@@ -185,8 +265,21 @@ class ChatMessageOut(BaseModel):
     cost: float | None = None
 
 
+class ActiveRunOut(BaseModel):
+    id: str
+    workflow_id: str
+    status: str
+
+
 class SessionMessagesOut(BaseModel):
     messages: list[ChatMessageOut]
+    # True when the backend still has an in-flight orchestrator turn for this
+    # session. Used by the frontend to restore "working" status after a reload.
+    active_turn: bool = False
+    # Active orchestrator-started workflow runs for this session's workflow.
+    # Lets a reloaded pending run_workflow card recover the run id that was
+    # originally delivered as a transient SSE event.
+    active_runs: list[ActiveRunOut] = Field(default_factory=list)
 
 
 class AttachmentIn(BaseModel):
@@ -207,6 +300,7 @@ class CallChatOut(BaseModel):
     """A call's continuation with its full transcript (OpenAI-shape messages)."""
     id: str
     workflow_id: str
+    run_id: str
     node_run_id: str
     call_id: str
     label: str

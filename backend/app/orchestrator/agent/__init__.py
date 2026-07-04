@@ -13,7 +13,7 @@ Implementation is split across submodules:
   * :mod:`.llm_stream`  — SSE call + chunk parsing for the configured provider
 
 This module owns the orchestration loop itself plus :func:`render_history`
-(history → chat-bubble flattener used by GET /sessions/:id/messages).
+(history → chat-bubble flattener used by GET /workflows/:wid/sessions/:id/messages).
 """
 from __future__ import annotations
 import json
@@ -35,6 +35,7 @@ from .session import (
     _TURN_CANCEL_EVENTS,
     _TURN_LOCK,
     _claim_turn,
+    _is_turn_active,
     _release_turn,
     _signal_cancel,
     _was_superseded,
@@ -62,6 +63,7 @@ __all__ = [
     "_call_llm_stream",
     "_claim_turn",
     "_history_messages",
+    "_is_turn_active",
     "_parse_sse_chunks",
     "_release_turn",
     "_signal_cancel",
@@ -507,7 +509,7 @@ def run_turn(
 
 
 # ---------------------------------------------------------------------------
-# history → chat-bubble flattener (used by GET /sessions/:id/messages)
+# history → chat-bubble flattener (used by GET /workflows/:wid/sessions/:id/messages)
 # ---------------------------------------------------------------------------
 
 
@@ -539,22 +541,18 @@ def _assistant_content_blocks(
             args = {}
         summary = _format_args_summary(args)
         tr = tool_results.get(tc_id)
-        ok = bool(tr) and not (tr.get("result") or {}).get("error")
-        content.append(
-            {
-                "t": "tool",
-                "tool": name,
-                "args": summary,
-                # Full parsed args alongside the summary, so the panel can show
-                # raw input parameters when the card is expanded on reload.
-                "args_full": args if isinstance(args, dict) else None,
-                "status": "ok" if ok else ("err" if tr else "pending"),
-                # Surface the persisted result so the chat panel can render rich
-                # tool cards (e.g. `run_workflow` snapshot summary) on history
-                # reload, not just live streams.
-                "result": tr.get("result") if tr else None,
-            }
-        )
+        result = tr.get("result") if tr else None
+        err = isinstance(result, dict) and bool(result.get("error"))
+        ok = bool(tr) and not err
+        block = {
+            "t": "tool",
+            "tool": name,
+            "args": summary,
+            "status": "ok" if ok else ("err" if tr else "pending"),
+        }
+        block["args_full"] = args if isinstance(args, dict) else None
+        block["result"] = result
+        content.append(block)
     return content
 
 

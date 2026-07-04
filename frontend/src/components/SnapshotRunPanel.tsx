@@ -21,7 +21,7 @@ export function SnapshotRunPanel({
   onExit: () => void;
   onRerun: (inputs: Record<string, unknown>) => Promise<void>;
   /** When set and bound to this run, live llm_call_finished events are
-   * folded into model stats before node_runs are persisted. */
+   * folded into model stats before node-run summaries are persisted. */
   currentRun?: CurrentRun | null;
 }) {
   const errored = run.node_runs.filter((nr) => nr.status === 'error');
@@ -37,8 +37,34 @@ export function SnapshotRunPanel({
     currentRun && currentRun.id === run.id ? currentRun.status : run.status;
   const liveOutputs =
     currentRun && currentRun.id === run.id ? currentRun.finalOutputs : null;
-  const outputs = Object.entries(liveOutputs ?? run.outputs ?? {});
   const inFlight = liveStatus === 'running' || liveStatus === 'pending';
+  const [persistedOutputs, setPersistedOutputs] = useState<Record<string, unknown> | null>(null);
+  const [outputsLoading, setOutputsLoading] = useState(false);
+  const [outputsError, setOutputsError] = useState<string | null>(null);
+  useEffect(() => {
+    setPersistedOutputs(null);
+    setOutputsError(null);
+    setOutputsLoading(false);
+  }, [run.id]);
+  useEffect(() => {
+    if (liveOutputs || inFlight || persistedOutputs !== null || outputsError) return;
+    let cancelled = false;
+    setOutputsLoading(true);
+    api.getRunOutputs(run.id)
+      .then((res) => {
+        if (!cancelled) setPersistedOutputs(res.outputs ?? {});
+      })
+      .catch((e) => {
+        if (!cancelled) setOutputsError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (!cancelled) setOutputsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [run.id, liveOutputs, inFlight, persistedOutputs, outputsError]);
+  const outputs = Object.entries(liveOutputs ?? persistedOutputs ?? {});
   const [cancelling, setCancelling] = useState(false);
   useEffect(() => { setCancelling(false); }, [run.id]);
   const cancelThisRun = async () => {
@@ -294,7 +320,11 @@ export function SnapshotRunPanel({
       <IOSection
         title="outputs"
         emptyText={
-          liveStatus === 'success'
+          outputsLoading
+            ? 'loading outputs…'
+            : outputsError
+              ? 'couldn’t load outputs.'
+              : liveStatus === 'success'
             ? 'this run produced no outputs.'
             : 'no outputs recorded.'
         }

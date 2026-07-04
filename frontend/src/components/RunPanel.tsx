@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type {
-  WorkflowDetail, Run, RunStatus, IOPort, CurrentRun,
+  WorkflowDetail, RunSummary, RunStatus, IOPort, CurrentRun,
 } from '../types';
 import { api } from '../api';
 import {
@@ -65,7 +65,7 @@ export function RunPanel({
   const inputNode = workflow.nodes.find((n) => n.id === workflow.input_node_id);
   const inputPorts: IOPort[] = inputNode?.inputs ?? [];
   const [values, setValues] = useState<Record<string, string>>({});
-  const [history, setHistory] = useState<Run[]>([]);
+  const [history, setHistory] = useState<RunSummary[]>([]);
   type DialogState =
     | { kind: 'none' }
     | { kind: 'alert'; message: string }

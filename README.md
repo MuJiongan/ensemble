@@ -17,7 +17,7 @@ How the on-screen vocabulary maps to the code:
 | Agent | `Node` | A Python `run(inputs, ctx)` function with its own model + tools |
 | Handoff | `Edge` | Wires one node's named output to another node's named input |
 | Run | `Run` | One end-to-end execution; freezes a snapshot of the graph |
-| Agent trace | `NodeRun` | The inputs/outputs/logs/LLM + tool calls for one node in a run |
+| Agent trace | `NodeRun` | The inputs/outputs/logs/LLM call summaries + tool calls for one node in a run |
 | Subagent chat | `CallChat` | A continued `ctx.agent` conversation — one ongoing thread per call |
 | Canvas | Canvas | The read-only visual board; topology is orchestrator-owned |
 
@@ -76,12 +76,12 @@ Each agent is a Python block exposing `run(inputs, ctx)`:
 ```python
 def run(inputs, ctx):
     # ctx.agent(model=None, prompt=..., tools=[...], label="short name") -> dict
-    #   Run an LLM-mediated sub-agent. Defaults to the node's configured model
-    #   (raises if neither set). With tools, runs an agent loop: the model calls
-    #   tools, results feed back, until it returns a final answer.
-    #   Returns {content, messages, tool_calls_made, usage, cost}. The full
-    #   `messages` transcript is also persisted on the NodeRun trace so the
-    #   call can be continued as a chat later.
+    #   Run an LLM-mediated sub-agent. Defaults to the configured node model
+    #   unless a model is passed. With tools, runs an agent loop: the model
+    #   calls tools, results feed back, until it returns a final answer.
+    #   Returns {content, messages, tool_calls_made, usage, cost}. The
+    #   returned `messages` transcript is persisted separately from the
+    #   NodeRun trace as the seed for continuing that call as a chat later.
     #
     # ctx.tools.shell(...) / read_file / write_file / edit_file / web_search / web_fetch
     # ctx.tools.<server>.<tool>(arg=...)  or  ctx.tools.<server>_<tool>(...)
@@ -99,7 +99,7 @@ The six built-in tools available to every node are `shell`, `read_file`, `write_
 A few choices that shape how the system behaves in use:
 
 - **Nodes can trigger tools directly — but agentic is the default.** A node author names a tool in `ctx.agent(tools=[...])` and lets the node's own model decide when to call it (the default), *or* calls `ctx.tools.<name>(...)` to fire it deterministically with no model in the loop. Direct calls are the deliberate exception — for steps where you want a guaranteed, un-routed action rather than the model's judgement — and the same dual surface covers both built-in and MCP tools. So a node isn't forced to launder every action through an LLM: it can reason when reasoning helps and just *do the thing* when it doesn't.
-- **The orchestrator plans; it doesn't run the work itself.** It shapes the graph and writes node code, but it can't execute the workflow's tools directly — `run_workflow` starts a run and hands back only `{run_id, status, total_cost}`, while the live outputs stream to *you* in the run console. Nothing auto-dumps into the model's context: when the orchestrator needs a result — to summarize it for you, or to debug a failure — it pulls just the node outputs it asks for via `view_run`, the same pull-not-push discipline it uses for the graph. So the build conversation stays lean instead of bloating with every run's full output.
+- **The orchestrator plans; it doesn't run the work itself.** It shapes the graph and writes node code, but it can't execute the workflow's tools directly — `run_workflow` starts a run and hands back only `{run_id, status, total_cost}`, while the live outputs stream to *you* in the run console. Nothing auto-dumps into the model's context: when the orchestrator needs a result — to summarize it for you, or to debug a failure — it pulls just the node/field/port slice it asks for via `view_run`, the same pull-not-push discipline it uses for the graph. So the build conversation stays lean instead of bloating with every run's full output.
 - **The graph is pulled, not pushed.** The orchestrator's prompt never carries the current topology or node code; it calls `view_graph()` / `view_node_details()` on demand. Structure and code are also split across `add_node` (recruit a stub) and `configure_node` (inject the Python) so no single tool call carries both. Both keep context small and turns fast.
 - **Branching is data, not control flow.** There are no cyclic or conditional edges — a node returns `None` on an output to skip a downstream path (the [skip rule](#node-runtime)), and any looping lives inside one node's Python. The graph stays a DAG you can read at a glance.
 - **The orchestrator and node models are independent.** The chat agent and the agents it builds run on separate provider/key/reasoning settings, so you can pair an expensive planner with cheap workers (or the reverse) without coupling the two.
@@ -123,6 +123,7 @@ The orchestrator never executes MCP tools itself. Instead, each orchestrator tur
 
 - **Concurrent runs.** Multiple runs can be in flight on one project at once; each has its own cancel control, and the execute button stays available while one is running.
 - **Snapshots.** Every run freezes a full copy of the graph (nodes, code, edges, input/output boundaries) at creation. Clicking a run in the history enters a read-only **snapshot view** that renders exactly the graph that executed, even after the live graph has changed.
+- **Lean run loading.** Run history rows, chat run cards, and run overviews use summary payloads. Outputs, full snapshot/code, and node-run trace fields (`inputs`, `outputs`, `logs`, `llm_calls`, `tool_calls`) load through focused endpoints only when the UI needs them.
 - **Import & export.** Copy a project as portable JSON — the full graph (nodes, code, edges, input/output boundaries) in a self-contained bundle. Export the live canvas (`GET /api/workflows/{wid}/export`) or a run snapshot (client-side from the frozen `workflow_snapshot`), then paste the JSON back in via **import project** on the landing page (`POST /api/workflows/import`). Import regenerates node and edge IDs while preserving topology and code.
 - **Rerun snapshots.** Re-run a snapshot in place against the frozen graph (`POST /api/runs/{rid}/rerun`).
 - **File viewer.** Any path shown in the UI — a run input/output, a JSON leaf, an inline path in chat — is clickable and opens a side panel that resolves it on the backend (`GET /api/files`) and renders it by type: text/code, Markdown or HTML (with a rendered/source toggle), image, or PDF. From there you can copy the contents, or open the file in your OS default app / reveal it in the file manager (`POST /api/files/open`). A path that points at a directory isn't browsed in-app — it's revealed in the file manager directly. The renderer tab has no disk access, so a path that isn't a real file simply falls back to its raw text.
@@ -146,18 +147,19 @@ Settings ("providers & models") is where you connect providers and choose models
 
 ## Data model
 
-SQLite (`./workflow_builder.db` by default), eleven tables: `workflows`, `nodes`, `edges`, `runs`, `node_runs`, `call_chats`, `sessions`, `messages`, `settings`, `credentials`, and `mcp_credentials`.
+SQLite (`./workflow_builder.db` by default), twelve tables: `workflows`, `nodes`, `edges`, `runs`, `node_runs`, `call_transcripts`, `call_chats`, `sessions`, `messages`, `settings`, `credentials`, and `mcp_credentials`.
 
 ```
 Workflow   { id, name, created_at, input_node_id, output_node_id }
 Node       { id, workflow_id, name, description, code,
-             inputs/outputs: [{name, type_hint, required}], config: {model}, position }
+             inputs/outputs: [{name, type_hint, required}], position }
 Edge       { id, workflow_id, from_node_id, from_output, to_node_id, to_input }
 Run        { id, workflow_id, kind: "user"|"orchestrator",
              status: pending|running|success|error|cancelled,
              inputs, outputs, error, total_cost, workflow_snapshot }
 NodeRun    { id, run_id, node_id, status, inputs, outputs,
-             logs, llm_calls, tool_calls, error, duration_ms, cost }
+             logs, llm_calls, tool_calls, error, duration_ms, cost }  # llm_calls are lean records
+CallTranscript { id, node_run_id, call_id, messages, created_at }
 CallChat   { id, workflow_id, node_run_id, call_id, label,
              model, provider_id, variant, tools, messages,
              created_at, updated_at }   # one row per (node_run_id, call_id)

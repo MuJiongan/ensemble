@@ -1,6 +1,8 @@
 import type { AssistantMessage, ChatBlock, ChatMessage, ChatToolCall } from './components/ChatPanel';
 import type { LiveLLMCall } from './components/NodeTraceCard';
-import type { ChatHistoryMessage, Run, RunEvent, WorkflowDetail, WorkflowExport } from './types';
+import type {
+  ChatHistoryMessage, Run, RunEvent, RunSummary, WorkflowDetail, WorkflowExport,
+} from './types';
 
 export interface ModelStat {
   model: string;
@@ -54,19 +56,14 @@ function modelStatsFromLlmCalls(calls: LLMCallRecord[]): ModelStat[] {
 }
 
 /** Aggregate per-model call counts, token usage, and cost from persisted
- * node_runs. Returns null when the run recorded no LLM calls. */
+ * run-level aggregates. Returns null when the run recorded no LLM calls. */
 export function modelStatsFromRun(run: Run): ModelStat[] | null {
-  const calls: LLMCallRecord[] = [];
-  for (const nr of run.node_runs) {
-    for (const c of (nr.llm_calls as LLMCallRecord[]) ?? []) {
-      calls.push(c);
-    }
-  }
-  return modelStatsFromCalls(calls);
+  return run.model_stats.length > 0 ? run.model_stats : null;
 }
 
 /** Same aggregation from streamed llm_call_finished events — used while a
- * run is still in flight (node_runs aren't written until completion). */
+ * run is still in flight (node-run summaries/stats aren't written until
+ * completion). */
 export function modelStatsFromEvents(events: RunEvent[]): ModelStat[] | null {
   const calls = events
     .filter((e): e is Extract<RunEvent, { type: 'llm_call_finished' }> =>
@@ -76,8 +73,8 @@ export function modelStatsFromEvents(events: RunEvent[]): ModelStat[] | null {
   return modelStatsFromCalls(calls);
 }
 
-/** Prefer persisted node_runs; fall back to live events when the run hasn't
- * materialised its node_runs yet. */
+/** Prefer persisted run-level stats; fall back to live events when the run
+ * hasn't materialised its summaries yet. */
 export function modelStatsForRun(
   run: Run,
   liveEvents?: RunEvent[],
@@ -112,7 +109,7 @@ function parseRunTimestamp(ts: string): number {
   return Date.parse(hasTimeZone ? ts : `${ts}Z`);
 }
 
-export function runDurationMs(run: Run, now = Date.now()): number | null {
+export function runDurationMs(run: Pick<RunSummary, 'started_at' | 'ended_at'>, now = Date.now()): number | null {
   if (!run.started_at) return null;
   const started = parseRunTimestamp(run.started_at);
   if (!Number.isFinite(started)) return null;
@@ -121,13 +118,9 @@ export function runDurationMs(run: Run, now = Date.now()): number | null {
   return Math.max(0, ended - started);
 }
 
-/** Total tool calls across all node_runs (direct + LLM-mediated). */
+/** Total tool calls across all node_runs (direct + LLM-mediated), precomputed server-side. */
 export function toolCallCountFromRun(run: Run): number {
-  let n = 0;
-  for (const nr of run.node_runs) {
-    n += ((nr.tool_calls as unknown[]) ?? []).length;
-  }
-  return n;
+  return run.tool_call_count;
 }
 
 /** Total from streamed tool_call_finished events (in-flight runs). */
@@ -194,7 +187,7 @@ export function snapshotToExport(run: Run, projectName?: string): WorkflowExport
       id: n.id,
       name: n.name,
       description: n.description ?? '',
-      code: n.code,
+      code: n.code ?? '',
       inputs: n.inputs,
       outputs: n.outputs,
     })),
@@ -242,7 +235,7 @@ export function snapshotToDetail(run: Run): WorkflowDetail | null {
       workflow_id: s.id,
       name: n.name,
       description: n.description ?? '',
-      code: n.code,
+      code: n.code ?? '',
       inputs: n.inputs,
       outputs: n.outputs,
       position: n.position ?? { x: 0, y: 0 },
@@ -262,7 +255,7 @@ export function snapshotToDetail(run: Run): WorkflowDetail | null {
  * One-line, human-readable summary of a run — a preview of the input values,
  * shown instead of the opaque run id wherever a run needs a title.
  */
-export function summariseRun(run: Run): { text: string; kind: 'value' | 'id' } {
+export function summariseRun(run: Pick<RunSummary, 'id' | 'inputs'>): { text: string; kind: 'value' | 'id' } {
   const populated = Object.entries(run.inputs ?? {}).filter(
     ([, v]) => v !== null && v !== undefined && v !== '',
   );
@@ -300,8 +293,37 @@ export function summariseRun(run: Run): { text: string; kind: 'value' | 'id' } {
   return { text: truncate(joined, TOTAL_BUDGET), kind: 'value' };
 }
 
-export function historyToChatMessages(history: ChatHistoryMessage[]): ChatMessage[] {
-  return history.map((m) => {
+function attachActiveRunIdToPendingRunWorkflow(
+  messages: ChatMessage[],
+  runId: string | undefined,
+): ChatMessage[] {
+  if (!runId) return messages;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role !== 'assistant') continue;
+    for (let j = msg.content.length - 1; j >= 0; j--) {
+      const block = msg.content[j];
+      if (
+        block.t === 'tool' &&
+        block.tool === 'run_workflow' &&
+        block.status === 'pending' &&
+        !block.runId
+      ) {
+        const content = [...msg.content];
+        content[j] = { ...block, runId };
+        return [...messages.slice(0, i), { ...msg, content }, ...messages.slice(i + 1)];
+      }
+    }
+  }
+  return messages;
+}
+
+export function historyToChatMessages(
+  history: ChatHistoryMessage[],
+  activeTurn = false,
+  activeRuns: Pick<Run, 'id' | 'workflow_id' | 'status'>[] = [],
+): ChatMessage[] {
+  const mapped: ChatMessage[] = history.map((m) => {
     if (m.role === 'user') {
       return {
         role: 'user',
@@ -327,6 +349,20 @@ export function historyToChatMessages(history: ChatHistoryMessage[]): ChatMessag
       ...(m.cost && m.cost > 0 ? { cost: m.cost } : {}),
     };
   });
+  const activeRunId = activeRuns.find(
+    (r) => r.status === 'running' || r.status === 'pending',
+  )?.id;
+  const out = attachActiveRunIdToPendingRunWorkflow(mapped, activeRunId);
+  if (!activeTurn || out.length === 0) return out;
+
+  const last = out[out.length - 1];
+  if (last.role === 'assistant') {
+    return [
+      ...out.slice(0, -1),
+      { ...last, streaming: true },
+    ];
+  }
+  return [...out, { role: 'assistant', content: [], streaming: true }];
 }
 
 // --- continue-chat (agent continuation) transcript -----------------------------

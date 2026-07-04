@@ -6,7 +6,7 @@ import rehypeKatex from 'rehype-katex';
 import type { Components } from 'react-markdown';
 import 'katex/dist/katex.min.css';
 import { api, ApiError } from '../api';
-import type { Run, ModelSelection } from '../types';
+import type { RunCard, ModelSelection } from '../types';
 import type { Catalog } from '../providerCatalog';
 import { CloseButton } from './CloseButton';
 import { AttachmentChips, FileTile, type PendingAttachment } from './ImageAttachments';
@@ -568,11 +568,10 @@ function ToolCallCard({ tool, args, argsFull, status, result }: ChatToolCall) {
 }
 
 // ---------------------------------------------------------------------------
-// run_workflow card — a richer tool card that surfaces the frozen graph
-// snapshot the run actually executed: node count, status of each, total
-// cost, and the failing node(s) when something errored. Pulls the snapshot
-// via GET /api/runs/:rid; falls back to the live `result` payload if the
-// fetch fails (offline, run vanished, etc.).
+// run_workflow card — a richer tool card that surfaces a small status summary
+// of the graph the run executed: node count, per-node status, total cost, and
+// failing node(s). It deliberately fetches a card summary, not the full frozen
+// snapshot or node-run traces; those load only when the user opens the run.
 // ---------------------------------------------------------------------------
 
 interface RunWorkflowResult {
@@ -679,7 +678,7 @@ function RunWorkflowCard({
   // card is clickable while still pending; fall back to the run_id in the
   // tool result once the call completes.
   const runId = earlyRunId ?? r.run_id;
-  const [snapshot, setSnapshot] = useState<Run | null>(null);
+  const [snapshot, setSnapshot] = useState<RunCard | null>(null);
   // Flipped when the run row 404s — the run was deleted. Terminal: the card
   // stops tracking and drops its open affordance (there's nothing to open).
   const [deleted, setDeleted] = useState(false);
@@ -699,7 +698,7 @@ function RunWorkflowCard({
     let timer: number | undefined;
     const track = async () => {
       try {
-        const run = await api.getRun(runId);
+        const run = await api.getRunCard(runId);
         if (cancelled) return;
         setSnapshot(run);
         const inFlight = run.status === 'running' || run.status === 'pending';
@@ -725,11 +724,9 @@ function RunWorkflowCard({
     };
   }, [runId, status, deleted]);
 
-  const wfSnap = snapshot?.workflow_snapshot ?? null;
-  const nodeRuns = snapshot?.node_runs ?? [];
-  const nodeNamesById = new Map(wfSnap?.nodes.map((n) => [n.id, n.name]) ?? []);
-  const inputName = wfSnap?.input_node_id ? nodeNamesById.get(wfSnap.input_node_id) : undefined;
-  const outputName = wfSnap?.output_node_id ? nodeNamesById.get(wfSnap.output_node_id) : undefined;
+  const cardNodes = snapshot?.nodes ?? [];
+  const inputName = snapshot?.input_node_name ?? undefined;
+  const outputName = snapshot?.output_node_name ?? undefined;
 
   // While the block is unresolved, the fetched row leads: hydrated chat
   // history can carry `pending` forever for a turn that died mid-run, but
@@ -762,7 +759,7 @@ function RunWorkflowCard({
         : isErr
           ? 'failed'
           : 'ran';
-  const cost = r.total_cost ?? 0;
+  const cost = snapshot?.total_cost ?? r.total_cost ?? 0;
 
   return (
     <div
@@ -822,15 +819,15 @@ function RunWorkflowCard({
         )}
       </div>
 
-      {/* snapshot summary line */}
-      {wfSnap && (
+      {/* run summary line */}
+      {snapshot && (
         <div
           className="serif"
           style={{ color: 'var(--ink-3)', fontSize: 12, fontStyle: 'italic' }}
         >
           {statusLabel}{' '}
           <span className="mono" style={{ fontSize: 11, fontStyle: 'normal' }}>
-            {wfSnap.nodes.length}-node
+            {snapshot.node_count}-node
           </span>{' '}
           project
           {inputName && (
@@ -877,7 +874,7 @@ function RunWorkflowCard({
       )}
 
       {/* per-node statuses (compact list) */}
-      {wfSnap && nodeRuns.length > 0 && (
+      {cardNodes.length > 0 && (
         <div
           style={{
             display: 'grid',
@@ -887,9 +884,8 @@ function RunWorkflowCard({
             fontSize: 10.5,
           }}
         >
-          {wfSnap.nodes.map((n) => {
-            const nr = nodeRuns.find((x) => x.node_id === n.id);
-            const st = nr?.status ?? 'pending';
+          {cardNodes.map((n) => {
+            const st = n.status ?? 'pending';
             const dot =
               st === 'success'
                 ? 'var(--state-ok)'
