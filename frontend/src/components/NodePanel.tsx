@@ -165,8 +165,13 @@ export function NodePanel({
 
   useEffect(() => {
     if (!liveRunForThisNode || dirty) return;
-    setTab((cur) => (cur === 'code' ? 'trace' : cur));
-  }, [node.id, liveRunForThisNode?.id, dirty]);
+    const liveCallCount = trace?.llmCalls.length ?? 0;
+    setTab((cur) => {
+      if (liveCallCount > 0 && (cur === 'code' || cur === 'trace')) return 'calls';
+      if (liveCallCount === 0 && cur === 'code') return 'trace';
+      return cur;
+    });
+  }, [node.id, liveRunForThisNode?.id, dirty, trace?.llmCalls.length]);
 
   useEffect(() => {
     if (!readOnly || !pinnedRun || tab !== 'code' || snapshotCodeLoaded || codeError) return;
@@ -374,25 +379,12 @@ export function NodePanel({
         {tab === 'trace' && (
           <div style={{ padding: 18 }}>
             {trace ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                {liveRunForThisNode && trace.llmCalls.length > 0 && (
-                  <section className="snapshot-io-section snapshot-io-section--detail">
-                    <div className="snapshot-io-section__head">
-                      <span className="smallcaps snapshot-io-section__title">agent calls</span>
-                      <span className="snapshot-io-section__count">
-                        {trace.llmCalls.length} {trace.llmCalls.length === 1 ? 'call' : 'calls'}
-                      </span>
-                    </div>
-                    <NodeLlmCallsView trace={trace} live onOpen={onOpenCall} />
-                  </section>
-                )}
-                <NodeTraceCard
-                  workflow={workflow}
-                  trace={trace}
-                  runId={pinnedRun?.id ?? liveRunForThisNode?.id}
-                  onSendErrorToOrchestrator={onSendErrorToOrchestrator}
-                />
-              </div>
+              <NodeTraceCard
+                workflow={workflow}
+                trace={trace}
+                runId={pinnedRun?.id ?? liveRunForThisNode?.id}
+                onSendErrorToOrchestrator={onSendErrorToOrchestrator}
+              />
             ) : historicalLoading ? (
               <div
                 className="serif"
