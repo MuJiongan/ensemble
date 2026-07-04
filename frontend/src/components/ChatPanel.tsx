@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -12,6 +12,12 @@ import { CloseButton } from './CloseButton';
 import { AttachmentChips, FileTile, type PendingAttachment } from './ImageAttachments';
 import { FilePathLink, childText, linkifyNodes, looksLikePath } from './FilePathLink';
 import { ModelSwitcher } from './ModelSwitcher';
+
+const BOTTOM_PIN_THRESHOLD_PX = 60;
+
+function isNearBottom(el: HTMLElement): boolean {
+  return el.scrollHeight - el.scrollTop - el.clientHeight < BOTTOM_PIN_THRESHOLD_PX;
+}
 
 export type ChatToolStatus = 'pending' | 'ok' | 'err';
 
@@ -328,24 +334,41 @@ interface Props {
   onCycleVariant?: (next: string | null) => void;
 }
 
-function ThinkingBlock({ text, live }: { text: string; live: boolean }) {
+function ThinkingBlock({
+  text,
+  live,
+  shouldAutoScroll = () => true,
+}: {
+  text: string;
+  live: boolean;
+  shouldAutoScroll?: () => boolean;
+}) {
   // While the orchestrator is actively thinking, expand by default and keep
   // the latest line in view. Once the turn settles, collapse it — the user
   // can reopen to inspect the trace.
   const [open, setOpen] = useState(live);
   const tailRef = useRef<HTMLDivElement | null>(null);
+  const pinnedToBottom = useRef(true);
+
+  const updatePinned = () => {
+    const el = tailRef.current;
+    if (el) pinnedToBottom.current = isNearBottom(el);
+  };
 
   // Auto-open when streaming starts; auto-collapse when streaming ends.
   useEffect(() => {
+    if (live) pinnedToBottom.current = true;
     setOpen(live);
   }, [live]);
 
-  // Keep the bottom of the trace pinned while text streams in.
-  useEffect(() => {
-    if (open && live && tailRef.current) {
-      tailRef.current.scrollTop = tailRef.current.scrollHeight;
+  // Keep the bottom of the trace pinned while text streams in, unless the user
+  // has intentionally scrolled away from the tail.
+  useLayoutEffect(() => {
+    const el = tailRef.current;
+    if (open && live && el && pinnedToBottom.current && shouldAutoScroll()) {
+      el.scrollTop = el.scrollHeight;
     }
-  }, [text, open, live]);
+  }, [text, open, live, shouldAutoScroll]);
 
   return (
     <div
@@ -358,7 +381,13 @@ function ThinkingBlock({ text, live }: { text: string; live: boolean }) {
     >
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          setOpen((v) => {
+            const next = !v;
+            if (next) pinnedToBottom.current = true;
+            return next;
+          });
+        }}
         className="smallcaps"
         style={{
           display: 'inline-flex',
@@ -384,6 +413,7 @@ function ThinkingBlock({ text, live }: { text: string; live: boolean }) {
         <div
           ref={tailRef}
           className="serif scroll"
+          onScroll={updatePinned}
           style={{
             marginTop: 6,
             fontStyle: 'italic',
@@ -1008,9 +1038,11 @@ function RunWorkflowCard({
 function MessageBubble({
   msg,
   onViewRun,
+  shouldAutoScroll,
 }: {
   msg: ChatMessage;
   onViewRun?: (runId: string) => void;
+  shouldAutoScroll?: () => boolean;
 }) {
   if (msg.role === 'user') {
     return (
@@ -1112,7 +1144,14 @@ function MessageBubble({
             // still streaming and has nothing else after it yet.
             const isTail =
               !!msg.streaming && i === msg.content.length - 1;
-            return <ThinkingBlock key={i} text={c.text} live={isTail} />;
+            return (
+              <ThinkingBlock
+                key={i}
+                text={c.text}
+                live={isTail}
+                shouldAutoScroll={shouldAutoScroll}
+              />
+            );
           }
           if (c.t === 'p') {
             return (
@@ -1170,6 +1209,7 @@ export function ChatThread({
   }, [draft, onDraftChange]);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
   const attachments = pendingAttachments ?? [];
   // Stick to the bottom only while the user is already there. A live call's
   // `messages` is a fresh array every render, so this effect runs constantly —
@@ -1178,13 +1218,26 @@ export function ChatThread({
   const pinnedToBottom = useRef(true);
   const onScroll = () => {
     const el = scrollRef.current;
-    if (el) pinnedToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    if (el) pinnedToBottom.current = isNearBottom(el);
   };
+  const shouldAutoScroll = () => pinnedToBottom.current;
 
-  useEffect(() => {
+  const pinToBottom = () => {
     const el = scrollRef.current;
     if (el && pinnedToBottom.current) el.scrollTop = el.scrollHeight;
+  };
+
+  useLayoutEffect(() => {
+    pinToBottom();
   }, [messages]);
+
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!content || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(pinToBottom);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, []);
 
   const submit = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -1208,10 +1261,17 @@ export function ChatThread({
           minWidth: 0,
         }}
       >
-        {messages.length === 0 && emptyState}
-        {messages.map((m, i) => (
-          <MessageBubble key={i} msg={m} onViewRun={onViewRun} />
-        ))}
+        <div ref={contentRef}>
+          {messages.length === 0 && emptyState}
+          {messages.map((m, i) => (
+            <MessageBubble
+              key={i}
+              msg={m}
+              onViewRun={onViewRun}
+              shouldAutoScroll={shouldAutoScroll}
+            />
+          ))}
+        </div>
       </div>
 
       <form
