@@ -115,7 +115,8 @@ export const api = {
   getNodeRun: (rid: string, nrid: string, fields: NodeRunField[]) =>
     request<NodeRun>('GET', `/api/runs/${rid}/node-runs/${nrid}${qs({ fields })}`),
   listRuns: (wid: string) => request<RunSummary[]>('GET', `/api/workflows/${wid}/runs`),
-  runEventsUrl: (rid: string) => wsUrl(`/api/runs/${rid}/events`),
+  runEventsUrl: (rid: string, opts?: { nodeId?: string }) =>
+    wsUrl(`/api/runs/${rid}/events${qs({ node_id: opts?.nodeId })}`),
 
   // --- file viewer ---------------------------------------------------------
   readFile: (path: string) =>
@@ -182,6 +183,7 @@ export const api = {
     onEvent: (ev: OrchestratorEvent) => void,
     signal?: AbortSignal,
     attachments?: { dataUrl: string; filename: string }[],
+    opts?: { auto?: boolean },
   ): Promise<void> => {
     const path = `/api/workflows/${wid}/sessions/${sid}/messages`;
     const res = await fetch(path, {
@@ -189,6 +191,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json', ...settingsHeaders('orchestrator') },
       body: JSON.stringify({
         text,
+        ...(opts?.auto ? { auto: true } : {}),
         attachments: (attachments ?? []).map((a) => ({
           data_url: a.dataUrl,
           filename: a.filename,

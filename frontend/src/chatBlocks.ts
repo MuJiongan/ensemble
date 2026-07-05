@@ -72,9 +72,9 @@ export function appendParagraph(a: A, text: string): A {
   return { ...a, content: [...a.content, { t: 'p', text }] };
 }
 
-/** Append an inline notice divider. */
-export function appendNotice(a: A, text: string): A {
-  return { ...a, content: [...a.content, { t: 'notice', text }] };
+/** Append a small inline notice. */
+export function appendNotice(a: A, text: string, kind: 'compaction' | 'run' | 'info' = 'info'): A {
+  return { ...a, content: [...a.content, { t: 'notice', text, kind }] };
 }
 
 /**

@@ -16,10 +16,12 @@ export function SnapshotRunPanel({
   onExit,
   onRerun,
   currentRun,
+  onCancelRun,
 }: {
   run: Run;
   onExit: () => void;
   onRerun: (inputs: Record<string, unknown>) => Promise<void>;
+  onCancelRun?: (runId: string) => Promise<void>;
   /** When set and bound to this run, live llm_call_finished events are
    * folded into model stats before node-run summaries are persisted. */
   currentRun?: CurrentRun | null;
@@ -30,13 +32,10 @@ export function SnapshotRunPanel({
   // The viewed run's live status when its WS is attached, else the status
   // frozen into the Run row at fetch time. The live stream leads the DB —
   // `run_finished` arrives over the WS before the Run row is persisted (and
-  // before the parent's refetch lands) — so prefer it for everything that
-  // should flip the moment the run ends: the status line, the in-flight
-  // cancel, and the final outputs.
+  // before the parent's refetch lands) — so prefer it for status. Outputs are
+  // fetched through the run endpoint instead of retained in live WS memory.
   const liveStatus: RunStatus =
     currentRun && currentRun.id === run.id ? currentRun.status : run.status;
-  const liveOutputs =
-    currentRun && currentRun.id === run.id ? currentRun.finalOutputs : null;
   const inFlight = liveStatus === 'running' || liveStatus === 'pending';
   const [persistedOutputs, setPersistedOutputs] = useState<Record<string, unknown> | null>(null);
   const [outputsLoading, setOutputsLoading] = useState(false);
@@ -47,29 +46,45 @@ export function SnapshotRunPanel({
     setOutputsLoading(false);
   }, [run.id]);
   useEffect(() => {
-    if (liveOutputs || inFlight || persistedOutputs !== null || outputsError) return;
+    if (inFlight || persistedOutputs !== null || outputsError) return;
     let cancelled = false;
-    setOutputsLoading(true);
-    api.getRunOutputs(run.id)
-      .then((res) => {
-        if (!cancelled) setPersistedOutputs(res.outputs ?? {});
-      })
-      .catch((e) => {
-        if (!cancelled) setOutputsError(e instanceof Error ? e.message : String(e));
-      })
-      .finally(() => {
-        if (!cancelled) setOutputsLoading(false);
-      });
+    let timer: number | undefined;
+    const rowPersisted = run.status !== 'running' && run.status !== 'pending';
+    const fetchOutputs = (attemptsLeft: number) => {
+      setOutputsLoading(true);
+      api.getRunOutputs(run.id)
+        .then((res) => {
+          if (cancelled) return;
+          const outputs = res.outputs ?? {};
+          if (!rowPersisted && Object.keys(outputs).length === 0 && attemptsLeft > 0) {
+            timer = window.setTimeout(() => fetchOutputs(attemptsLeft - 1), 500);
+            return;
+          }
+          setPersistedOutputs(outputs);
+          setOutputsLoading(false);
+        })
+        .catch((e) => {
+          if (!cancelled) {
+            setOutputsError(e instanceof Error ? e.message : String(e));
+            setOutputsLoading(false);
+          }
+        });
+    };
+    fetchOutputs(20);
     return () => {
       cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [run.id, liveOutputs, inFlight, persistedOutputs, outputsError]);
-  const outputs = Object.entries(liveOutputs ?? persistedOutputs ?? {});
+  }, [run.id, run.status, inFlight, persistedOutputs, outputsError]);
+  const outputs = Object.entries(persistedOutputs ?? {});
   const [cancelling, setCancelling] = useState(false);
   useEffect(() => { setCancelling(false); }, [run.id]);
   const cancelThisRun = async () => {
     setCancelling(true);
-    try { await api.cancelRun(run.id); } catch { /* ignore */ }
+    try {
+      if (onCancelRun) await onCancelRun(run.id);
+      else await api.cancelRun(run.id);
+    } catch { /* ignore */ }
   };
 
   // Re-run form state. The snapshot's input node defines the port shape;

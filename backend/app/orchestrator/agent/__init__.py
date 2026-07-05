@@ -41,6 +41,7 @@ from .session import (
     _was_superseded,
 )
 from .persistence import (
+    AUTO_USER_MARKER,
     _active_rows,
     _history_messages,
     _ordered_rows,
@@ -282,7 +283,12 @@ def _maybe_compact(
 
 
 def run_turn(
-    db: DbSession, session_id: str, user_text: str, attachments: list[dict] | None = None
+    db: DbSession,
+    session_id: str,
+    user_text: str,
+    attachments: list[dict] | None = None,
+    *,
+    auto_user: bool = False,
 ) -> Iterator[dict]:
     """Run one user-message turn end-to-end. Yields event dicts:
 
@@ -301,8 +307,13 @@ def run_turn(
     workflow_id = sess.workflow_id
 
     # 1) persist + announce the user message
-    user_msg = _persist_user(db, session_id, user_text, attachments)
-    yield {"kind": "user_message", "id": user_msg.id, "text": user_text}
+    user_msg = _persist_user(db, session_id, user_text, attachments, auto=auto_user)
+    yield {
+        "kind": "user_message",
+        "id": user_msg.id,
+        "text": user_text,
+        **({"auto": True} if auto_user else {}),
+    }
 
     # Claim this session's turn slot. If a prior turn was running, this signals
     # it to wind down (the prior generator will bail at its next checkpoint).
@@ -456,8 +467,9 @@ def run_turn(
                 # — the actual run executes in a background thread. Emit a
                 # `run_started` event so the frontend can attach its run panel
                 # to the live WS (same code path the manual Run button uses),
-                # then block here until the run finishes and replace `result`
-                # with the materialised final state before the LLM sees it.
+                # then give the LLM the non-blocking start result. This keeps
+                # the orchestrator turn free to start other independent runs
+                # instead of parking on a long workflow.
                 if (
                     name == "run_workflow"
                     and isinstance(result, dict)
@@ -470,9 +482,6 @@ def run_turn(
                         "run_id": run_id,
                         "workflow_id": workflow_id,
                     }
-                    result = orch_tools.wait_for_run(
-                        db, workflow_id, run_id, cancel_event=cancel_event
-                    )
 
                 # `run_workflow` (and a few others) always include an `error`
                 # key, set to None on success — so check the *value*, not the
@@ -599,6 +608,10 @@ def render_history(db: DbSession, session_id: str) -> list[dict]:
                 bubbles.append(bubble)
             turn_content = []
             turn_cost = 0.0
+            if r.name == AUTO_USER_MARKER:
+                text, _, _ = user_bubble_fields(r)
+                turn_content.append({"t": "notice", "text": text, "kind": "run"})
+                continue
             text, imgs, files = user_bubble_fields(r)
             bubbles.append({
                 "role": "user",

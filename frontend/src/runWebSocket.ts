@@ -3,6 +3,41 @@ import { api } from './api';
 import { ensureNotificationPermission, notifyRunFinished } from './notify';
 import type { CurrentRun, NodeRunStatus, RunEvent, RunStatus, Workflow } from './types';
 
+function compactRunEvent(ev: RunEvent): RunEvent {
+  if (ev.type === 'node_started') {
+    return { ...ev, inputs: {} };
+  }
+  if (ev.type === 'llm_call_finished') {
+    return { ...ev, content: '' };
+  }
+  if (ev.type === 'tool_call_started') {
+    return { ...ev, args: {} };
+  }
+  if (ev.type === 'tool_call_finished') {
+    const result = ev.result as { error_type?: string; server?: string } | null | undefined;
+    const authResult =
+      result?.error_type === 'needs_auth' && result.server
+        ? { error_type: 'needs_auth', server: result.server }
+        : undefined;
+    const { result: _result, ...rest } = ev;
+    return authResult ? { ...rest, args: {}, result: authResult } : { ...rest, args: {} };
+  }
+  if (ev.type === 'node_finished') {
+    return {
+      ...ev,
+      inputs: {},
+      outputs: {},
+      logs: [],
+      llm_calls: [],
+      tool_calls: [],
+    };
+  }
+  if (ev.type === 'run_finished') {
+    return { ...ev, outputs: {} };
+  }
+  return ev;
+}
+
 /** Clone nodeStates only when a mutation actually changes a value. Keeps
  * the prior reference on log/chunk events so the canvas doesn't rebuild
  * every React Flow node on each streamed token. */
@@ -27,7 +62,6 @@ function patchNodeStates(
 export function applyRunEvent(cur: CurrentRun, ev: RunEvent): CurrentRun {
   let nodeStates = cur.nodeStates;
   let nextStatus = cur.status;
-  let finalOutputs = cur.finalOutputs;
   let error = cur.error;
   let totalCost = cur.totalCost;
 
@@ -52,7 +86,6 @@ export function applyRunEvent(cur: CurrentRun, ev: RunEvent): CurrentRun {
     }
   } else if (ev.type === 'run_finished') {
     nextStatus = ev.status;
-    finalOutputs = ev.outputs;
     error = ev.error;
     totalCost = ev.total_cost;
     // Defensive sweep: if the runner ever fails to emit node_finished
@@ -77,10 +110,9 @@ export function applyRunEvent(cur: CurrentRun, ev: RunEvent): CurrentRun {
 
   return {
     ...cur,
-    events: [...cur.events, ev],
+    events: ev.type === 'run_finished' ? [] : [...cur.events, compactRunEvent(ev)],
     nodeStates,
     status: nextStatus,
-    finalOutputs,
     error,
     totalCost,
   };
@@ -95,7 +127,14 @@ function isTerminal(status: RunStatus): boolean {
  * socket and its own `CurrentRun` entry in the returned map, so switching
  * workflows mid-run never drops the stream. Sockets are closed when their
  * workflow is dropped (deletion) or on unmount via `closeAllSockets`. */
-export function useRunWebSocket(workflows: Workflow[]) {
+export function useRunWebSocket(
+  workflows: Workflow[],
+  onRunFinished?: (
+    runId: string,
+    workflowId: string,
+    status: RunStatus,
+  ) => void,
+) {
   const [runs, setRuns] = useState<Record<string, CurrentRun>>({});
   const runsRef = useRef<Record<string, CurrentRun>>({});
   const socketsRef = useRef<Map<string, WebSocket>>(new Map());
@@ -129,7 +168,6 @@ export function useRunWebSocket(workflows: Workflow[]) {
       startedAt,
       events: [],
       nodeStates: {},
-      finalOutputs: null,
       error: null,
       totalCost: 0,
       executesOnSnapshot,
@@ -169,6 +207,7 @@ export function useRunWebSocket(workflows: Workflow[]) {
           outputs: ev.outputs,
           durationMs: Date.now() - startedAt,
         });
+        onRunFinished?.(runId, workflowId, ev.status);
       }
       const cur = runsRef.current[runId];
       if (!cur) return;

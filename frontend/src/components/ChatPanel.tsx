@@ -245,6 +245,7 @@ export interface ChatThinking {
 export interface ChatNotice {
   t: 'notice';
   text: string;
+  kind?: 'compaction' | 'run' | 'info';
 }
 
 export type ChatBlock = ChatParagraph | ChatToolCall | ChatThinking | ChatNotice;
@@ -287,6 +288,8 @@ export interface ChatThreadProps {
   stopTitle?: string;
   /** Rendered in place of the messages when the thread is empty. */
   emptyState?: React.ReactNode;
+  /** Optional content pinned between the message list and composer. */
+  aboveComposer?: React.ReactNode;
   // Attachments (orchestrator chat only; the continuation composer is text-only).
   pendingAttachments?: PendingAttachment[];
   onRemoveAttachment?: (id: string) => void;
@@ -318,6 +321,10 @@ interface Props {
    * `run_workflow` tool card. The host can swap the canvas to render the
    * run's frozen `workflow_snapshot`. */
   onViewRun?: (runId: string) => void;
+  /** Orchestrator-started run ids for the active workflow, newest first. */
+  orchestratorRunIds?: string[];
+  /** Drop a run id from any host-owned run lists after it is deleted. */
+  onForgetRun?: (runId: string) => void;
 
   // --- continuation mode ------------------------------------------------
   /** When set, this pane shows an agent continuation (entered from a node's
@@ -443,7 +450,7 @@ function CompactionNotice({ text }: { text: string }) {
         margin: '10px 0',
         color: 'var(--ink-4)',
       }}
-      title="Older turns were summarized to stay within the model's context window."
+      title={text}
     >
       <span style={{ flex: 1, height: 1, background: 'var(--rule)' }} />
       <span
@@ -456,6 +463,128 @@ function CompactionNotice({ text }: { text: string }) {
       <span style={{ flex: 1, height: 1, background: 'var(--rule)' }} />
     </div>
   );
+}
+
+function InlineNotice({ text, kind }: { text: string; kind?: ChatNotice['kind'] }) {
+  const noticeKind = kind ?? (text === 'context compacted' ? 'compaction' : 'info');
+  if (noticeKind === 'compaction') {
+    return <CompactionNotice text={text} />;
+  }
+  const isRunNotice = noticeKind === 'run';
+  if (isRunNotice) {
+    const match = text.trim().match(/^run\s+([a-z0-9-]+)\s+(.+?)\.?$/i);
+    const runId = match?.[1] ?? '';
+    const status = match?.[2] ?? text;
+    const statusTone = /succeeded|success/i.test(status)
+      ? 'var(--state-ok)'
+      : /failed|error/i.test(status)
+        ? 'var(--state-err)'
+        : 'var(--ink-4)';
+
+    return (
+      <div
+        className="fade-in"
+        style={{
+          display: 'flex',
+          justifyContent: 'center',
+          margin: '3px 0 5px',
+        }}
+        title={text}
+      >
+        <span
+          style={{
+            maxWidth: 'min(100%, 440px)',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            overflow: 'hidden',
+            padding: '0 4px',
+            color: 'var(--ink-4)',
+            fontFamily: 'var(--sans)',
+            fontSize: 10.5,
+            lineHeight: 1.35,
+          }}
+        >
+          <span
+            aria-hidden
+            style={{
+              width: 4,
+              height: 4,
+              borderRadius: '50%',
+              background: statusTone,
+              opacity: 0.85,
+              flex: '0 0 auto',
+            }}
+          />
+          {runId ? (
+            <>
+              <span style={{ flex: '0 0 auto', color: 'var(--ink-5)' }}>run</span>
+              <span
+                style={{
+                  minWidth: 0,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  color: 'var(--ink-4)',
+                  fontSize: 10.5,
+                  fontWeight: 500,
+                  letterSpacing: '0.04em',
+                  textTransform: 'uppercase',
+                }}
+              >
+                {runId}
+              </span>
+              <span aria-hidden style={{ flex: '0 0 auto', color: 'var(--ink-5)' }}>
+                /
+              </span>
+              <span style={{ flex: '0 0 auto', color: 'var(--ink-4)' }}>{status}</span>
+            </>
+          ) : (
+            <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {text}
+            </span>
+          )}
+        </span>
+      </div>
+    );
+  }
+  return (
+    <div
+      className="fade-in"
+      style={{
+        display: 'flex',
+        justifyContent: 'center',
+        margin: '5px 0 9px',
+      }}
+      title={text}
+    >
+      <span
+        className="smallcaps"
+        style={{
+          maxWidth: 'min(100%, 460px)',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          border: '1px solid var(--rule)',
+          borderRadius: 999,
+          padding: '3px 9px',
+          background: 'var(--muted-fill)',
+          color: 'var(--ink-4)',
+          fontSize: 9,
+        }}
+      >
+        {text}
+      </span>
+    </div>
+  );
+}
+
+function isRunNoticeBlock(block: ChatBlock): block is ChatNotice {
+  return block.t === 'notice' && block.kind === 'run';
+}
+
+function isRunNoticeMessage(msg: ChatMessage | undefined): msg is AssistantMessage {
+  return !!msg && msg.role === 'assistant' && msg.content.length > 0 && msg.content.every(isRunNoticeBlock);
 }
 
 function ToolCallCard({ tool, args, argsFull, status, result }: ChatToolCall) {
@@ -702,7 +831,7 @@ function RunWorkflowCard({
         if (cancelled) return;
         setSnapshot(run);
         const inFlight = run.status === 'running' || run.status === 'pending';
-        if (status === 'pending' && inFlight) {
+        if (inFlight) {
           timer = window.setTimeout(track, 3000);
         }
       } catch (err) {
@@ -714,7 +843,7 @@ function RunWorkflowCard({
         // Other fetch failures (offline, server hiccup) are non-fatal — the
         // card still renders the live `result` payload, just without
         // per-node detail. Retry only while the block is unresolved.
-        if (status === 'pending') timer = window.setTimeout(track, 3000);
+        timer = window.setTimeout(track, 3000);
       }
     };
     track();
@@ -732,11 +861,13 @@ function RunWorkflowCard({
   // history can carry `pending` forever for a turn that died mid-run, but
   // the run itself has long since settled (or been deleted).
   const snapStatus = snapshot?.status;
-  const settled =
-    status === 'pending' && snapStatus && snapStatus !== 'running' && snapStatus !== 'pending'
-      ? snapStatus
-      : null;
-  const isPending = !deleted && status === 'pending' && !settled;
+  const settled = snapStatus && snapStatus !== 'running' && snapStatus !== 'pending'
+    ? snapStatus
+    : null;
+  const resultRunning = r.status === 'running' || r.status === 'pending';
+  const snapshotRunning = snapStatus === 'running' || snapStatus === 'pending';
+  const isPending =
+    !deleted && !settled && (status === 'pending' || resultRunning || snapshotRunning);
   const isErr =
     !deleted &&
     (status === 'err' ||
@@ -1031,14 +1162,242 @@ function RunWorkflowCard({
   );
 }
 
+function isRunInFlight(status: string | null | undefined): boolean {
+  return status === 'running' || status === 'pending';
+}
+
+function summarizeInputs(inputs: Record<string, unknown> | null): string {
+  const entries = Object.entries(inputs ?? {});
+  if (entries.length === 0) return 'inputs {}';
+  const text = entries
+    .slice(0, 3)
+    .map(([key, value]) => `${key}: ${preview(value, 56)}`)
+    .join(' · ');
+  return entries.length > 3 ? `${text} · +${entries.length - 3}` : text;
+}
+
+function OrchestratorRunRow({
+  runId,
+  onViewRun,
+  onDeleted,
+}: {
+  runId: string;
+  onViewRun?: (runId: string) => void;
+  onDeleted?: (runId: string) => void;
+}) {
+  const [card, setCard] = useState<RunCard | null>(null);
+  const [inputs, setInputs] = useState<Record<string, unknown> | null>(null);
+  const [deleted, setDeleted] = useState(false);
+  const onDeletedRef = useRef(onDeleted);
+
+  useEffect(() => {
+    onDeletedRef.current = onDeleted;
+  }, [onDeleted]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    const track = async () => {
+      try {
+        const [next, detail] = await Promise.all([
+          api.getRunCard(runId),
+          inputs === null ? api.getRun(runId).catch(() => null) : Promise.resolve(null),
+        ]);
+        if (cancelled) return;
+        setCard(next);
+        if (detail) setInputs(detail.inputs ?? {});
+        if (isRunInFlight(next.status)) {
+          timer = window.setTimeout(track, 4000);
+        }
+      } catch (err) {
+        if (cancelled) return;
+        if (err instanceof ApiError && err.status === 404) {
+          setDeleted(true);
+          onDeletedRef.current?.(runId);
+          return;
+        }
+        timer = window.setTimeout(track, 5000);
+      }
+    };
+    track();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [runId, inputs]);
+
+  const status = deleted ? 'deleted' : card?.status ?? 'running';
+  const active = isRunInFlight(status);
+  const failed = status === 'error';
+  const color = active
+    ? 'var(--state-run)'
+    : failed
+      ? 'var(--state-err)'
+      : status === 'success'
+        ? 'var(--state-ok)'
+        : 'var(--ink-4)';
+  const label = deleted
+    ? 'deleted'
+    : active
+      ? 'running'
+      : status;
+  const inputSummary = summarizeInputs(inputs);
+
+  return (
+    <button
+      type="button"
+      onClick={() => onViewRun?.(runId)}
+      disabled={!onViewRun || deleted}
+      title={deleted ? 'this run was deleted' : 'open this run'}
+      style={{
+        display: 'grid',
+        gridTemplateColumns: 'auto minmax(0, 1fr) auto',
+        gap: 8,
+        alignItems: 'center',
+        width: '100%',
+        background: 'transparent',
+        border: 0,
+        padding: '4px 0',
+        cursor: onViewRun && !deleted ? 'pointer' : 'default',
+        textAlign: 'left',
+      }}
+    >
+      <span
+        aria-hidden
+        style={{
+          width: 6,
+          height: 6,
+          borderRadius: 999,
+          background: color,
+        }}
+      />
+      <span
+        className="mono"
+        style={{
+          minWidth: 0,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          color: 'var(--ink-3)',
+          fontSize: 10,
+        }}
+      >
+        {inputSummary}
+      </span>
+      <span className="smallcaps" style={{ color, fontSize: 9 }}>
+        {label}
+      </span>
+    </button>
+  );
+}
+
+function OrchestratorRunsTray({
+  runIds,
+  onViewRun,
+  onDeleted,
+}: {
+  runIds: string[];
+  onViewRun?: (runId: string) => void;
+  onDeleted?: (runId: string) => void;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+  if (runIds.length === 0) return null;
+  return (
+    <div
+      style={{
+        borderTop: '1px solid var(--rule)',
+        background: 'var(--paper)',
+        padding: collapsed ? '5px 22px' : '6px 22px 7px',
+        flexShrink: 0,
+        maxHeight: '18vh',
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        className="smallcaps"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          width: '100%',
+          color: 'var(--ink-4)',
+          fontSize: 9,
+          marginBottom: 1,
+        }}
+      >
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 12,
+            minWidth: 0,
+          }}
+        >
+          <span>orchestrator runs</span>
+          <span className="mono" style={{ color: 'var(--ink-5)', fontSize: 9 }}>
+            {runIds.length}
+          </span>
+          <button
+            type="button"
+            onClick={() => setCollapsed((v) => !v)}
+            aria-expanded={!collapsed}
+            title={collapsed ? 'show orchestrator runs' : 'hide orchestrator runs'}
+            style={{
+              display: 'inline-grid',
+              placeItems: 'center',
+              width: 16,
+              height: 16,
+              background: 'transparent',
+              border: 0,
+              padding: 0,
+              color: 'var(--ink-4)',
+              cursor: 'pointer',
+              lineHeight: 1,
+            }}
+          >
+            <span
+              aria-hidden
+              style={{
+                display: 'inline-block',
+                position: 'relative',
+                top: -1,
+                transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
+                transition: 'transform 120ms ease',
+              }}
+            >
+              ▾
+            </span>
+          </button>
+        </span>
+      </div>
+      {!collapsed && (
+        <div style={{ maxHeight: 78, overflow: 'auto' }} className="scroll">
+          {runIds.map((runId) => (
+            <OrchestratorRunRow
+              key={runId}
+              runId={runId}
+              onViewRun={onViewRun}
+              onDeleted={onDeleted}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MessageBubble({
   msg,
   onViewRun,
   shouldAutoScroll,
+  showRoleLabel = true,
+  separatedFromPrevious = false,
 }: {
   msg: ChatMessage;
   onViewRun?: (runId: string) => void;
   shouldAutoScroll?: () => boolean;
+  showRoleLabel?: boolean;
+  separatedFromPrevious?: boolean;
 }) {
   if (msg.role === 'user') {
     return (
@@ -1046,9 +1405,11 @@ function MessageBubble({
         className="fade-in"
         style={{ padding: '14px 22px', borderBottom: '1px solid var(--rule-2)' }}
       >
-        <div className="smallcaps" style={{ marginBottom: 6, color: 'var(--ink-3)' }}>
-          you
-        </div>
+        {showRoleLabel && (
+          <div className="smallcaps" style={{ marginBottom: 6, color: 'var(--ink-3)' }}>
+            you
+          </div>
+        )}
         {(!!msg.images?.length || !!msg.files?.length) && (
           <div
             style={{
@@ -1092,39 +1453,76 @@ function MessageBubble({
       </div>
     );
   }
+  const runNotices = msg.content.every(isRunNoticeBlock) ? msg.content : null;
+  if (runNotices && runNotices.length > 0) {
+    const topPadding = showRoleLabel ? 10 : separatedFromPrevious ? 7 : 1;
+    return (
+      <div
+        className="fade-in"
+        style={{
+          padding: `${topPadding}px 22px 1px`,
+          borderBottom: '0',
+        }}
+      >
+        {showRoleLabel && (
+          <div
+            className="smallcaps"
+            style={{
+              marginBottom: 8,
+              color: 'var(--accent-ink)',
+              display: 'flex',
+              alignItems: 'baseline',
+              gap: 6,
+            }}
+          >
+            <span>ensemble</span>
+            <span style={{ flex: 1 }} />
+          </div>
+        )}
+        {runNotices.map((c, i) => (
+          <InlineNotice key={i} text={c.text} kind={c.kind} />
+        ))}
+      </div>
+    );
+  }
   return (
     <div
       className="fade-in"
-      style={{ padding: '14px 22px', borderBottom: '1px solid var(--rule-2)' }}
+      style={{
+        padding: showRoleLabel ? '14px 22px' : '3px 22px 12px',
+        borderBottom: '1px solid var(--rule-2)',
+      }}
     >
-      <div
-        className="smallcaps"
-        style={{
-          marginBottom: 8,
-          color: 'var(--accent-ink)',
-          display: 'flex',
-          alignItems: 'baseline',
-          gap: 6,
-        }}
-      >
-        <span>ensemble</span>
-        <span style={{ flex: 1 }} />
-        {typeof msg.cost === 'number' && msg.cost > 0 && (
-          <span
-            className="mono"
-            title="provider-reported cost for this turn"
-            style={{
-              textTransform: 'none',
-              letterSpacing: 0,
-              fontWeight: 400,
-              color: 'var(--ink-4)',
-              fontSize: 10.5,
-            }}
-          >
-            ${msg.cost.toFixed(4)}
-          </span>
-        )}
-      </div>
+      {showRoleLabel && (
+        <div
+          className="smallcaps"
+          style={{
+            marginBottom: 8,
+            color: 'var(--accent-ink)',
+            display: 'flex',
+            alignItems: 'baseline',
+            gap: 6,
+          }}
+        >
+          <span>ensemble</span>
+          <span style={{ flex: 1 }} />
+          {typeof msg.cost === 'number' && msg.cost > 0 && (
+            <span
+              className="mono"
+              title="provider-reported cost for this turn"
+              style={{
+                textTransform: 'none',
+                letterSpacing: 0,
+                fontWeight: 400,
+                color: 'var(--ink-4)',
+                fontSize: 10.5,
+              }}
+            >
+              ${msg.cost.toFixed(4)}
+            </span>
+          )}
+        </div>
+      )}
       <div
         style={{
           fontFamily: 'var(--serif)',
@@ -1162,10 +1560,7 @@ function MessageBubble({
             );
           }
           if (c.t === 'notice') {
-            return <CompactionNotice key={i} text={c.text} />;
-          }
-          if (c.tool === 'run_workflow') {
-            return <RunWorkflowCard key={i} {...c} onViewRun={onViewRun} />;
+            return <InlineNotice key={i} text={c.text} kind={c.kind} />;
           }
           return <ToolCallCard key={i} {...c} />;
         })}
@@ -1193,6 +1588,7 @@ export function ChatThread({
   onRemoveAttachment,
   draggingFile,
   attachmentNotice,
+  aboveComposer,
 }: ChatThreadProps) {
   // Keep local state as a fallback if this thread is used without a controlled
   // draft. When controlled, state is fully owned by the host.
@@ -1265,10 +1661,18 @@ export function ChatThread({
               msg={m}
               onViewRun={onViewRun}
               shouldAutoScroll={shouldAutoScroll}
+              showRoleLabel={i === 0 || messages[i - 1]?.role !== m.role}
+              separatedFromPrevious={
+                m.role === 'assistant' &&
+                messages[i - 1]?.role === 'assistant' &&
+                !isRunNoticeMessage(messages[i - 1])
+              }
             />
           ))}
         </div>
       </div>
+
+      {aboveComposer}
 
       <form
         onSubmit={submit}
@@ -1358,6 +1762,8 @@ export function ChatPanel({
   catalog,
   onPickModel,
   onCycleVariant,
+  orchestratorRunIds,
+  onForgetRun,
 }: Props) {
   const totalCost = messages.reduce(
     (sum, m) => sum + (m.role === 'assistant' ? m.cost ?? 0 : 0),
@@ -1490,6 +1896,15 @@ export function ChatPanel({
         onRemoveAttachment={conversationLabel ? undefined : onRemoveAttachment}
         draggingFile={conversationLabel ? undefined : draggingFile}
         attachmentNotice={conversationLabel ? undefined : attachmentNotice}
+        aboveComposer={
+          !conversationLabel ? (
+            <OrchestratorRunsTray
+              runIds={orchestratorRunIds ?? []}
+              onViewRun={onViewRun}
+              onDeleted={onForgetRun}
+            />
+          ) : null
+        }
         emptyState={
           conversationLabel ? (
             <div

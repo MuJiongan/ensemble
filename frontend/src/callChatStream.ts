@@ -44,7 +44,7 @@ export function reduceCallChatOnEvent(ev: CallChatTurnEvent): AssistantMutation 
     return (a) => ({ ...a, cost: (a.cost ?? 0) + ev.cost });
   }
   if (ev.type === 'context_compacted') {
-    return (a) => appendNotice(a, 'context compacted');
+    return (a) => appendNotice(a, 'context compacted', 'compaction');
   }
   if (ev.type === 'error') {
     return (a) => appendParagraph(a, `*[error]* ${ev.error}`);

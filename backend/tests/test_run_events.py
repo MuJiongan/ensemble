@@ -7,6 +7,7 @@ import asyncio
 import threading
 
 from app.runner import events as ev_mod
+from app.api.runs import _filtered_run_event
 
 
 def _fresh(run_id: str):
@@ -69,3 +70,76 @@ def test_discard_unblocks_finished_event_waiters():
     ev_mod.discard(rid)
     t.join(timeout=3)
     assert released.is_set()
+
+
+def test_run_event_filter_summary_strips_heavy_payloads():
+    event = {
+        "type": "node_finished",
+        "node_id": "n1",
+        "status": "success",
+        "inputs": {"large": "input"},
+        "outputs": {"large": "output"},
+        "logs": ["log"],
+        "llm_calls": [{"content": "x"}],
+        "tool_calls": [{"result": "y"}],
+        "error": None,
+        "duration_ms": 5,
+        "cost": 0.1,
+    }
+
+    filtered = _filtered_run_event(event, node_id=None)
+    assert filtered == {
+        **event,
+        "inputs": {},
+        "outputs": {},
+        "logs": [],
+        "llm_calls": [],
+        "tool_calls": [],
+    }
+
+
+def test_run_event_filter_node_keeps_only_requested_node_detail():
+    event = {
+        "type": "tool_call_finished",
+        "node_id": "n1",
+        "tool": "read_file",
+        "args": {"path": "/tmp/a"},
+        "result": {"content": "large"},
+        "via": "direct",
+        "call_id": "c1",
+    }
+
+    assert _filtered_run_event(event, node_id="n2") is None
+    assert _filtered_run_event(event, node_id="n1") == event
+
+
+def test_run_event_filter_summary_keeps_sanitized_auth_failures():
+    event = {
+        "type": "tool_call_finished",
+        "node_id": "n1",
+        "tool": "remote_search",
+        "args": {"query": "large"},
+        "result": {
+            "error_type": "needs_auth",
+            "server": "search",
+            "content": "large payload",
+        },
+        "error": "authentication required",
+        "via": "llm",
+        "call_id": "c1",
+        "tc_index": 0,
+        "round": 2,
+    }
+
+    assert _filtered_run_event(event, node_id=None) == {
+        "type": "tool_call_finished",
+        "node_id": "n1",
+        "tool": "remote_search",
+        "args": {},
+        "result": {"error_type": "needs_auth", "server": "search"},
+        "error": "authentication required",
+        "via": "llm",
+        "call_id": "c1",
+        "tc_index": 0,
+        "round": 2,
+    }

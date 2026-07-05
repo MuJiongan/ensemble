@@ -291,6 +291,7 @@ class AttachmentIn(BaseModel):
 class UserMessageIn(BaseModel):
     text: str
     attachments: list[AttachmentIn] = []
+    auto: bool = False
 
 
 # --- continue-chat (agent continuation) schemas ------------------------
