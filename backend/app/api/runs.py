@@ -483,8 +483,64 @@ def _run_row_exists(rid: str) -> bool:
         db.close()
 
 
+def _filtered_run_event(event: dict, *, node_id: str | None) -> dict | None:
+    et = event.get("type")
+    if et == "run_deleted":
+        return event
+
+    if node_id:
+        if et in ("run_started", "run_finished"):
+            return event if et == "run_started" else {**event, "outputs": {}}
+        if event.get("node_id") != node_id:
+            return None
+        return event
+
+    if et in ("mcp_status", "run_started"):
+        return event
+    if et == "node_started":
+        return {**event, "inputs": {}}
+    if et == "node_finished":
+        return {
+            **event,
+            "inputs": {},
+            "outputs": {},
+            "logs": [],
+            "llm_calls": [],
+            "tool_calls": [],
+        }
+    if et == "run_finished":
+        return {**event, "outputs": {}}
+    if et == "tool_call_finished":
+        result = event.get("result")
+        if (
+            isinstance(result, dict)
+            and result.get("error_type") == "needs_auth"
+            and result.get("server")
+        ):
+            filtered = {
+                "type": "tool_call_finished",
+                "node_id": event.get("node_id"),
+                "tool": event.get("tool"),
+                "args": {},
+                "result": {
+                    "error_type": "needs_auth",
+                    "server": result.get("server"),
+                },
+                "via": event.get("via"),
+            }
+            for key in ("call_id", "tc_index", "round", "error"):
+                if key in event:
+                    filtered[key] = event[key]
+            return filtered
+    return None
+
+
 @router.websocket("/runs/{rid}/events")
-async def ws_run_events(websocket: WebSocket, rid: str):
+async def ws_run_events(
+    websocket: WebSocket,
+    rid: str,
+    node_id: str | None = Query(None),
+):
     """Stream per-run events (backlog + live tail) until the run finishes."""
     await websocket.accept()
     try:
@@ -495,7 +551,9 @@ async def ws_run_events(websocket: WebSocket, rid: str):
             await websocket.send_json({"type": "run_deleted", "run_id": rid})
             return
         async for event in run_service.subscribe(rid):
-            await websocket.send_json(event)
+            filtered = _filtered_run_event(event, node_id=node_id)
+            if filtered is not None:
+                await websocket.send_json(filtered)
     except WebSocketDisconnect:
         return
     except Exception as e:

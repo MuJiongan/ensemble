@@ -135,7 +135,13 @@ def post_message(wid: str, sid: str, body: schemas.UserMessageIn) -> StreamingRe
 
     def gen():
         try:
-            for event in agent.run_turn(db, sid, body.text, attachments=attachments):
+            for event in agent.run_turn(
+                db,
+                sid,
+                body.text,
+                attachments=attachments,
+                auto_user=body.auto,
+            ):
                 yield f"data: {json.dumps(event, default=str)}\n\n"
         finally:
             db.close()

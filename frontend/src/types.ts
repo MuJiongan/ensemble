@@ -338,15 +338,11 @@ export interface CurrentRun {
   startedAt: number;
   events: RunEvent[];
   nodeStates: Record<string, NodeRunStatus>;
-  finalOutputs: Record<string, unknown> | null;
   error: string | null;
   totalCost: number;
   // True when this run executes against a frozen snapshot that may diverge
-  // from the live graph (rerun-from-snapshot). The live canvas suppresses
-  // its node-state overlay in that case — node ids in the snapshot can
-  // miss live nodes (and vice versa), so the dots would be misleading.
-  // Snapshot view is the right place to watch progress for these runs;
-  // the rerun handler stays in snapshot view while it executes.
+  // from the live graph (rerun-from-snapshot). Snapshot view can use this
+  // run's live node states safely because it is tied to one explicit run.
   executesOnSnapshot: boolean;
 }
 
@@ -379,7 +375,13 @@ export interface ChatBlockThinking {
   text: string;
 }
 
-export type ChatBlock = ChatBlockP | ChatBlockTool | ChatBlockThinking;
+export interface ChatBlockNotice {
+  t: 'notice';
+  text: string;
+  kind?: 'compaction' | 'run' | 'info';
+}
+
+export type ChatBlock = ChatBlockP | ChatBlockTool | ChatBlockThinking | ChatBlockNotice;
 
 export interface ChatHistoryUser {
   role: 'user';
@@ -410,7 +412,7 @@ export interface ChatHistory {
 }
 
 export type OrchestratorEvent =
-  | { kind: 'user_message'; id: string; text: string }
+  | { kind: 'user_message'; id: string; text: string; auto?: boolean }
   // assistant_text fires once per LLM round with the full text — kept for
   // backwards compat with non-streaming clients (currently unused by App).
   | { kind: 'assistant_text'; text: string }
@@ -438,7 +440,7 @@ export type OrchestratorEvent =
   // Emitted by the agent loop when the orchestrator's `run_workflow` tool
   // kicks off a run. The frontend attaches the run panel to the run's WS
   // (same code path the manual Run button uses), so the user sees live
-  // progress while the orchestrator awaits the result.
+  // progress while the run continues in the background.
   | { kind: 'run_started'; run_id: string; workflow_id: string }
   // Emitted once per turn when the agent loop summarized older history to
   // stay within the model's context window. Purely informational — the chat

@@ -293,13 +293,16 @@ export function summariseRun(run: Pick<RunSummary, 'id' | 'inputs'>): { text: st
   return { text: truncate(joined, TOTAL_BUDGET), kind: 'value' };
 }
 
-function attachActiveRunIdToPendingRunWorkflow(
+function attachActiveRunIdsToPendingRunWorkflows(
   messages: ChatMessage[],
-  runId: string | undefined,
+  runIds: string[],
 ): ChatMessage[] {
-  if (!runId) return messages;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
+  if (runIds.length === 0) return messages;
+  let nextMessages = messages;
+  let idx = 0;
+  for (let i = nextMessages.length - 1; i >= 0 && idx < runIds.length; i--) {
+    const runId = runIds[idx];
+    const msg = nextMessages[i];
     if (msg.role !== 'assistant') continue;
     for (let j = msg.content.length - 1; j >= 0; j--) {
       const block = msg.content[j];
@@ -311,11 +314,17 @@ function attachActiveRunIdToPendingRunWorkflow(
       ) {
         const content = [...msg.content];
         content[j] = { ...block, runId };
-        return [...messages.slice(0, i), { ...msg, content }, ...messages.slice(i + 1)];
+        nextMessages = [
+          ...nextMessages.slice(0, i),
+          { ...msg, content },
+          ...nextMessages.slice(i + 1),
+        ];
+        idx += 1;
+        break;
       }
     }
   }
-  return messages;
+  return nextMessages;
 }
 
 export function historyToChatMessages(
@@ -337,6 +346,7 @@ export function historyToChatMessages(
       content: (m.content ?? []).map((b): ChatBlock => {
         if (b.t === 'thinking') return { t: 'thinking', text: b.text };
         if (b.t === 'p') return { t: 'p', text: b.text };
+        if (b.t === 'notice') return { t: 'notice', text: b.text, kind: b.kind };
         return {
           t: 'tool',
           tool: b.tool,
@@ -349,10 +359,10 @@ export function historyToChatMessages(
       ...(m.cost && m.cost > 0 ? { cost: m.cost } : {}),
     };
   });
-  const activeRunId = activeRuns.find(
+  const activeRunIds = activeRuns.filter(
     (r) => r.status === 'running' || r.status === 'pending',
-  )?.id;
-  const out = attachActiveRunIdToPendingRunWorkflow(mapped, activeRunId);
+  ).map((r) => r.id);
+  const out = attachActiveRunIdsToPendingRunWorkflows(mapped, activeRunIds);
   if (!activeTurn || out.length === 0) return out;
 
   const last = out[out.length - 1];

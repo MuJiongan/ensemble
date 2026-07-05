@@ -36,10 +36,11 @@ import { useOrchestratorStream } from './orchestratorStream';
 import { useCallChatStream } from './callChatStream';
 import { useImageAttachments } from './components/ImageAttachments';
 import { useRunWebSocket } from './runWebSocket';
+import { useNodeRunEvents } from './runTraceStream';
 import { getCatalog, findModel, CATALOG_CHANGED_EVENT, type Catalog } from './providerCatalog';
 import type {
   Workflow, WorkflowDetail, NodeRunStatus, Run, RunSummary, CurrentRun, ModelSelection,
-  CallChat,
+  CallChat, RunStatus,
 } from './types';
 
 type View = 'workflow' | 'settings';
@@ -99,6 +100,20 @@ export default function App() {
   // Orchestrator turns discovered after a reload. These have no local SSE
   // reader, so we poll the persisted session until the backend reports done.
   const [recoveringOrchestratorIds, setRecoveringOrchestratorIds] = useState<Set<string>>(new Set());
+  const [orchestratorRunIdsByWorkflow, setOrchestratorRunIdsByWorkflow] =
+    useState<Record<string, string[]>>({});
+  const sessionByWorkflowRef = useRef<Record<string, string>>({});
+  useEffect(() => {
+    sessionByWorkflowRef.current = sessionByWorkflow;
+  }, [sessionByWorkflow]);
+  const orchestratingIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    orchestratingIdsRef.current = orchestratingIds;
+  }, [orchestratingIds]);
+  const orchestratorRunIdsRef = useRef<Record<string, string[]>>({});
+  useEffect(() => {
+    orchestratorRunIdsRef.current = orchestratorRunIdsByWorkflow;
+  }, [orchestratorRunIdsByWorkflow]);
   const chatByWorkflowRef = useRef<Record<string, ChatMessage[]>>({});
   useEffect(() => {
     chatByWorkflowRef.current = chatByWorkflow;
@@ -168,21 +183,92 @@ export default function App() {
     }
   };
 
+  type OrchestratorStreamFn = (
+    wid: string,
+    sid: string,
+    text: string,
+    attachments?: { dataUrl: string; filename: string; mime: string }[],
+    opts?: { auto?: boolean; notice?: string },
+  ) => Promise<void>;
+  const streamToOrchestratorRef = useRef<OrchestratorStreamFn | null>(null);
+  const notifiedRunIdsRef = useRef<Set<string>>(new Set());
+  const pendingRunNoticesRef = useRef<
+    Record<string, { runId: string; status: RunStatus }[]>
+  >({});
+  const drainRunNoticeTimersRef = useRef<Record<string, number>>({});
+  const liveRunsRef = useRef<Record<string, CurrentRun>>({});
+
+  function scheduleRunNoticeDrain(wid: string, delay = 0) {
+    const existing = drainRunNoticeTimersRef.current[wid];
+    if (existing !== undefined) window.clearTimeout(existing);
+    drainRunNoticeTimersRef.current[wid] = window.setTimeout(() => {
+      delete drainRunNoticeTimersRef.current[wid];
+      drainRunNotices(wid);
+    }, delay);
+  }
+
+  function drainRunNotices(wid: string) {
+    const queue = pendingRunNoticesRef.current[wid] ?? [];
+    if (queue.length === 0) return;
+    if (orchestratingIdsRef.current.has(wid)) {
+      scheduleRunNoticeDrain(wid, 1200);
+      return;
+    }
+    const sid = sessionByWorkflowRef.current[wid];
+    const stream = streamToOrchestratorRef.current;
+    if (!sid || !stream) {
+      scheduleRunNoticeDrain(wid, 2000);
+      return;
+    }
+    const next = queue.shift();
+    pendingRunNoticesRef.current[wid] = queue;
+    if (!next) return;
+
+    const statusText =
+      next.status === 'success'
+        ? 'succeeded'
+        : next.status === 'error'
+          ? 'failed'
+          : `finished (${next.status})`;
+    const notice = `run ${next.runId} ${statusText}`;
+    const text = `Run ${next.runId} ${statusText}.`;
+    void stream(wid, sid, text, undefined, { auto: true, notice })
+      .finally(() => {
+        if ((pendingRunNoticesRef.current[wid] ?? []).length > 0) {
+          scheduleRunNoticeDrain(wid, 0);
+        }
+      });
+  }
+
+  function enqueueRunFinishedNotice(wid: string, runId: string, status: RunStatus) {
+    if (status === 'cancelled') return;
+    if (!(orchestratorRunIdsRef.current[wid] ?? []).includes(runId)) return;
+    if (notifiedRunIdsRef.current.has(runId)) return;
+    notifiedRunIdsRef.current.add(runId);
+    pendingRunNoticesRef.current[wid] = [
+      ...(pendingRunNoticesRef.current[wid] ?? []),
+      { runId, status },
+    ];
+    scheduleRunNoticeDrain(wid, 0);
+  }
+
   const { runs: liveRuns, attachToRun, dropRun, dropWorkflowRuns, closeAllSockets } =
-    useRunWebSocket(workflows);
+    useRunWebSocket(
+      workflows,
+      (runId, workflowId, status) => enqueueRunFinishedNotice(workflowId, runId, status),
+    );
+  useEffect(() => {
+    liveRunsRef.current = liveRuns;
+  }, [liveRuns]);
 
   // Several runs can be attached at once (across workflows, or stacked on
-  // one). Most surfaces care about "the latest run on this workflow" —
-  // canvas dots, the run panel's status chip, the top-bar state.
-  const latestRunFor = (
-    wid: string | null | undefined,
-    opts?: { liveGraphOnly?: boolean },
-  ): CurrentRun | null => {
+  // one). Surfaces that only need a coarse workflow status use the latest
+  // attached run; run-specific progress belongs in the run panel/snapshot view.
+  const latestRunFor = (wid: string | null | undefined): CurrentRun | null => {
     if (!wid) return null;
     let best: CurrentRun | null = null;
     for (const r of Object.values(liveRuns)) {
       if (r.workflow_id !== wid) continue;
-      if (opts?.liveGraphOnly && r.executesOnSnapshot) continue;
       if (!best || r.startedAt > best.startedAt) best = r;
     }
     return best;
@@ -293,13 +379,67 @@ export default function App() {
   const attachToRunRef = useRef(attachToRun);
   useEffect(() => { attachToRunRef.current = attachToRun; });
 
+  const mergeRunIds = (existing: string[], runIds: string[]) => (
+    [...runIds, ...existing.filter((id) => !runIds.includes(id))]
+  );
+
+  const rememberOrchestratorRuns = (wid: string, runIds: string[]) => {
+    if (runIds.length === 0) return;
+    orchestratorRunIdsRef.current = {
+      ...orchestratorRunIdsRef.current,
+      [wid]: mergeRunIds(orchestratorRunIdsRef.current[wid] ?? [], runIds),
+    };
+    setOrchestratorRunIdsByWorkflow((prev) => {
+      return { ...prev, [wid]: mergeRunIds(prev[wid] ?? [], runIds) };
+    });
+  };
+
+  const forgetRunEverywhere = (runId: string) => {
+    dropRun(runId);
+    notifiedRunIdsRef.current.delete(runId);
+    for (const wid of Object.keys(pendingRunNoticesRef.current)) {
+      pendingRunNoticesRef.current[wid] =
+        pendingRunNoticesRef.current[wid]?.filter((item) => item.runId !== runId) ?? [];
+    }
+    setOrchestratorRunIdsByWorkflow((prev) => {
+      let changed = false;
+      const next: Record<string, string[]> = {};
+      for (const [wid, runIds] of Object.entries(prev)) {
+        const kept = runIds.filter((id) => id !== runId);
+        if (kept.length !== runIds.length) changed = true;
+        if (kept.length > 0) next[wid] = kept;
+      }
+      return changed ? next : prev;
+    });
+  };
+
+  const clearOrchestratorRunsForWorkflow = (wid: string) => {
+    const runIds = orchestratorRunIdsRef.current[wid] ?? [];
+    for (const runId of runIds) notifiedRunIdsRef.current.delete(runId);
+    pendingRunNoticesRef.current[wid] = [];
+    const timer = drainRunNoticeTimersRef.current[wid];
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      delete drainRunNoticeTimersRef.current[wid];
+    }
+    setOrchestratorRunIdsByWorkflow((prev) => {
+      if (!(wid in prev)) return prev;
+      const { [wid]: _, ...rest } = prev;
+      return rest;
+    });
+  };
+
   const { streamToOrchestrator, abortStream, dropWorkflow } = useOrchestratorStream({
     setChatByWorkflow,
     setOrchestratingIds,
     refreshDetail,
     refreshWorkflows,
     attachToRunRef,
+    onOrchestratorRunStarted: (wid, runId) => rememberOrchestratorRuns(wid, [runId]),
   });
+  useEffect(() => {
+    streamToOrchestratorRef.current = streamToOrchestrator;
+  }, [streamToOrchestrator]);
 
   const { streamToCallChat, cancelCallChat, dropAllStreams } = useCallChatStream({
     setCallChatMessages,
@@ -322,10 +462,8 @@ export default function App() {
       if (isRunning) {
         // We don't know whether this run executes on live or on a divergent
         // snapshot (the click came from the recent-runs list, which doesn't
-        // distinguish). Mark it `executesOnSnapshot` so leaving snapshot
-        // view to live doesn't overlay potentially-mismatched dots there;
-        // snapshot view itself overlays correctly via id lookup. Attaching
-        // is a no-op if this run's stream is already open.
+        // distinguish). Snapshot view itself overlays correctly via id lookup.
+        // Attaching is a no-op if this run's stream is already open.
         attachToRunRef.current(run.id, run.workflow_id, run.status, /* executesOnSnapshot */ true);
       }
     } catch {
@@ -453,8 +591,9 @@ export default function App() {
       );
       if (history.active_turn && !hasLocalChat) {
         // Restored runs do not carry the original attach context. Treat them
-        // as snapshot-only so their node-state dots never paint on a diverged
-        // live canvas after reload.
+        // as snapshot-only; snapshot view is the only place that should show
+        // run-specific node progress.
+        rememberOrchestratorRuns(wid, (history.active_runs ?? []).map((run) => run.id));
         for (const run of history.active_runs ?? []) {
           attachToRunRef.current(run.id, run.workflow_id, run.status, /* executesOnSnapshot */ true);
         }
@@ -484,6 +623,10 @@ export default function App() {
   const restoreActiveRuns = async (wid: string) => {
     try {
       const runs = await api.listRuns(wid);
+      rememberOrchestratorRuns(
+        wid,
+        runs.filter((run) => run.kind === 'orchestrator').map((run) => run.id),
+      );
       for (const run of runs) {
         if (runIsActive(run)) {
           // Unknown restored runs are conservative: visible in run state, but
@@ -530,6 +673,7 @@ export default function App() {
             history.active_runs,
           ),
         }));
+        rememberOrchestratorRuns(wid, (history.active_runs ?? []).map((run) => run.id));
         if (history.active_turn) {
           timer = window.setTimeout(poll, 2000);
           return;
@@ -566,12 +710,19 @@ export default function App() {
   // Live-run sockets stay open across workflow switches so background runs
   // keep streaming; only tear them down when the app unmounts.
   useEffect(() => {
-    return () => closeAllSockets();
+    return () => {
+      closeAllSockets();
+      for (const timer of Object.values(drainRunNoticeTimersRef.current)) {
+        window.clearTimeout(timer);
+      }
+      drainRunNoticeTimersRef.current = {};
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const activeWorkflow = workflows.find((w) => w.id === activeId) ?? null;
   const messages = activeId ? chatByWorkflow[activeId] ?? [] : [];
+  const orchestratorRunIds = activeId ? orchestratorRunIdsByWorkflow[activeId] ?? [] : [];
 
   /**
    * Send a user message. Lazily creates a workflow + chat context if one
@@ -667,6 +818,16 @@ export default function App() {
       setDetail(null);
     }
     dropWorkflowRuns(id);
+    setOrchestratorRunIdsByWorkflow((prev) => {
+      const { [id]: _, ...rest } = prev;
+      return rest;
+    });
+    delete pendingRunNoticesRef.current[id];
+    const timer = drainRunNoticeTimersRef.current[id];
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      delete drainRunNoticeTimersRef.current[id];
+    }
     setChatByWorkflow((prev) => {
       const { [id]: _, ...rest } = prev;
       return rest;
@@ -776,6 +937,7 @@ export default function App() {
     if (!activeId || isOrchestrating) return;
     const sid = sessionByWorkflow[activeId];
     if (!sid) {
+      clearOrchestratorRunsForWorkflow(activeId);
       setChatByWorkflow((prev) => ({ ...prev, [activeId]: [] }));
       return;
     }
@@ -789,6 +951,7 @@ export default function App() {
     setDialog({ kind: 'none' });
     try {
       await api.clearSessionMessages(activeId, sid);
+      clearOrchestratorRunsForWorkflow(activeId);
       setChatByWorkflow((prev) => ({ ...prev, [activeId]: [] }));
     } catch (e) {
       setDialog({
@@ -849,16 +1012,20 @@ export default function App() {
     setRightPanelMode('chat');
   };
 
-  // The live call's bubbles, derived from its run's event stream — recomputed as
-  // events arrive, so the chat pane streams. Keyed on the *active* run's events
-  // only, so an event on some other concurrent run doesn't re-aggregate here.
-  const activeRun = activeLiveCall ? liveRuns[activeLiveCall.runId] ?? null : null;
+  // The live call's bubbles, derived from a lazy node-filtered run stream.
+  // This keeps global run state lightweight while preserving streaming once the
+  // user explicitly opens a call.
+  const activeLiveCallEvents = useNodeRunEvents(
+    activeLiveCall?.runId,
+    activeLiveCall?.nodeId,
+    !!activeLiveCall,
+  );
   const liveCall = useMemo(() => {
-    if (!activeLiveCall || !activeRun) return null;
-    const t = aggregateEvents(activeRun.events).find((x) => x.node_id === activeLiveCall.nodeId);
+    if (!activeLiveCall) return null;
+    const t = aggregateEvents(activeLiveCallEvents).find((x) => x.node_id === activeLiveCall.nodeId);
     return t?.llmCalls.find((c) => c.call_id === activeLiveCall.callId) ?? null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeLiveCall, activeRun?.events]);
+  }, [activeLiveCall, activeLiveCallEvents]);
 
   // When a live call's run finishes + persists, swap to its continuation so the
   // composer enables. Retries briefly — node_runs commit just after run_finished.
@@ -1030,8 +1197,7 @@ export default function App() {
   // currently-attached one (rerun-from-snapshot, mid-execution), use live
   // states from the WS so the dots animate on the snapshot canvas.
   // Otherwise use the historical NodeRun rows (frozen post-completion).
-  // The live canvas has its own overlay below — this one's just for
-  // snapshot view.
+  // The editable live canvas deliberately does not show run-specific dots.
   const snapshotNodeStates: Record<string, NodeRunStatus> = viewingRun
     ? {
         ...Object.fromEntries(
@@ -1164,15 +1330,10 @@ export default function App() {
                       setSelectedNodeId(id);
                       if (id !== null) setRightPanelMode('workspace');
                     }}
-                    // Overlay live node states for the latest run executing
-                    // on the live graph (manual run, orchestrator-triggered
-                    // run). Snapshot reruns are excluded — their snapshot can
-                    // diverge from live, so dots may apply to wrong nodes or
-                    // miss entirely. Snapshot view is the right place to
-                    // watch those; the rerun handler keeps the user there.
-                    nodeStates={
-                      latestRunFor(detail.id, { liveGraphOnly: true })?.nodeStates
-                    }
+                    // Live graph editing is not tied to a single run: users
+                    // and the orchestrator can start several runs at once.
+                    // Run-specific node progress is shown only in explicit
+                    // run/snapshot views, not overlaid on the editable canvas.
                     headerActions={
                       <button
                         type="button"
@@ -1280,6 +1441,8 @@ export default function App() {
                         // A live call's model is fixed — no picker while streaming.
                         onPickModel={activeLiveCall ? undefined : onChatPickModel}
                         onCycleVariant={activeLiveCall ? undefined : onChatCycleVariant}
+                        orchestratorRunIds={orchestratorRunIds}
+                        onForgetRun={forgetRunEverywhere}
                         onViewRun={(runId) => {
                           // Snapshot view renders inside the workspace tab —
                           // flip back from chat so the run panel is actually
@@ -1355,7 +1518,6 @@ export default function App() {
                           workflow={detail}
                           onClose={() => setSelectedNodeId(null)}
                           onChange={refreshDetail}
-                          currentRun={currentRun}
                           onSendErrorToOrchestrator={sendErrorToOrchestrator}
                           onContinue={openContinuation}
                           onViewLive={openLiveCall}
@@ -1367,7 +1529,7 @@ export default function App() {
                           currentRun={currentRun}
                           onStart={startRun}
                           onViewRunOnCanvas={enterSnapshotView}
-                          onRunDeleted={dropRun}
+                          onRunDeleted={forgetRunEverywhere}
                           orchestrating={isOrchestrating}
                         />
                       )}

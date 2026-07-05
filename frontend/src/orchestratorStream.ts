@@ -59,7 +59,7 @@ export function reduceAssistantOnEvent(ev: OrchestratorEvent): AssistantMutation
     return (a) => ({ ...a, cost: (a.cost ?? 0) + ev.cost });
   }
   if (ev.kind === 'context_compacted') {
-    return (a) => appendNotice(a, 'context compacted');
+    return (a) => appendNotice(a, 'context compacted', 'compaction');
   }
   if (ev.kind === 'error') {
     return (a) => appendParagraph(a, `*[error]* ${ev.message}`);
@@ -80,6 +80,7 @@ interface UseOrchestratorStreamArgs {
   attachToRunRef: React.MutableRefObject<
     (runId: string, workflowId: string) => void
   >;
+  onOrchestratorRunStarted?: (workflowId: string, runId: string) => void;
 }
 
 /** Hook that owns per-workflow orchestrator-stream lifecycle: abort
@@ -91,6 +92,7 @@ export function useOrchestratorStream({
   refreshDetail,
   refreshWorkflows,
   attachToRunRef,
+  onOrchestratorRunStarted,
 }: UseOrchestratorStreamArgs) {
   const abortRefs = useRef<Record<string, AbortController>>({});
 
@@ -112,6 +114,7 @@ export function useOrchestratorStream({
     sid: string,
     text: string,
     attachments?: { dataUrl: string; filename: string; mime: string }[],
+    opts?: { auto?: boolean; notice?: string },
   ) => {
     abortRefs.current[wid]?.abort();
     const ctrl = new AbortController();
@@ -124,7 +127,13 @@ export function useOrchestratorStream({
     });
 
     // Optimistically add the user bubble + a streaming assistant placeholder.
-    const placeholder: AssistantMessage = { role: 'assistant', content: [], streaming: true };
+    // Automatic app-generated turns are not rendered as "you"; they show as
+    // a small notice inside the assistant stream instead.
+    const placeholder: AssistantMessage = {
+      role: 'assistant',
+      content: opts?.auto && opts.notice ? [{ t: 'notice', text: opts.notice, kind: 'run' }] : [],
+      streaming: true,
+    };
     const images = (attachments ?? [])
       .filter((a) => a.mime.startsWith('image/'))
       .map((a) => a.dataUrl);
@@ -138,12 +147,14 @@ export function useOrchestratorStream({
       ...prev,
       [wid]: [
         ...(prev[wid] ?? []),
-        {
-          role: 'user',
-          text,
-          ...(images.length ? { images } : {}),
-          ...(files.length ? { files } : {}),
-        },
+        ...(opts?.auto
+          ? []
+          : [{
+              role: 'user' as const,
+              text,
+              ...(images.length ? { images } : {}),
+              ...(files.length ? { files } : {}),
+            }]),
         placeholder,
       ],
     }));
@@ -158,13 +169,16 @@ export function useOrchestratorStream({
       } else if (ev.kind === 'run_started') {
         // Orchestrator kicked off a run via `run_workflow`. Attach the run
         // panel via the same code path the Run button uses, so the user
-        // gets live progress while the orchestrator turn awaits the result.
+        // gets live progress while the run continues in the background.
+        onOrchestratorRunStarted?.(ev.workflow_id, ev.run_id);
         attachToRunRef.current(ev.run_id, ev.workflow_id);
       }
     };
 
     try {
-      await api.streamUserMessage(wid, sid, text, handleEvent, ctrl.signal, attachments);
+      await api.streamUserMessage(wid, sid, text, handleEvent, ctrl.signal, attachments, {
+        auto: opts?.auto,
+      });
     } catch (e) {
       if (ctrl.signal.aborted) {
         updateAssistant(wid, (a) => ({ ...a, streaming: false }));

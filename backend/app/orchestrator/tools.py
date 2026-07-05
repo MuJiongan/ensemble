@@ -7,6 +7,7 @@ LLM can self-correct.
 """
 from __future__ import annotations
 import math
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session as DbSession
@@ -343,9 +344,9 @@ def get_mcp_tool_schema(db: DbSession, wid: str, *, server: str, tool: str) -> d
 # ---------------------------------------------------------------------------
 # run trigger — kicks off a workflow run with explicit inputs and returns
 # immediately with `{run_id, status: "running"}`. The agent loop detects
-# this shape, emits a `run_started` chat event so the frontend can attach
-# its run panel to the live WS, then waits via `wait_for_run` for the
-# materialised final result before letting the LLM see it.
+# this shape and emits a `run_started` chat event so the frontend can attach
+# its run panel to the live WS. The orchestrator does not wait for the run
+# to finish before continuing.
 # ---------------------------------------------------------------------------
 
 
@@ -357,10 +358,9 @@ def run_workflow(
 ) -> dict:
     """Kick off a workflow run with the given inputs in a background thread
     and return immediately with ``{run_id, status: "running"}``. The agent
-    loop turns this into a ``run_started`` chat event (so the run panel
-    can attach to the WS), waits for completion via :func:`wait_for_run`,
-    and replaces this stub with the materialised result before the LLM
-    sees a tool result.
+    loop turns this into a ``run_started`` chat event so the run panel can
+    attach to the WS, then passes this start result to the LLM without
+    blocking on completion.
     """
     # Lazy imports to avoid a load-time cycle between the orchestrator package
     # and the api routers.
@@ -413,11 +413,37 @@ def run_workflow(
     run_id = run.id
 
     # The agent loop will yield a `run_started` chat event with this run_id
-    # (so the frontend can attach), then call `wait_for_run` to block on
-    # completion before returning the final result to the LLM.
+    # so the frontend can attach while the run continues independently.
     run_service.start_run(run_id, wf_data, inputs, default_model)
 
     return {"run_id": run_id, "status": "running"}
+
+
+def cancel_run(db: DbSession, wid: str, *, run_id: str) -> dict:
+    """Cancel a workflow run in this workflow.
+
+    Signals the live subprocess when one is tracked. If the DB row still reads
+    running/pending but no in-memory state owns it, reconcile it to cancelled so
+    it does not remain stuck.
+    """
+    from app.runner import service as run_service
+
+    run = db.get(models.Run, run_id)
+    if run is None or run.workflow_id != wid:
+        return {"error": f"run {run_id} not found in workflow {wid}"}
+
+    if run_service.cancel(run_id):
+        return {"run_id": run_id, "cancelled": True}
+
+    if run.status in ("running", "pending") and not run_service.has_state(run_id):
+        run.status = "cancelled"
+        run.error = run.error or "cancelled (run was no longer active)"
+        run.ended_at = run.ended_at or datetime.utcnow()
+        db.commit()
+        run_service.discard(run_id)
+        return {"run_id": run_id, "cancelled": True}
+
+    return {"run_id": run_id, "cancelled": False, "reason": f"run is already {run.status}"}
 
 
 def wait_for_run(
@@ -729,6 +755,7 @@ REGISTRY = {
     "set_output_node": set_output_node,
     "clean_canvas": clean_canvas,
     "run_workflow": run_workflow,
+    "cancel_run": cancel_run,
     "list_runs": list_runs,
     "view_run": view_run,
 }
@@ -746,6 +773,7 @@ NON_GRAPH_MUTATING_TOOLS: set[str] = {
     "list_runs",
     "view_run",
     "run_workflow",
+    "cancel_run",
     "rename_project",
 }
 
@@ -986,14 +1014,11 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "function": {
             "name": "run_workflow",
             "description": (
-                "Trigger a workflow run with explicit inputs. The call returns once the run "
-                "finishes — you wait, and the user sees live progress + the actual outputs in "
-                "the run panel. Returns ONLY {run_id, status, total_cost} — outputs are not "
-                "relayed back to you; on a non-success status, `error` and `node_errors` "
-                "(which node failed, with what message) are included too. The user is the "
-                "audience for outputs; on success, point them at the run panel rather than "
-                "summarising. Call only when you can confidently supply the input node's "
-                "required inputs from the conversation; otherwise leave running to the user."
+                "Start a long background run with explicit inputs and return immediately: "
+                "{run_id, status:\"running\"}. Do not poll; inspect later with `list_runs` "
+                "/ `view_run` only after needed runs appear complete, the user asks, or a "
+                "later step needs completed output. Call only when you can supply every "
+                "required input from the conversation."
             ),
             "parameters": {
                 "type": "object",
@@ -1008,6 +1033,31 @@ TOOL_SCHEMAS: dict[str, dict] = {
                     },
                 },
                 "required": ["inputs"],
+            },
+        },
+    },
+    "cancel_run": {
+        "type": "function",
+        "function": {
+            "name": "cancel_run",
+            "description": (
+                "Cancel a running or pending workflow run by id. Use when the user asks "
+                "to stop a run, or when you started a run that is no longer useful. "
+                "Returns {run_id, cancelled} or {run_id, cancelled:false, reason}. Only "
+                "cancels runs in the current workflow."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "run_id": {
+                        "type": "string",
+                        "description": (
+                            "The run id to cancel. Use the id returned by `run_workflow` "
+                            "or found through `list_runs`."
+                        ),
+                    },
+                },
+                "required": ["run_id"],
             },
         },
     },
@@ -1047,21 +1097,12 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "function": {
             "name": "view_run",
             "description": (
-                "Return one node's record within a run. *Default: don't call this.* Use it "
-                "ONLY when you absolutely cannot proceed without the run's contents — "
-                "diagnosing a failure (the `run_workflow` result already names the failing "
-                "node(s) in `node_errors`), reading a research node's findings before "
-                "continuing the build, handing off between stages of a multi-workflow solve "
-                "where the previous run's outputs are the input to designing the next graph, "
-                "or checking on an interrupted run. On a successful end-user run, do NOT "
-                "call this just to summarise — the user reads outputs in the run panel.\n\n"
-                "There is no run-level dump: every call names the node (`node_id`), the "
-                "slice it needs (`fields`), and — when reading `inputs`/`outputs` — the "
-                "specific port names (`ports`). Always includes the lightweight metadata "
-                "{node_name, status, error, duration_ms, cost}; the heavy "
-                "fields (`inputs`, `outputs`, `logs`) are gated by `fields`. The workflow's "
-                "result lives on the output node — `node_id=<output node id>, "
-                "fields=[\"outputs\"], ports=[<the output port(s) you need>]`."
+                "Read one node's record from a completed or failed run. Use only when you "
+                "need run contents: summarizing completed orchestrator-started runs, failure "
+                "diagnosis, research findings, stage handoff, or a user-requested inspection. "
+                "Don't use it to poll or summarize a successful manually started run. Every "
+                "call must name `node_id`, `fields`, and `ports` when reading inputs/outputs. "
+                "The workflow result is on the output node."
             ),
             "parameters": {
                 "type": "object",

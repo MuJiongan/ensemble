@@ -8,6 +8,7 @@ import {
   NodeTraceCard, NodeLlmCallsView, aggregateEvents, nodeRunToTrace, type LiveLLMCall, type NodeTrace,
 } from './NodeTraceCard';
 import { CloseButton } from './CloseButton';
+import { useNodeRunEvents } from '../runTraceStream';
 
 interface Props {
   node: WFNode;
@@ -20,8 +21,8 @@ interface Props {
   /** When set, the trace tab is bound to this single historical run. The
    * snapshot view passes the run that produced the snapshot. */
   pinnedRun?: Run;
-  /** Live in-flight run on this workflow. When present (and `pinnedRun` is
-   * not), the trace tab streams events for `node.id` from the run's WS. */
+  /** Live in-flight run bound to `pinnedRun`. When present, this panel opens
+   * a lazy node-filtered WS for `node.id`. */
   currentRun?: CurrentRun | null;
   /** Forward a node-level error from the trace tab to the orchestrator. */
   onSendErrorToOrchestrator?: (message: string) => void;
@@ -59,19 +60,23 @@ export function NodePanel({
   node, workflow, onClose, onChange, readOnly, pinnedRun, currentRun,
   onSendErrorToOrchestrator, onContinue, onViewLive,
 }: Props) {
-  // Trace tab visibility + data source. Three regimes, in priority order:
+  // Trace tab visibility + data source. Two regimes, in priority order:
   //   1. The pinned run is also the live attached one (rerun-from-snapshot
-  //      mid-execution, viewed from snapshot view). Stream live events —
-  //      the historical NodeRun rows aren't materialised yet.
+  //      mid-execution, viewed from snapshot view). Lazily stream events for
+  //      the selected node — the historical NodeRun rows aren't materialised yet.
   //   2. Pinned run only (snapshot view, post-completion). Read the
   //      historical NodeRun for this node from the frozen Run row.
-  //   3. Live attached run on this workflow (no pin). Stream live events.
   const liveRunForThisNode =
     currentRun &&
     currentRun.workflow_id === workflow.id &&
     (!pinnedRun || currentRun.id === pinnedRun.id)
       ? currentRun
       : null;
+  const liveNodeEvents = useNodeRunEvents(
+    liveRunForThisNode?.id,
+    node.id,
+    !!liveRunForThisNode,
+  );
 
   const [tab, setTab] = useState<Tab>('code');
   const [code, setCode] = useState(node.code);
@@ -143,14 +148,14 @@ export function NodePanel({
 
   const trace: NodeTrace | null = useMemo(() => {
     if (liveRunForThisNode) {
-      const all = aggregateEvents(liveRunForThisNode.events);
+      const all = aggregateEvents(liveNodeEvents);
       return all.find((t) => t.node_id === node.id) ?? null;
     }
     if (historicalNodeRun) {
       return nodeRunToTrace(historicalNodeRun);
     }
     return null;
-  }, [liveRunForThisNode?.events, historicalNodeRun, node.id]);
+  }, [liveRunForThisNode, liveNodeEvents, historicalNodeRun, node.id]);
 
   const traceTabAvailable = !!pinnedRun || !!liveRunForThisNode;
 

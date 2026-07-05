@@ -304,6 +304,36 @@ def test_render_history_collapses_assistant_with_tool_cards(db, workflow):
     assert blocks[1]["status"] == "ok"
 
 
+def test_auto_user_message_replays_but_renders_as_notice(db, workflow):
+    from app.orchestrator.agent.persistence import AUTO_USER_MARKER
+
+    sess = models.Session(workflow_id=workflow.id)
+    db.add(sess)
+    db.commit()
+    db.refresh(sess)
+
+    text = "The orchestrator-started workflow run abc finished with status \"success\"."
+    db.add(
+        models.Message(
+            session_id=sess.id,
+            role="user",
+            name=AUTO_USER_MARKER,
+            content=text,
+        )
+    )
+    db.add(models.Message(session_id=sess.id, role="assistant", content="i'll inspect it."))
+    db.commit()
+
+    replay = orch_agent._history_messages(db, sess.id)
+    assert replay[0] == {"role": "user", "content": text}
+
+    bubbles = orch_agent.render_history(db, sess.id)
+    assert len(bubbles) == 1
+    assert bubbles[0]["role"] == "assistant"
+    assert bubbles[0]["content"][0] == {"t": "notice", "text": text, "kind": "run"}
+    assert bubbles[0]["content"][1] == {"t": "p", "text": "i'll inspect it."}
+
+
 def test_get_messages_reports_active_turn(db, workflow):
     sess = models.Session(workflow_id=workflow.id)
     db.add(sess)
@@ -352,6 +382,7 @@ def test_llm_tool_specs_covers_full_surface():
         "set_output_node",
         "clean_canvas",
         "run_workflow",
+        "cancel_run",
         "list_runs",
         "view_run",
     }
@@ -1119,6 +1150,74 @@ def test_run_workflow_tags_run_as_orchestrator_kind(db, workflow, monkeypatch):
     assert row.kind == "orchestrator"
 
 
+def test_cancel_run_signals_live_run(db, workflow, monkeypatch):
+    from app.runner import service as run_service
+
+    run = models.Run(workflow_id=workflow.id, kind="orchestrator", status="running", inputs={})
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+
+    monkeypatch.setattr(run_service, "cancel", lambda rid: rid == run.id)
+
+    res = orch_tools.cancel_run(db, workflow.id, run_id=run.id)
+    assert res == {"run_id": run.id, "cancelled": True}
+
+
+def test_cancel_run_reconciles_orphaned_running_row(db, workflow, monkeypatch):
+    from app.runner import service as run_service
+
+    run = models.Run(workflow_id=workflow.id, kind="orchestrator", status="running", inputs={})
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+
+    monkeypatch.setattr(run_service, "cancel", lambda rid: False)
+    monkeypatch.setattr(run_service, "has_state", lambda rid: False)
+    monkeypatch.setattr(run_service, "discard", lambda rid: None)
+
+    res = orch_tools.cancel_run(db, workflow.id, run_id=run.id)
+    assert res == {"run_id": run.id, "cancelled": True}
+
+    db.refresh(run)
+    assert run.status == "cancelled"
+    assert run.error == "cancelled (run was no longer active)"
+    assert run.ended_at is not None
+
+
+def test_cancel_run_finished_run_returns_reason(db, workflow, monkeypatch):
+    from app.runner import service as run_service
+
+    run = models.Run(workflow_id=workflow.id, kind="orchestrator", status="success", inputs={})
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+
+    monkeypatch.setattr(run_service, "cancel", lambda rid: False)
+
+    res = orch_tools.cancel_run(db, workflow.id, run_id=run.id)
+    assert res == {
+        "run_id": run.id,
+        "cancelled": False,
+        "reason": "run is already success",
+    }
+
+
+def test_cancel_run_is_workflow_scoped(db, workflow):
+    other = models.Workflow(name="other")
+    db.add(other)
+    db.commit()
+    db.refresh(other)
+    run = models.Run(workflow_id=other.id, kind="orchestrator", status="running", inputs={})
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+
+    res = orch_tools.cancel_run(db, workflow.id, run_id=run.id)
+    assert "error" in res
+    assert "not found" in res["error"]
+
+
 def test_list_runs_unknown_workflow_errors_via_execute(db):
     res = orch_tools.execute(db, "no-such-workflow", "list_runs", {})
     assert "error" in res
@@ -1283,6 +1382,7 @@ def test_non_graph_mutating_tools_set_matches_registry():
         "list_runs",
         "view_run",
         "run_workflow",
+        "cancel_run",
         "rename_project",
     }
     for name in orch_tools.NON_GRAPH_MUTATING_TOOLS:
@@ -1513,6 +1613,86 @@ def test_run_turn_streams_chunks_executes_tools_and_persists(db, workflow, monke
     assert msgs[1].tool_calls and msgs[1].tool_calls[0]["function"]["name"] == "add_node"
     assert msgs[2].tool_call_id == "call_loader"
     assert msgs[3].content == " done."
+
+
+def test_run_turn_does_not_wait_for_run_workflow(db, workflow, monkeypatch):
+    """`run_workflow` should resolve to the LLM with the start result, not
+    block the orchestrator turn until the background run finishes."""
+    monkeypatch.setenv("DEFAULT_ORCHESTRATOR_MODEL", "test/model")
+    sess = models.Session(workflow_id=workflow.id)
+    db.add(sess); db.commit(); db.refresh(sess)
+
+    rounds = [
+        [
+            (
+                "done",
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_run",
+                                "type": "function",
+                                "function": {
+                                    "name": "run_workflow",
+                                    "arguments": json.dumps({"inputs": {}}),
+                                },
+                            }
+                        ],
+                    },
+                    "usage": {},
+                },
+            ),
+        ],
+        [
+            (
+                "done",
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "started.",
+                        "tool_calls": [],
+                    },
+                    "usage": {},
+                },
+            ),
+        ],
+    ]
+    rounds_iter = iter(rounds)
+
+    def fake_stream(model, messages, tool_specs, cancel_event=None):
+        return iter(next(rounds_iter))
+
+    def fake_execute(db_arg, wid_arg, name, args):
+        assert name == "run_workflow"
+        return {"run_id": "run_123", "status": "running"}
+
+    def fail_wait(*args, **kwargs):
+        raise AssertionError("wait_for_run should not be called")
+
+    monkeypatch.setattr(orch_agent, "_call_llm_stream", fake_stream)
+    monkeypatch.setattr(orch_tools, "execute", fake_execute)
+    monkeypatch.setattr(orch_tools, "wait_for_run", fail_wait)
+
+    events = list(orch_agent.run_turn(db, sess.id, "run it"))
+    kinds = [e["kind"] for e in events]
+
+    assert "run_started" in kinds
+    run_started = next(e for e in events if e["kind"] == "run_started")
+    assert run_started["run_id"] == "run_123"
+
+    tool_end = next(e for e in events if e["kind"] == "tool_call_end")
+    assert tool_end["status"] == "ok"
+    assert tool_end["result"] == {"run_id": "run_123", "status": "running"}
+    assert kinds[-1] == "done"
+
+    persisted_tool = (
+        db.query(models.Message)
+        .filter_by(session_id=sess.id, role="tool", tool_call_id="call_run")
+        .one()
+    )
+    assert json.loads(persisted_tool.content) == {"run_id": "run_123", "status": "running"}
 
 
 def test_run_turn_user_cancel_mid_stream_does_not_persist_partial(db, workflow, monkeypatch):
