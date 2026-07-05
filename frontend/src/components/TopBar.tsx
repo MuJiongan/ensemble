@@ -122,7 +122,14 @@ export function TopBar({
 
       <div
         ref={pickerRef}
-        style={{ position: 'relative', display: 'flex', alignItems: 'center', flex: 1, minWidth: 0 }}
+        style={{
+          position: 'relative',
+          display: 'flex',
+          alignItems: 'baseline',
+          flex: 1,
+          minWidth: 0,
+          marginLeft: 12,
+        }}
       >
         <button
           type="button"
@@ -132,7 +139,6 @@ export function TopBar({
           className={`project-switcher${pickerOpen ? ' project-switcher--open' : ''}`}
           title="switch project"
         >
-          <span className="project-switcher__kicker smallcaps">project</span>
           <span className="project-switcher__name">{activeWorkflow?.name || 'untitled'}</span>
           <span className="project-switcher__caret" aria-hidden="true">▾</span>
         </button>

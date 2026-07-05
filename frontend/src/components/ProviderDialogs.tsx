@@ -4,8 +4,8 @@
  * React port of opencode's connect/select UX:
  *   - DialogSelectProvider  ← dialog-select-provider.tsx
  *   - DialogConnectProvider ← dialog-connect-provider.tsx (api key | oauth)
- *   - DialogSelectModel     ← dialog-select-model.tsx (+ variant cycling)
- *   - VariantPill           ← local model-variant pill
+ *   - DialogSelectModel     ← dialog-select-model.tsx (+ reasoning variants)
+ *   - VariantPill           ← local reasoning selector
  *
  * The provider/model catalog comes from the backend (`providerCatalog.ts`);
  * connection state (api keys / oauth markers) lives in localStorage Settings.
@@ -16,7 +16,7 @@ import type { ProviderConnection, Settings } from '../types';
 import type { Catalog, CatalogProvider, CatalogModel } from '../providerCatalog';
 import { CUSTOM_PROVIDER, CUSTOM_PROVIDER_ID } from '../providerCatalog';
 import { isConnected } from '../localSettings';
-import { cycleVariant, variantLabel } from '../modelVariant';
+import { variantLabel } from '../modelVariant';
 import { startLogin, pollUntilDone, logout as oauthLogout } from '../auth';
 import { CloseButton } from './CloseButton';
 import { SecretInput } from './SecretInput';
@@ -539,14 +539,25 @@ export function VariantPill({
   onChange: (next: string | null) => void;
 }) {
   if (variants.length === 0) return null;
+  const options: Array<string | null> = [null, ...variants];
   return (
-    <button
-      className={`pill${selected ? ' pill--active' : ' pill--ghost'}`}
-      title="cycle reasoning effort"
-      onClick={() => onChange(cycleVariant(variants, selected))}
-    >
-      <span className="pill__key">reasoning</span>
-      <span className="pill__val">{variantLabel(selected)}</span>
-    </button>
+    <label className="reasoning-select" title="reasoning effort">
+      <span className="reasoning-select__label">reasoning</span>
+      <select
+        className="reasoning-select__control"
+        value={selected ?? ''}
+        onChange={(e) => onChange(e.target.value || null)}
+        aria-label="reasoning effort"
+      >
+        {options.map((option) => (
+          <option
+            key={option ?? 'off'}
+            value={option ?? ''}
+          >
+            {variantLabel(option)}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
