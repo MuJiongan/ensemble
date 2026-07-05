@@ -16,10 +16,12 @@ export function SnapshotRunPanel({
   onExit,
   onRerun,
   currentRun,
+  onCancelRun,
 }: {
   run: Run;
   onExit: () => void;
   onRerun: (inputs: Record<string, unknown>) => Promise<void>;
+  onCancelRun?: (runId: string) => Promise<void>;
   /** When set and bound to this run, live llm_call_finished events are
    * folded into model stats before node-run summaries are persisted. */
   currentRun?: CurrentRun | null;
@@ -79,7 +81,10 @@ export function SnapshotRunPanel({
   useEffect(() => { setCancelling(false); }, [run.id]);
   const cancelThisRun = async () => {
     setCancelling(true);
-    try { await api.cancelRun(run.id); } catch { /* ignore */ }
+    try {
+      if (onCancelRun) await onCancelRun(run.id);
+      else await api.cancelRun(run.id);
+    } catch { /* ignore */ }
   };
 
   // Re-run form state. The snapshot's input node defines the port shape;

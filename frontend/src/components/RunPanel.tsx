@@ -38,6 +38,9 @@ interface Props {
   /** Called after a run is deleted, so the host can drop any live-run
    * state (open WS, status chips) still keyed to it. */
   onRunDeleted?: (runId: string) => void;
+  /** Called for manual UI cancellation. The host may attach orchestration
+   * bookkeeping before forwarding to the API. */
+  onCancelRun?: (runId: string) => Promise<void>;
   /** True while an orchestrator turn is streaming for this workflow. The
    * graph may be mid-build (added nodes, no edges yet) or about to mutate
    * again — manual runs are blocked until the turn settles. */
@@ -60,6 +63,7 @@ export function RunPanel({
   onClose,
   onViewRunOnCanvas,
   onRunDeleted,
+  onCancelRun,
   orchestrating,
 }: Props) {
   const inputNode = workflow.nodes.find((n) => n.id === workflow.input_node_id);
@@ -232,7 +236,10 @@ export function RunPanel({
               };
               const onCancelRow = async (e: React.MouseEvent) => {
                 e.stopPropagation();
-                try { await api.cancelRun(h.id); } catch { /* ignore */ }
+                try {
+                  if (onCancelRun) await onCancelRun(h.id);
+                  else await api.cancelRun(h.id);
+                } catch { /* ignore */ }
                 // Cancellation lands asynchronously (the runner gets a
                 // signal); refresh now for quick feedback and let the
                 // in-flight poller flip the status once it's terminal.

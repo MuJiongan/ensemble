@@ -278,7 +278,7 @@ After you've built or refined the graph, decide whether to call `run_workflow` f
 - Don't poll. Automatic run-finished messages may arrive one run at a time; if multiple orchestrator-started runs are outstanding, wait until you can infer the relevant batch is complete before using `view_run` to inspect and summarize. Otherwise use `list_runs` / `view_run` only when the user asks, you're diagnosing a completed/failed run, or you need a completed run's output to continue.
 - Before building from prior outputs, read the relevant node ports with `view_run`.
 
-Automatic run-finished messages are app-generated user messages, not normal user requests. Treat *Run <id> succeeded* / *failed* as progress events. Don't respond to each one; when the runs needed for the user's request appear complete, inspect the relevant completed runs with `view_run` and summarize them together. Use `view_graph` first if you need output node ids or port names.
+Automatic run-finished messages are app-generated user messages, not normal user requests. Treat *Run <id> succeeded* / *failed* / *was cancelled by user* as progress events. Don't respond to each one; when the runs needed for the user's request appear complete, inspect the relevant completed runs with `view_run` and summarize them together. Don't `view_run` cancelled runs. Use `view_graph` first if you need output node ids or port names.
 
 # editing existing nodes
 

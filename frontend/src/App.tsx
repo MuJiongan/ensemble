@@ -192,8 +192,9 @@ export default function App() {
   ) => Promise<void>;
   const streamToOrchestratorRef = useRef<OrchestratorStreamFn | null>(null);
   const notifiedRunIdsRef = useRef<Set<string>>(new Set());
+  const userCancelledRunIdsRef = useRef<Set<string>>(new Set());
   const pendingRunNoticesRef = useRef<
-    Record<string, { runId: string; status: RunStatus }[]>
+    Record<string, { runId: string; notice: string; text: string }[]>
   >({});
   const drainRunNoticeTimersRef = useRef<Record<string, number>>({});
   const liveRunsRef = useRef<Record<string, CurrentRun>>({});
@@ -224,15 +225,7 @@ export default function App() {
     pendingRunNoticesRef.current[wid] = queue;
     if (!next) return;
 
-    const statusText =
-      next.status === 'success'
-        ? 'succeeded'
-        : next.status === 'error'
-          ? 'failed'
-          : `finished (${next.status})`;
-    const notice = `run ${next.runId} ${statusText}`;
-    const text = `Run ${next.runId} ${statusText}.`;
-    void stream(wid, sid, text, undefined, { auto: true, notice })
+    void stream(wid, sid, next.text, undefined, { auto: true, notice: next.notice })
       .finally(() => {
         if ((pendingRunNoticesRef.current[wid] ?? []).length > 0) {
           scheduleRunNoticeDrain(wid, 0);
@@ -241,13 +234,23 @@ export default function App() {
   }
 
   function enqueueRunFinishedNotice(wid: string, runId: string, status: RunStatus) {
-    if (status === 'cancelled') return;
     if (!(orchestratorRunIdsRef.current[wid] ?? []).includes(runId)) return;
     if (notifiedRunIdsRef.current.has(runId)) return;
+    const userCancelled = status === 'cancelled' && userCancelledRunIdsRef.current.has(runId);
+    if (status === 'cancelled' && !userCancelled) return;
     notifiedRunIdsRef.current.add(runId);
+    userCancelledRunIdsRef.current.delete(runId);
+    const statusText =
+      status === 'success'
+        ? 'succeeded'
+        : status === 'error'
+          ? 'failed'
+          : status === 'cancelled'
+            ? 'was cancelled by user'
+            : `finished (${status})`;
     pendingRunNoticesRef.current[wid] = [
       ...(pendingRunNoticesRef.current[wid] ?? []),
-      { runId, status },
+      { runId, notice: `run ${runId} ${statusText}`, text: `Run ${runId} ${statusText}.` },
     ];
     scheduleRunNoticeDrain(wid, 0);
   }
@@ -397,10 +400,17 @@ export default function App() {
   const forgetRunEverywhere = (runId: string) => {
     dropRun(runId);
     notifiedRunIdsRef.current.delete(runId);
+    userCancelledRunIdsRef.current.delete(runId);
     for (const wid of Object.keys(pendingRunNoticesRef.current)) {
       pendingRunNoticesRef.current[wid] =
         pendingRunNoticesRef.current[wid]?.filter((item) => item.runId !== runId) ?? [];
     }
+    const nextTrackedRuns: Record<string, string[]> = {};
+    for (const [wid, runIds] of Object.entries(orchestratorRunIdsRef.current)) {
+      const kept = runIds.filter((id) => id !== runId);
+      if (kept.length > 0) nextTrackedRuns[wid] = kept;
+    }
+    orchestratorRunIdsRef.current = nextTrackedRuns;
     setOrchestratorRunIdsByWorkflow((prev) => {
       let changed = false;
       const next: Record<string, string[]> = {};
@@ -413,15 +423,30 @@ export default function App() {
     });
   };
 
+  const cancelRunByUser = async (runId: string) => {
+    userCancelledRunIdsRef.current.add(runId);
+    try {
+      await api.cancelRun(runId);
+    } catch (err) {
+      userCancelledRunIdsRef.current.delete(runId);
+      throw err;
+    }
+  };
+
   const clearOrchestratorRunsForWorkflow = (wid: string) => {
     const runIds = orchestratorRunIdsRef.current[wid] ?? [];
-    for (const runId of runIds) notifiedRunIdsRef.current.delete(runId);
+    for (const runId of runIds) {
+      notifiedRunIdsRef.current.delete(runId);
+      userCancelledRunIdsRef.current.delete(runId);
+    }
     pendingRunNoticesRef.current[wid] = [];
     const timer = drainRunNoticeTimersRef.current[wid];
     if (timer !== undefined) {
       window.clearTimeout(timer);
       delete drainRunNoticeTimersRef.current[wid];
     }
+    const { [wid]: _ref, ...restRef } = orchestratorRunIdsRef.current;
+    orchestratorRunIdsRef.current = restRef;
     setOrchestratorRunIdsByWorkflow((prev) => {
       if (!(wid in prev)) return prev;
       const { [wid]: _, ...rest } = prev;
@@ -818,6 +843,13 @@ export default function App() {
       setDetail(null);
     }
     dropWorkflowRuns(id);
+    const trackedRunIds = orchestratorRunIdsRef.current[id] ?? [];
+    for (const runId of trackedRunIds) {
+      notifiedRunIdsRef.current.delete(runId);
+      userCancelledRunIdsRef.current.delete(runId);
+    }
+    const { [id]: _tracked, ...trackedRest } = orchestratorRunIdsRef.current;
+    orchestratorRunIdsRef.current = trackedRest;
     setOrchestratorRunIdsByWorkflow((prev) => {
       const { [id]: _, ...rest } = prev;
       return rest;
@@ -1486,6 +1518,7 @@ export default function App() {
                           <SnapshotRunPanel
                             run={viewingRun}
                             currentRun={viewingRunLive}
+                            onCancelRun={cancelRunByUser}
                             onExit={exitSnapshotView}
                             onRerun={async (inputs) => {
                               const newRun = await api.rerunFromSnapshot(
@@ -1530,6 +1563,7 @@ export default function App() {
                           onStart={startRun}
                           onViewRunOnCanvas={enterSnapshotView}
                           onRunDeleted={forgetRunEverywhere}
+                          onCancelRun={cancelRunByUser}
                           orchestrating={isOrchestrating}
                         />
                       )}

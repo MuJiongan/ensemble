@@ -471,13 +471,90 @@ function InlineNotice({ text, kind }: { text: string; kind?: ChatNotice['kind'] 
     return <CompactionNotice text={text} />;
   }
   const isRunNotice = noticeKind === 'run';
+  if (isRunNotice) {
+    const match = text.trim().match(/^run\s+([a-z0-9-]+)\s+(.+?)\.?$/i);
+    const runId = match?.[1] ?? '';
+    const status = match?.[2] ?? text;
+    const statusTone = /succeeded|success/i.test(status)
+      ? 'var(--state-ok)'
+      : /failed|error/i.test(status)
+        ? 'var(--state-err)'
+        : 'var(--ink-4)';
+
+    return (
+      <div
+        className="fade-in"
+        style={{
+          display: 'flex',
+          justifyContent: 'center',
+          margin: '3px 0 5px',
+        }}
+        title={text}
+      >
+        <span
+          style={{
+            maxWidth: 'min(100%, 440px)',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            overflow: 'hidden',
+            padding: '0 4px',
+            color: 'var(--ink-4)',
+            fontFamily: 'var(--sans)',
+            fontSize: 10.5,
+            lineHeight: 1.35,
+          }}
+        >
+          <span
+            aria-hidden
+            style={{
+              width: 4,
+              height: 4,
+              borderRadius: '50%',
+              background: statusTone,
+              opacity: 0.85,
+              flex: '0 0 auto',
+            }}
+          />
+          {runId ? (
+            <>
+              <span style={{ flex: '0 0 auto', color: 'var(--ink-5)' }}>run</span>
+              <span
+                style={{
+                  minWidth: 0,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  color: 'var(--ink-4)',
+                  fontSize: 10.5,
+                  fontWeight: 500,
+                  letterSpacing: '0.04em',
+                  textTransform: 'uppercase',
+                }}
+              >
+                {runId}
+              </span>
+              <span aria-hidden style={{ flex: '0 0 auto', color: 'var(--ink-5)' }}>
+                /
+              </span>
+              <span style={{ flex: '0 0 auto', color: 'var(--ink-4)' }}>{status}</span>
+            </>
+          ) : (
+            <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {text}
+            </span>
+          )}
+        </span>
+      </div>
+    );
+  }
   return (
     <div
       className="fade-in"
       style={{
         display: 'flex',
         justifyContent: 'center',
-        margin: isRunNotice ? '1px 0 3px' : '5px 0 9px',
+        margin: '5px 0 9px',
       }}
       title={text}
     >
@@ -490,7 +567,7 @@ function InlineNotice({ text, kind }: { text: string; kind?: ChatNotice['kind'] 
           whiteSpace: 'nowrap',
           border: '1px solid var(--rule)',
           borderRadius: 999,
-          padding: isRunNotice ? '2px 8px' : '3px 9px',
+          padding: '3px 9px',
           background: 'var(--muted-fill)',
           color: 'var(--ink-4)',
           fontSize: 9,
@@ -1236,44 +1313,63 @@ function OrchestratorRunsTray({
         overflow: 'hidden',
       }}
     >
-      <button
-        type="button"
-        onClick={() => setCollapsed((v) => !v)}
-        aria-expanded={!collapsed}
-        title={collapsed ? 'show orchestrator runs' : 'hide orchestrator runs'}
+      <div
         className="smallcaps"
         style={{
           display: 'flex',
           alignItems: 'center',
           gap: 8,
           width: '100%',
-          background: 'transparent',
-          border: 0,
-          padding: 0,
           color: 'var(--ink-4)',
           fontSize: 9,
           marginBottom: 1,
-          cursor: 'pointer',
-          textAlign: 'left',
         }}
       >
         <span
-          aria-hidden
           style={{
-            display: 'inline-block',
-            width: 8,
-            transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
-            transition: 'transform 120ms ease',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 12,
+            minWidth: 0,
           }}
         >
-          ▾
+          <span>orchestrator runs</span>
+          <span className="mono" style={{ color: 'var(--ink-5)', fontSize: 9 }}>
+            {runIds.length}
+          </span>
+          <button
+            type="button"
+            onClick={() => setCollapsed((v) => !v)}
+            aria-expanded={!collapsed}
+            title={collapsed ? 'show orchestrator runs' : 'hide orchestrator runs'}
+            style={{
+              display: 'inline-grid',
+              placeItems: 'center',
+              width: 16,
+              height: 16,
+              background: 'transparent',
+              border: 0,
+              padding: 0,
+              color: 'var(--ink-4)',
+              cursor: 'pointer',
+              lineHeight: 1,
+            }}
+          >
+            <span
+              aria-hidden
+              style={{
+                display: 'inline-block',
+                position: 'relative',
+                top: -1,
+                transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
+                transition: 'transform 120ms ease',
+              }}
+            >
+              ▾
+            </span>
+          </button>
         </span>
-        <span>orchestrator runs</span>
-        <span className="mono" style={{ color: 'var(--ink-5)', fontSize: 9 }}>
-          {runIds.length}
-        </span>
-        <span style={{ flex: 1 }} />
-      </button>
+      </div>
       {!collapsed && (
         <div style={{ maxHeight: 78, overflow: 'auto' }} className="scroll">
           {runIds.map((runId) => (
