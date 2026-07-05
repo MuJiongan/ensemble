@@ -521,15 +521,24 @@ _DEFAULT_RUN_LIST_LIMIT = 20
 _MAX_RUN_LIST_LIMIT = 100
 
 
-def list_runs(db: DbSession, wid: str, *, limit: int = _DEFAULT_RUN_LIST_LIMIT) -> dict:
+def list_runs(
+    db: DbSession,
+    wid: str,
+    *,
+    limit: int = _DEFAULT_RUN_LIST_LIMIT,
+    kind: str | None = None,
+) -> dict:
     """List historic runs for the workflow, most recent first. Returns a
     lean shape per run — ``{run_id, status, kind, started_at, ended_at,
     total_cost, error}`` — that's enough to identify a run; drill into
     contents with :func:`view_run`.
 
-    ``kind`` is one of:
+    ``kind`` on returned rows is one of:
     - ``"user"`` — the user clicked Run (or hit the REST API directly).
     - ``"orchestrator"`` — *you* started it via :func:`run_workflow`.
+
+    Pass ``kind="user"`` or ``kind="orchestrator"`` to filter the list to
+    one source.
 
     ``limit`` is clamped to ``[1, 100]`` (default 20). Older runs beyond the
     limit aren't returned; raise ``limit`` if the user asks about a run that
@@ -540,14 +549,14 @@ def list_runs(db: DbSession, wid: str, *, limit: int = _DEFAULT_RUN_LIST_LIMIT) 
     if not isinstance(limit, int) or limit < 1:
         limit = _DEFAULT_RUN_LIST_LIMIT
     limit = min(limit, _MAX_RUN_LIST_LIMIT)
+    if kind is not None and kind not in {"user", "orchestrator"}:
+        raise ValueError('kind must be "user" or "orchestrator"')
 
-    rows = (
-        db.query(models.Run)
-        .filter(models.Run.workflow_id == wid)
-        .order_by(models.Run.started_at.desc())
-        .limit(limit)
-        .all()
-    )
+    query = db.query(models.Run).filter(models.Run.workflow_id == wid)
+    if kind is not None:
+        query = query.filter(models.Run.kind == kind)
+
+    rows = query.order_by(models.Run.started_at.desc()).limit(limit).all()
 
     runs = [
         {
@@ -561,7 +570,7 @@ def list_runs(db: DbSession, wid: str, *, limit: int = _DEFAULT_RUN_LIST_LIMIT) 
         }
         for r in rows
     ]
-    return {"runs": runs, "count": len(runs), "limit": limit}
+    return {"runs": runs, "count": len(runs), "limit": limit, "kind": kind}
 
 
 def view_run(
@@ -1070,9 +1079,10 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 "shape per run — {run_id, status, kind, started_at, ended_at, total_cost, "
                 "error} — enough to identify a run; drill into contents with `view_run`. "
                 "`kind` is `\"user\"` (the user hit Run / the REST API) or `\"orchestrator\"` "
-                "(you started it via `run_workflow`). Use when the user references a past run "
-                "without giving you its id (\"the last failure\", \"yesterday's run\"), or "
-                "when you need to find a specific run to inspect. Don't list runs "
+                "(you started it via `run_workflow`); pass `kind` to return only one source. "
+                "Use when the user references a past run without giving you its id "
+                "(\"the last failure\", \"yesterday's run\"), or when you need to find a "
+                "specific run to inspect. Don't list runs "
                 "preemptively — inspect run history only when the task calls for it."
             ),
             "parameters": {
@@ -1086,6 +1096,14 @@ TOOL_SCHEMAS: dict[str, dict] = {
                             f"How many runs to return (default {_DEFAULT_RUN_LIST_LIMIT}, "
                             f"max {_MAX_RUN_LIST_LIMIT}). Most recent first. Older runs are "
                             "truncated; raise this if a run you need is missing."
+                        ),
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["user", "orchestrator"],
+                        "description": (
+                            "Optional source filter. Use `orchestrator` to list only runs "
+                            "started by you with `run_workflow`, or `user` for manual/API runs."
                         ),
                     },
                 },

@@ -1072,6 +1072,7 @@ def test_list_runs_returns_recent_first_with_lean_shape(db, workflow):
     res = orch_tools.list_runs(db, workflow.id)
     assert res["count"] == 3
     assert res["limit"] == 20
+    assert res["kind"] is None
     assert [r["run_id"] for r in res["runs"]] == [r_new.id, r_mid.id, r_old.id]
 
     # Lean shape — no heavy fields leaked.
@@ -1116,9 +1117,42 @@ def test_list_runs_respects_limit_and_clamps_to_max(db, workflow):
     assert res_big["count"] == 5
 
 
+def test_list_runs_filters_by_kind(db, workflow):
+    from datetime import datetime, timedelta
+
+    base = datetime(2026, 5, 10, 12, 0, 0)
+    user_run = models.Run(
+        workflow_id=workflow.id, kind="user", status="success",
+        inputs={}, outputs={}, total_cost=0.0,
+        started_at=base,
+    )
+    orchestrator_old = models.Run(
+        workflow_id=workflow.id, kind="orchestrator", status="success",
+        inputs={}, outputs={}, total_cost=0.0,
+        started_at=base + timedelta(minutes=1),
+    )
+    orchestrator_new = models.Run(
+        workflow_id=workflow.id, kind="orchestrator", status="error",
+        inputs={}, outputs={}, total_cost=0.0,
+        started_at=base + timedelta(minutes=2),
+    )
+    db.add_all([user_run, orchestrator_old, orchestrator_new])
+    db.commit()
+
+    res = orch_tools.list_runs(db, workflow.id, kind="orchestrator")
+    assert res["kind"] == "orchestrator"
+    assert res["count"] == 2
+    assert [r["run_id"] for r in res["runs"]] == [orchestrator_new.id, orchestrator_old.id]
+    assert {r["kind"] for r in res["runs"]} == {"orchestrator"}
+
+    bad = orch_tools.execute(db, workflow.id, "list_runs", {"kind": "manual"})
+    assert "error" in bad
+    assert "kind" in bad["error"]
+
+
 def test_list_runs_empty_when_no_runs(db, workflow):
     res = orch_tools.list_runs(db, workflow.id)
-    assert res == {"runs": [], "count": 0, "limit": 20}
+    assert res == {"runs": [], "count": 0, "limit": 20, "kind": None}
 
 
 def test_run_workflow_tags_run_as_orchestrator_kind(db, workflow, monkeypatch):
