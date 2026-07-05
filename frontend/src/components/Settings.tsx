@@ -294,21 +294,20 @@ function ProvidersSection({
           no providers connected yet.
         </div>
       ) : (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        <div className="provider-inline-list">
           {connectedIds.map((id) => {
             const p = providerById(id);
             const conn = settings.connections[id];
             return (
               <button
                 key={id}
-                className="pill pill--active"
+                className="provider-inline"
                 onClick={() => p && onManage(p)}
                 disabled={!p}
                 title="manage"
               >
-                <span className="node-state-dot success" aria-hidden="true" />
-                <span className="pill__lead">{p?.name ?? id}</span>
-                <span className="pill__meta">{conn?.method}</span>
+                <span className="provider-inline__name">{p?.name ?? id}</span>
+                <span className="provider-inline__method">{conn?.method}</span>
               </button>
             );
           })}
@@ -927,7 +926,7 @@ function McpServerRow({
         opacity: row.enabled ? 1 : 0.6,
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, flexWrap: 'wrap' }}>
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, minWidth: 0 }}>
             <span
@@ -957,13 +956,14 @@ function McpServerRow({
           onChange={(v) => onPatch({ enabled: v })}
           locked={probe?.status === 'needs_auth'}
           lockedTitle="sign in below to enable this server"
+          style={{ marginTop: 1 }}
         />
         {canViewTools && (
-          <button className="text-btn" type="button" onClick={onViewTools}>
+          <button className="text-btn" type="button" onClick={onViewTools} style={{ marginTop: 5 }}>
             view tools
           </button>
         )}
-        <button className="text-btn" type="button" onClick={onEdit}>
+        <button className="text-btn" type="button" onClick={onEdit} style={{ marginTop: 5 }}>
           edit
         </button>
         <button
@@ -971,6 +971,7 @@ function McpServerRow({
           type="button"
           onClick={onRemove}
           title="remove server"
+          style={{ marginTop: 5 }}
         >
           remove
         </button>
@@ -1659,6 +1660,7 @@ function EnabledToggle({
   onChange,
   locked,
   lockedTitle,
+  style,
 }: {
   value: boolean;
   onChange: (v: boolean) => void;
@@ -1666,6 +1668,7 @@ function EnabledToggle({
    * enabled). */
   locked?: boolean;
   lockedTitle?: string;
+  style?: React.CSSProperties;
 }) {
   const lockedTitleText = locked ? (lockedTitle ?? 'unavailable') : undefined;
   return (
@@ -1676,6 +1679,7 @@ function EnabledToggle({
       disabled={locked}
       onClick={() => onChange(!value)}
       className={`enable-toggle${value ? ' enable-toggle--on' : ''}`}
+      style={style}
       title={
         locked
           ? lockedTitleText
@@ -1684,7 +1688,12 @@ function EnabledToggle({
             : 'click to enable'
       }
     >
-      <span className="enable-toggle__fill" aria-hidden />
+      <span className="enable-toggle__track" aria-hidden>
+        <span className="enable-toggle__thumb" />
+      </span>
+      <span className="enable-toggle__label" aria-hidden>
+        {value ? 'enabled' : 'paused'}
+      </span>
     </button>
   );
 }

@@ -225,7 +225,6 @@ export function RunPanel({
               const rowRunning = h.status === 'running' || h.status === 'pending';
               const totalDuration = runDurationMs(h);
               const canView = !!onViewRunOnCanvas;
-              const canDelete = !rowRunning;
               const onView = () => onViewRunOnCanvas?.(h.id);
               const onDelete = (e: React.MouseEvent) => {
                 e.stopPropagation();
@@ -268,20 +267,15 @@ export function RunPanel({
                   <div className="run-row__side">
                     {totalDuration !== null && (
                       <span
-                        className="mono run-row__duration"
+                        className="run-row__metric"
                         title={rowRunning ? 'elapsed run time' : 'total run time'}
                       >
-                        {rowRunning ? 'elapsed ' : 'total '}
                         {formatDuration(totalDuration)}
                       </span>
                     )}
                     <span
-                      className="smallcaps"
-                      style={{
-                        fontSize: 9,
-                        color: runStatusColor(h.status),
-                        fontWeight: rowRunning ? 600 : undefined,
-                      }}
+                      className={`run-row__status run-row__status--${h.status}`}
+                      style={{ color: runStatusColor(h.status) }}
                     >
                       {h.status}
                     </span>
@@ -291,48 +285,22 @@ export function RunPanel({
                         onClick={onCancelRow}
                         title="cancel this run"
                         aria-label="cancel run"
-                        className="smallcaps"
-                        style={{
-                          background: 'transparent',
-                          border: '1px solid var(--rule)',
-                          borderRadius: 3,
-                          padding: '1px 7px',
-                          cursor: 'pointer',
-                          color: 'var(--state-err)',
-                          fontSize: 9,
-                          lineHeight: 1.5,
-                        }}
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.borderColor = 'var(--state-err)';
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.borderColor = 'var(--rule)';
-                        }}
+                        className="run-row__action run-row__action--cancel"
                       >
                         cancel
                       </button>
                     )}
-                    <button
-                      type="button"
-                      onClick={onDelete}
-                      disabled={!canDelete}
-                      title={canDelete ? 'delete this run' : 'cancel the run before deleting'}
-                      aria-label="delete run"
-                      style={{
-                        background: 'transparent',
-                        border: 0,
-                        padding: '0 4px',
-                        cursor: canDelete ? 'pointer' : 'not-allowed',
-                        color: 'var(--ink-4)',
-                        fontSize: 14,
-                        lineHeight: 1,
-                        opacity: canDelete ? 0.6 : 0.25,
-                      }}
-                      onMouseEnter={(e) => { if (canDelete) e.currentTarget.style.opacity = '1'; }}
-                      onMouseLeave={(e) => { if (canDelete) e.currentTarget.style.opacity = '0.6'; }}
-                    >
-                      ×
-                    </button>
+                    {!rowRunning && (
+                      <button
+                        type="button"
+                        onClick={onDelete}
+                        title="delete this run"
+                        aria-label="delete run"
+                        className="run-row__delete"
+                      >
+                        ×
+                      </button>
+                    )}
                   </div>
                 </div>
               );
