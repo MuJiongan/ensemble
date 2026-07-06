@@ -11,7 +11,6 @@ import {
   getCatalog,
   refreshCatalog,
   findProvider,
-  findModel,
   CATALOG_CHANGED_EVENT,
   CUSTOM_PROVIDER,
   CUSTOM_PROVIDER_ID,
@@ -21,9 +20,8 @@ import {
 import {
   DialogSelectProvider,
   DialogConnectProvider,
-  DialogSelectModel,
-  VariantPill,
 } from './ProviderDialogs';
+import { ModelSelector } from './ModelSelector';
 import { CloseButton } from './CloseButton';
 import { SecretInput } from './SecretInput';
 import {
@@ -52,8 +50,7 @@ const EMPTY: Settings = {
 type DialogState =
   | { kind: 'none' }
   | { kind: 'select-provider' }
-  | { kind: 'connect-provider'; provider: CatalogProvider }
-  | { kind: 'select-model'; target: 'orchestrator' | 'node' };
+  | { kind: 'connect-provider'; provider: CatalogProvider };
 
 export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const [s, setS] = useState<Settings>(EMPTY);
@@ -178,17 +175,17 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             label="orchestrator model"
             hint="used by the orchestrator chat."
             catalog={catalog}
+            settings={s}
             selection={s.orchestrator}
             onChange={(sel) => setSelection('orchestrator', sel)}
-            onChangeModel={() => setDialog({ kind: 'select-model', target: 'orchestrator' })}
           />
           <ModelRow
             label="node model"
             hint="default for ctx.agent inside nodes when a node doesn't specify one."
             catalog={catalog}
+            settings={s}
             selection={s.node}
             onChange={(sel) => setSelection('node', sel)}
-            onChangeModel={() => setDialog({ kind: 'select-model', target: 'node' })}
           />
 
           <TextAreaField
@@ -252,17 +249,6 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           onClose={() => setDialog({ kind: 'none' })}
         />
       )}
-      {catalog && dialog.kind === 'select-model' && (
-        <DialogSelectModel
-          catalog={catalog}
-          settings={s}
-          onPick={(sel) => {
-            setSelection(dialog.target, sel);
-            setDialog({ kind: 'none' });
-          }}
-          onClose={() => setDialog({ kind: 'none' })}
-        />
-      )}
     </div>
   );
 }
@@ -321,54 +307,28 @@ function ModelRow({
   label,
   hint,
   catalog,
+  settings,
   selection,
   onChange,
-  onChangeModel,
 }: {
   label: string;
   hint: string;
   catalog: Catalog | null;
+  settings: Settings;
   selection: ModelSelection | null;
   onChange: (sel: ModelSelection | null) => void;
-  onChangeModel: () => void;
 }) {
-  const model =
-    catalog && selection ? findModel(catalog, selection.providerID, selection.modelID) : undefined;
-  const provider =
-    catalog && selection ? findProvider(catalog, selection.providerID) : undefined;
-  const variants = model?.variants ?? [];
-
   return (
     <div>
       <label className="smallcaps settings-section-label" style={{ display: 'block', marginBottom: 6 }}>
         {label}
       </label>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        {selection ? (
-          <span className="serif" style={{ fontSize: 14 }}>
-            {provider?.name ?? selection.providerID}
-            <span style={{ color: 'var(--ink-4)' }}> · </span>
-            <span className="mono" style={{ fontSize: 12 }}>
-              {model?.name ?? selection.modelID}
-            </span>
-          </span>
-        ) : (
-          <span className="serif" style={{ fontStyle: 'italic', color: 'var(--ink-4)', fontSize: 13 }}>
-            no model selected
-          </span>
-        )}
-        <span style={{ flex: 1 }} />
-        {selection && (
-          <VariantPill
-            variants={variants}
-            selected={selection.variant}
-            onChange={(variant) => onChange({ ...selection, variant })}
-          />
-        )}
-        <button className="text-btn text-btn--accent" onClick={onChangeModel}>
-          {selection ? 'change' : 'select'}
-        </button>
-      </div>
+      <ModelSelector
+        catalog={catalog}
+        settings={settings}
+        selection={selection}
+        onChange={onChange}
+      />
       <div
         className="serif"
         style={{ fontStyle: 'italic', fontSize: 12, color: 'var(--ink-4)', marginTop: 6 }}

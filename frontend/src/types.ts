@@ -407,6 +407,8 @@ export interface ChatHistory {
   messages: ChatHistoryMessage[];
   /** True while the backend still has an in-flight orchestrator turn for this session. */
   active_turn?: boolean;
+  /** Reconnectable id for the in-flight orchestrator event stream. */
+  active_turn_id?: string | null;
   /** Running/pending orchestrator-started runs for this workflow. */
   active_runs?: Pick<Run, 'id' | 'workflow_id' | 'status'>[];
 }
@@ -445,7 +447,7 @@ export type OrchestratorEvent =
   // Emitted once per turn when the agent loop summarized older history to
   // stay within the model's context window. Purely informational — the chat
   // shows a divider so the user knows context was compacted mid-turn.
-  | { kind: 'context_compacted' }
+  | { kind: 'context_compacted'; summarized?: number }
   | { kind: 'error'; message: string }
   | { kind: 'done' };
 

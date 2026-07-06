@@ -282,8 +282,8 @@ def test_maybe_compact_triggers_and_persists_anchor(db, session_row, monkeypatch
 
     monkeypatch.setattr(orch_agent, "_resolve_llm_stream", fake_stream)
 
-    did = orch_agent._maybe_compact(db, sid, "m", {"prompt_tokens": 950, "completion_tokens": 100})
-    assert did is True
+    summarized = orch_agent._maybe_compact(db, sid, "m", {"prompt_tokens": 950, "completion_tokens": 100})
+    assert summarized == 4
 
     # An anchor row now exists, and the rebuilt history leads with the summary.
     markers = [r for r in persist._ordered_rows(db, sid) if persist._is_compaction_marker(r)]
@@ -306,8 +306,8 @@ def test_maybe_compact_skips_when_under_budget(db, session_row, monkeypatch):
     monkeypatch.setattr("app.catalog.models_dev.get_model", lambda p, m: fake_model)
     monkeypatch.setenv("LLM_PROVIDER_ID", "p")
 
-    did = orch_agent._maybe_compact(db, sid, "m", {"prompt_tokens": 100, "completion_tokens": 10})
-    assert did is False
+    summarized = orch_agent._maybe_compact(db, sid, "m", {"prompt_tokens": 100, "completion_tokens": 10})
+    assert summarized is None
     assert not [r for r in persist._ordered_rows(db, sid) if persist._is_compaction_marker(r)]
 
 

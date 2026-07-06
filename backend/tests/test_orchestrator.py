@@ -15,6 +15,7 @@ from app.api import orchestrator as orchestrator_api
 from app.api import workflows as workflow_api
 from app.orchestrator import tools as orch_tools
 from app.orchestrator import agent as orch_agent
+from app.orchestrator import turns as orch_turns
 from app.orchestrator.prompt import (
     SYSTEM_PROMPT,
     build_system_prompt,
@@ -1793,6 +1794,54 @@ def test_run_turn_supersede_emits_error_banner(db, workflow, monkeypatch):
     # Clean up the registry entry left over from the simulated supersede.
     with orch_agent._TURN_LOCK:
         orch_agent._TURN_CANCEL_EVENTS.pop(sess.id, None)
+
+
+def test_orchestrator_turn_service_replays_after_subscriber_disconnect(monkeypatch):
+    """A browser refresh drops the SSE subscriber, not the backend turn."""
+    session_id = "test-orch-replay"
+    released = threading.Event()
+    continue_turn = threading.Event()
+
+    class DummyDb:
+        def close(self):
+            pass
+
+    def fake_run_turn(db, sid, text, attachments=None, *, auto_user=False, cancel_event=None):
+        try:
+            yield {"kind": "user_message", "id": "m1", "text": text}
+            yield {"kind": "assistant_text_chunk", "text": "hel"}
+            continue_turn.wait(timeout=2)
+            yield {"kind": "assistant_text_chunk", "text": "lo"}
+            yield {"kind": "done"}
+        finally:
+            if cancel_event is not None:
+                orch_agent._release_turn(sid, cancel_event)
+                released.set()
+
+    monkeypatch.setattr(orch_turns, "SessionLocal", lambda: DummyDb())
+    monkeypatch.setattr(orch_turns.agent, "run_turn", fake_run_turn)
+
+    turn_id = orch_turns.start_turn(session_id, "hi")
+    assert orch_turns.active_turn_id(session_id) == turn_id
+
+    first_sub = orch_turns.subscribe(turn_id)
+    assert next(first_sub)["kind"] == "user_message"
+    assert next(first_sub) == {"kind": "assistant_text_chunk", "text": "hel"}
+    # Simulate a refresh: the first subscriber is abandoned before the turn ends.
+    first_sub.close()
+
+    continue_turn.set()
+    replay = list(orch_turns.subscribe(turn_id))
+
+    assert [e["kind"] for e in replay] == [
+        "user_message",
+        "assistant_text_chunk",
+        "assistant_text_chunk",
+        "done",
+    ]
+    assert "".join(e.get("text", "") for e in replay if e["kind"] == "assistant_text_chunk") == "hello"
+    assert released.wait(timeout=1)
+    assert orch_turns.active_turn_id(session_id) is None
 
 
 def test_call_llm_stream_skips_remaining_lines_when_cancelled():
