@@ -57,6 +57,38 @@ function qs(params: Record<string, string | number | boolean | undefined | null 
   return s ? `?${s}` : '';
 }
 
+async function readSseEvents(
+  res: Response,
+  onEvent: (ev: OrchestratorEvent) => void,
+): Promise<void> {
+  const reader = res.body?.getReader();
+  if (!reader) return;
+  const decoder = new TextDecoder();
+  let buf = '';
+  // SSE frame parser: split on blank line, each frame has lines starting with `data:`.
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buf.indexOf('\n\n')) >= 0) {
+      const frame = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      const dataLines = frame
+        .split('\n')
+        .filter((l) => l.startsWith('data:'))
+        .map((l) => l.slice(5).replace(/^ /, ''));
+      if (dataLines.length === 0) continue;
+      const payload = dataLines.join('\n');
+      try {
+        onEvent(JSON.parse(payload) as OrchestratorEvent);
+      } catch {
+        // ignore malformed frame
+      }
+    }
+  }
+}
+
 export interface NewNodePayload {
   name: string;
   description?: string;
@@ -136,6 +168,21 @@ export const api = {
     request<{ ok: true }>('DELETE', `/api/workflows/${wid}/sessions/${sid}/messages`),
   cancelOrchestratorTurn: (wid: string, sid: string) =>
     request<{ cancelled: boolean }>('POST', `/api/workflows/${wid}/sessions/${sid}/cancel`),
+  streamOrchestratorTurn: async (
+    wid: string,
+    sid: string,
+    turnId: string,
+    onEvent: (ev: OrchestratorEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<void> => {
+    const path = `/api/workflows/${wid}/sessions/${sid}/turns/${turnId}/events`;
+    const res = await fetch(path, { method: 'GET', signal });
+    if (!res.ok || !res.body) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`GET ${path} → ${res.status}: ${body}`);
+    }
+    await readSseEvents(res, onEvent);
+  },
 
   // --- continue-chat (agent continuations) -------------------------------------
   /** View an agent call's continuation: the persisted thread if it's been
@@ -203,30 +250,6 @@ export const api = {
       const body = await res.text().catch(() => '');
       throw new Error(`POST ${path} → ${res.status}: ${body}`);
     }
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = '';
-    // SSE frame parser: split on blank line, each frame has lines starting with `data:`.
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      let idx: number;
-      while ((idx = buf.indexOf('\n\n')) >= 0) {
-        const frame = buf.slice(0, idx);
-        buf = buf.slice(idx + 2);
-        const dataLines = frame
-          .split('\n')
-          .filter((l) => l.startsWith('data:'))
-          .map((l) => l.slice(5).replace(/^ /, ''));
-        if (dataLines.length === 0) continue;
-        const payload = dataLines.join('\n');
-        try {
-          onEvent(JSON.parse(payload) as OrchestratorEvent);
-        } catch {
-          // ignore malformed frame
-        }
-      }
-    }
+    await readSseEvents(res, onEvent);
   },
 };

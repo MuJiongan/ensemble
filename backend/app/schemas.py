@@ -276,6 +276,8 @@ class SessionMessagesOut(BaseModel):
     # True when the backend still has an in-flight orchestrator turn for this
     # session. Used by the frontend to restore "working" status after a reload.
     active_turn: bool = False
+    # Reconnectable id for the in-flight turn's replayable event stream.
+    active_turn_id: str | None = None
     # Active orchestrator-started workflow runs for this session's workflow.
     # Lets a reloaded pending run_workflow card recover the run id that was
     # originally delivered as a transient SSE event.

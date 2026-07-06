@@ -290,7 +290,7 @@ export function DialogConnectProvider({
             connected
           </span>
           <button
-            className="text-btn"
+            className="ed-btn ed-btn--danger"
             onClick={async () => {
               const conn = settings.connections[provider.id];
               if (conn?.method === 'oauth') {
@@ -301,7 +301,7 @@ export function DialogConnectProvider({
               onClose();
             }}
           >
-            disconnect
+            disconnect <span className="ed-btn__mark">×</span>
           </button>
         </div>
       )}
@@ -369,8 +369,8 @@ export function DialogConnectProvider({
               via OpenRouter for now.
             </div>
           )}
-          <button className="text-btn" onClick={doApiConnect}>
-            connect
+          <button className="ed-btn ed-btn--primary" onClick={doApiConnect}>
+            connect <span className="ed-btn__mark">→</span>
           </button>
         </div>
       )}
@@ -381,7 +381,7 @@ export function DialogConnectProvider({
             <div className="serif" style={{ fontStyle: 'italic', color: 'var(--ink-3)' }}>
               waiting for sign-in in the popup…{' '}
               <button
-                className="text-btn"
+                className="ed-btn ed-btn--mini"
                 onClick={() => {
                   abortRef.current?.abort();
                   setOauthState('idle');
@@ -391,8 +391,11 @@ export function DialogConnectProvider({
               </button>
             </div>
           ) : (
-            <button className="text-btn" onClick={() => doOAuth(method.provider || provider.id)}>
-              {method.label.toLowerCase()}
+            <button
+              className="ed-btn ed-btn--primary"
+              onClick={() => doOAuth(method.provider || provider.id)}
+            >
+              {method.label.toLowerCase()} <span className="ed-btn__mark">→</span>
             </button>
           )}
         </div>
@@ -465,13 +468,13 @@ export function DialogSelectModel({
           style={{ flex: 1 }}
         />
         <button
-          className="text-btn"
+          className="ed-btn ed-btn--primary"
           disabled={!customModel.trim()}
           onClick={() =>
             onPick({ providerID: CUSTOM_PROVIDER_ID, modelID: customModel.trim(), variant: null })
           }
         >
-          use
+          use <span className="ed-btn__mark">→</span>
         </button>
       </div>
     </div>

@@ -14,12 +14,30 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session as DbSession
 
-from app.db import get_db, SessionLocal
+from app.db import get_db
 from app import images as images_mod, models, schemas
 from app.orchestrator import agent
+from app.orchestrator import turns as turn_service
 
 
 router = APIRouter(prefix="/api", tags=["orchestrator"])
+
+
+def _sse(turn_id: str):
+    for event in turn_service.subscribe(turn_id):
+        yield f"data: {json.dumps(event, default=str)}\n\n"
+
+
+def _sse_response(turn_id: str) -> StreamingResponse:
+    return StreamingResponse(
+        _sse(turn_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # disable proxy buffering on dev
+            "Connection": "keep-alive",
+        },
+    )
 
 
 def _get_session(db: DbSession, wid: str, sid: str) -> models.Session:
@@ -65,6 +83,7 @@ def get_messages(
 ) -> schemas.SessionMessagesOut:
     sess = _get_session(db, wid, sid)
     bubbles = agent.render_history(db, sid)
+    active_turn_id = turn_service.active_turn_id(sid)
     active_runs = (
         db.query(models.Run)
         .filter(
@@ -77,7 +96,8 @@ def get_messages(
     )
     return schemas.SessionMessagesOut(
         messages=bubbles,  # type: ignore[arg-type]
-        active_turn=agent._is_turn_active(sid),
+        active_turn=active_turn_id is not None or agent._is_turn_active(sid),
+        active_turn_id=active_turn_id,
         active_runs=[
             schemas.ActiveRunOut(id=r.id, workflow_id=r.workflow_id, status=r.status)
             for r in active_runs
@@ -102,12 +122,17 @@ def cancel_session_turn(wid: str, sid: str, db: DbSession = Depends(get_db)) -> 
     (between LLM rounds, mid-SSE-stream, or between tool calls) and exits.
     """
     _get_session(db, wid, sid)
-    ok = agent._signal_cancel(sid)
+    ok = turn_service.cancel(sid)
     return {"cancelled": ok}
 
 
 @router.post("/workflows/{wid}/sessions/{sid}/messages")
-def post_message(wid: str, sid: str, body: schemas.UserMessageIn) -> StreamingResponse:
+def post_message(
+    wid: str,
+    sid: str,
+    body: schemas.UserMessageIn,
+    db: DbSession = Depends(get_db),
+) -> StreamingResponse:
     """Stream orchestrator events as Server-Sent Events.
 
     Each event is a single line `data: {json}\\n\\n`. Event kinds match
@@ -124,34 +149,25 @@ def post_message(wid: str, sid: str, body: schemas.UserMessageIn) -> StreamingRe
     except images_mod.ImageError as e:
         raise HTTPException(422, str(e))
 
-    # We use our own DB session here (not Depends) because the generator runs
-    # outside the FastAPI request handler's lifecycle.
-    db = SessionLocal()
-    try:
-        _get_session(db, wid, sid)
-    except HTTPException:
-        db.close()
-        raise HTTPException(404, f"session {sid} not found")
-
-    def gen():
-        try:
-            for event in agent.run_turn(
-                db,
-                sid,
-                body.text,
-                attachments=attachments,
-                auto_user=body.auto,
-            ):
-                yield f"data: {json.dumps(event, default=str)}\n\n"
-        finally:
-            db.close()
-
-    return StreamingResponse(
-        gen(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # disable proxy buffering on dev
-            "Connection": "keep-alive",
-        },
+    _get_session(db, wid, sid)
+    turn_id = turn_service.start_turn(
+        sid,
+        body.text,
+        attachments=attachments,
+        auto_user=body.auto,
     )
+    return _sse_response(turn_id)
+
+
+@router.get("/workflows/{wid}/sessions/{sid}/turns/{turn_id}/events")
+def stream_turn_events(
+    wid: str,
+    sid: str,
+    turn_id: str,
+    db: DbSession = Depends(get_db),
+) -> StreamingResponse:
+    """Replay and tail one in-flight orchestrator turn as Server-Sent Events."""
+    _get_session(db, wid, sid)
+    if not turn_service.turn_belongs_to_session(turn_id, sid):
+        raise HTTPException(404, f"turn {turn_id} not found")
+    return _sse_response(turn_id)

@@ -1,65 +1,21 @@
 import { useEffect, useRef } from 'react';
 import { api } from './api';
+import { updateLastAssistant } from './chatBlocks';
 import {
-  foldContentDelta, foldReasoningDelta, appendToolCall, resolveToolCall,
-  appendParagraph, appendNotice, updateLastAssistant,
-} from './chatBlocks';
+  isAssistantWireTerminal,
+  mapAssistantWireEvent,
+  reduceAssistantWireEvent,
+  useAssistantStreamBuffer,
+  type AssistantMutation,
+} from './assistantStream';
 import type { AssistantMessage, ChatMessage } from './components/ChatPanel';
 import type { CallChatTurnEvent, ModelSelection } from './types';
 
-type AssistantMutation = (a: AssistantMessage) => AssistantMessage;
+export const mapCallChatEvent = mapAssistantWireEvent;
 
-/** Map a continue-chat turn event to an assistant-bubble mutation, or `null`
- * when the event has no bubble effect. A turn streams the same per-call event
- * contract a run does, so this mirrors `reduceAssistantOnEvent` — folding
- * content/reasoning chunks and tool calls into the streaming assistant bubble.
- * Pure, for unit-testability. */
+/** Back-compat export for reducer unit tests and callers that do not need batching. */
 export function reduceCallChatOnEvent(ev: CallChatTurnEvent): AssistantMutation | null {
-  if (ev.type === 'llm_call_chunk' && ev.delta) {
-    if (ev.kind === 'reasoning') return (a) => foldReasoningDelta(a, ev.delta);
-    if (ev.kind === 'content') return (a) => foldContentDelta(a, ev.delta);
-    // tool_args deltas are ignored — the full args arrive on tool_call_started.
-    return null;
-  }
-  if (ev.type === 'tool_call_started') {
-    let argsStr = '';
-    try {
-      argsStr = JSON.stringify(ev.args);
-    } catch {
-      /* leave '' — the argsFull dict still carries the raw input */
-    }
-    return (a) => appendToolCall(a, { tool: ev.tool, args: argsStr, argsFull: ev.args });
-  }
-  if (ev.type === 'tool_call_finished') {
-    return (a) =>
-      resolveToolCall(a, {
-        tool: ev.tool,
-        status: ev.error ? 'err' : 'ok',
-        result: ev.error ?? ev.result,
-      });
-  }
-  if (ev.type === 'llm_call_finished' && ev.cost) {
-    // Accumulate provider-reported cost across rounds onto the streaming
-    // bubble, matching the orchestrator chat's per-turn cost display.
-    return (a) => ({ ...a, cost: (a.cost ?? 0) + ev.cost });
-  }
-  if (ev.type === 'context_compacted') {
-    return (a) => appendNotice(a, 'context compacted', 'compaction');
-  }
-  if (ev.type === 'error') {
-    return (a) => appendParagraph(a, `*[error]* ${ev.error}`);
-  }
-  if (ev.type === 'run_finished') {
-    return (a) => {
-      const done: AssistantMessage = { ...a, streaming: false };
-      if (ev.status === 'cancelled') return appendNotice(done, 'turn cancelled');
-      if (ev.status === 'error') {
-        return appendParagraph(done, `*[turn failed]* ${ev.error ?? 'unknown error'}`);
-      }
-      return done;
-    };
-  }
-  return null;
+  return reduceAssistantWireEvent(ev);
 }
 
 interface UseCallChatStreamArgs {
@@ -91,6 +47,7 @@ export function useCallChatStream({
       return next === cur ? prev : { ...prev, [chatId]: next };
     });
   };
+  const assistantStream = useAssistantStreamBuffer<string>(updateAssistant);
 
   const setStreaming = (chatId: string, on: boolean) => {
     setStreamingChatIds((prev) => {
@@ -103,6 +60,7 @@ export function useCallChatStream({
 
   const teardown = (chatId: string) => {
     const ws = wsByChat.current[chatId];
+    assistantStream.flush(chatId);
     if (ws) {
       try { ws.close(); } catch { /* noop */ }
       delete wsByChat.current[chatId];
@@ -159,9 +117,10 @@ export function useCallChatStream({
       } catch {
         return;
       }
-      const mut = reduceCallChatOnEvent(ev);
-      if (mut) updateAssistant(chatId, mut);
-      if (ev.type === 'run_finished' || ev.type === 'run_deleted') {
+      for (const streamEvent of mapAssistantWireEvent(ev)) {
+        assistantStream.apply(chatId, streamEvent);
+      }
+      if (isAssistantWireTerminal(ev)) {
         // The streamed bubble already holds the full response — content and
         // tool calls arrived as events, and the run_finished reducer cleared
         // the streaming flag. Don't refetch the persisted transcript here: the
@@ -176,6 +135,7 @@ export function useCallChatStream({
     ws.onclose = () => {
       if (finished) return;
       // Socket dropped before a terminal event — stop the spinner.
+      assistantStream.flush(chatId);
       updateAssistant(chatId, (a) => ({ ...a, streaming: false }));
       teardown(chatId);
     };
@@ -195,6 +155,7 @@ export function useCallChatStream({
     // spinner stuck forever. The later run_finished/run_deleted teardown is
     // idempotent, so this can't double-clear.
     updateAssistant(chatId, (a) => (a.streaming ? { ...a, streaming: false } : a));
+    assistantStream.flush(chatId);
     setStreaming(chatId, false);
   };
 
@@ -202,9 +163,14 @@ export function useCallChatStream({
    * the continuation set is reset (e.g. switching workflows) so sockets from a
    * previous workflow can't keep mutating now-stale `callChatMessages`. */
   const dropAllStreams = () => {
+    const chatIds = new Set([
+      ...Object.keys(wsByChat.current),
+      ...Object.keys(turnByChat.current),
+    ]);
     for (const ws of Object.values(wsByChat.current)) {
       try { ws.close(); } catch { /* noop */ }
     }
+    for (const chatId of chatIds) assistantStream.clear(chatId);
     wsByChat.current = {};
     turnByChat.current = {};
     setStreamingChatIds(new Set());

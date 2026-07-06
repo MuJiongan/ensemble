@@ -1,73 +1,21 @@
 import { useEffect, useRef } from 'react';
 import { api } from './api';
 import { GRAPH_MUTATING_TOOLS, WORKFLOW_METADATA_TOOLS } from './appHelpers';
+import { updateLastAssistant } from './chatBlocks';
 import {
-  foldContentDelta, foldReasoningDelta, appendToolCall, resolveToolCall,
-  appendParagraph, appendNotice, updateLastAssistant,
-} from './chatBlocks';
+  mapAssistantWireEvent,
+  reduceAssistantWireEvent,
+  useAssistantStreamBuffer,
+  type AssistantMutation,
+} from './assistantStream';
 import type { AssistantMessage, ChatMessage } from './components/ChatPanel';
 import type { OrchestratorEvent } from './types';
 
-type AssistantMutation = (a: AssistantMessage) => AssistantMessage;
+export const mapOrchestratorEvent = mapAssistantWireEvent;
 
-/** Map an OrchestratorEvent to an assistant-bubble mutation, or `null` if
- * the event has no bubble effect (graph-mutator side effects, done — caller
- * handles those separately). `run_started` returns a mutation that stashes
- * the run_id on the pending `run_workflow` block, so the chat card is
- * clickable while still running; the caller still also handles run_started
- * separately to attach the run panel WS. Pure for unit-testability. */
+/** Back-compat export for reducer unit tests and callers that do not need batching. */
 export function reduceAssistantOnEvent(ev: OrchestratorEvent): AssistantMutation | null {
-  // Reasoning streams before visible content; content streams as deltas. Tool
-  // start/end push and resolve cards. (See chatBlocks for the folding rules.)
-  if (ev.kind === 'assistant_thinking_chunk' && ev.text) {
-    return (a) => foldReasoningDelta(a, ev.text);
-  }
-  if (ev.kind === 'assistant_text_chunk' && ev.text) {
-    return (a) => foldContentDelta(a, ev.text);
-  }
-  if (ev.kind === 'assistant_text' && ev.text) {
-    // Non-streaming full-text fallback: skip when the trailing paragraph
-    // already has text (the chunks already built it).
-    return (a) => {
-      const last = a.content[a.content.length - 1];
-      if (last && last.t === 'p' && last.text) return a;
-      return appendParagraph(a, ev.text);
-    };
-  }
-  if (ev.kind === 'tool_call_start') {
-    return (a) => appendToolCall(a, { tool: ev.tool, args: ev.args, argsFull: ev.args_full });
-  }
-  if (ev.kind === 'tool_call_end') {
-    return (a) => resolveToolCall(a, { tool: ev.tool, status: ev.status, result: ev.result });
-  }
-  if (ev.kind === 'run_started') {
-    // Find the pending run_workflow block this run belongs to and stash the
-    // run_id so the chat card can become clickable before tool_call_end.
-    return (a) => {
-      const content = [...a.content];
-      for (let i = content.length - 1; i >= 0; i--) {
-        const b = content[i];
-        if (b.t === 'tool' && b.tool === 'run_workflow' && b.status === 'pending') {
-          content[i] = { ...b, runId: ev.run_id };
-          break;
-        }
-      }
-      return { ...a, content };
-    };
-  }
-  if (ev.kind === 'assistant_cost') {
-    return (a) => ({ ...a, cost: (a.cost ?? 0) + ev.cost });
-  }
-  if (ev.kind === 'context_compacted') {
-    return (a) => appendNotice(a, 'context compacted', 'compaction');
-  }
-  if (ev.kind === 'error') {
-    return (a) => appendParagraph(a, `*[error]* ${ev.message}`);
-  }
-  if (ev.kind === 'done') {
-    return (a) => ({ ...a, streaming: false });
-  }
-  return null;
+  return reduceAssistantWireEvent(ev);
 }
 
 interface UseOrchestratorStreamArgs {
@@ -107,6 +55,36 @@ export function useOrchestratorStream({
       const next = updateLastAssistant(cur, mut);
       return next === cur ? prev : { ...prev, [wid]: next };
     });
+  };
+  const assistantStream = useAssistantStreamBuffer<string>(updateAssistant);
+
+  const handleOrchestratorEvent = (wid: string, ev: OrchestratorEvent) => {
+    for (const streamEvent of mapAssistantWireEvent(ev)) {
+      assistantStream.apply(wid, streamEvent);
+    }
+    if (ev.kind === 'tool_call_end' && ev.status === 'ok' && GRAPH_MUTATING_TOOLS.has(ev.tool)) {
+      refreshDetail(wid);
+    } else if (ev.kind === 'tool_call_end' && ev.status === 'ok' && WORKFLOW_METADATA_TOOLS.has(ev.tool)) {
+      void refreshWorkflows();
+    } else if (ev.kind === 'run_started') {
+      // Orchestrator kicked off a run via `run_workflow`. Attach the run
+      // panel via the same code path the Run button uses, so the user
+      // gets live progress while the run continues in the background.
+      onOrchestratorRunStarted?.(ev.workflow_id, ev.run_id);
+      attachToRunRef.current(ev.run_id, ev.workflow_id);
+    }
+  };
+
+  const finishStream = (wid: string, ctrl: AbortController) => {
+    assistantStream.flush(wid);
+    refreshDetail(wid);
+    if (abortRefs.current[wid] !== ctrl) return;
+    setOrchestratingIds((prev) => {
+      const s = new Set(prev);
+      s.delete(wid);
+      return s;
+    });
+    delete abortRefs.current[wid];
   };
 
   const streamToOrchestrator = async (
@@ -159,27 +137,12 @@ export function useOrchestratorStream({
       ],
     }));
 
-    const handleEvent = (ev: OrchestratorEvent) => {
-      const mut = reduceAssistantOnEvent(ev);
-      if (mut) updateAssistant(wid, mut);
-      if (ev.kind === 'tool_call_end' && ev.status === 'ok' && GRAPH_MUTATING_TOOLS.has(ev.tool)) {
-        refreshDetail(wid);
-      } else if (ev.kind === 'tool_call_end' && ev.status === 'ok' && WORKFLOW_METADATA_TOOLS.has(ev.tool)) {
-        void refreshWorkflows();
-      } else if (ev.kind === 'run_started') {
-        // Orchestrator kicked off a run via `run_workflow`. Attach the run
-        // panel via the same code path the Run button uses, so the user
-        // gets live progress while the run continues in the background.
-        onOrchestratorRunStarted?.(ev.workflow_id, ev.run_id);
-        attachToRunRef.current(ev.run_id, ev.workflow_id);
-      }
-    };
-
     try {
-      await api.streamUserMessage(wid, sid, text, handleEvent, ctrl.signal, attachments, {
+      await api.streamUserMessage(wid, sid, text, (ev) => handleOrchestratorEvent(wid, ev), ctrl.signal, attachments, {
         auto: opts?.auto,
       });
     } catch (e) {
+      assistantStream.flush(wid);
       if (ctrl.signal.aborted) {
         updateAssistant(wid, (a) => ({ ...a, streaming: false }));
       } else {
@@ -191,24 +154,58 @@ export function useOrchestratorStream({
         }));
       }
     } finally {
-      refreshDetail(wid);
-      setOrchestratingIds((prev) => {
-        const s = new Set(prev);
-        s.delete(wid);
-        return s;
-      });
-      if (abortRefs.current[wid] === ctrl) delete abortRefs.current[wid];
+      assistantStream.flush(wid);
+      finishStream(wid, ctrl);
+    }
+  };
+
+  const resumeOrchestratorStream = async (wid: string, sid: string, turnId: string) => {
+    abortRefs.current[wid]?.abort();
+    const ctrl = new AbortController();
+    abortRefs.current[wid] = ctrl;
+
+    setOrchestratingIds((prev) => {
+      const s = new Set(prev);
+      s.add(wid);
+      return s;
+    });
+
+    try {
+      await api.streamOrchestratorTurn(
+        wid,
+        sid,
+        turnId,
+        (ev) => handleOrchestratorEvent(wid, ev),
+        ctrl.signal,
+      );
+    } catch (e) {
+      assistantStream.flush(wid);
+      if (ctrl.signal.aborted) {
+        return;
+      }
+      const msg = e instanceof Error ? e.message : String(e);
+      updateAssistant(wid, (a) => ({
+        ...a,
+        streaming: false,
+        content: [...a.content, { t: 'p', text: `*[stream failed]* ${msg}` }],
+      }));
+    } finally {
+      assistantStream.flush(wid);
+      finishStream(wid, ctrl);
     }
   };
 
   const abortStream = (wid: string) => {
+    assistantStream.flush(wid);
     abortRefs.current[wid]?.abort();
   };
 
   const dropWorkflow = (wid: string) => {
+    assistantStream.flush(wid);
     abortRefs.current[wid]?.abort();
     delete abortRefs.current[wid];
+    assistantStream.clear(wid);
   };
 
-  return { streamToOrchestrator, abortStream, dropWorkflow };
+  return { streamToOrchestrator, resumeOrchestratorStream, abortStream, dropWorkflow };
 }

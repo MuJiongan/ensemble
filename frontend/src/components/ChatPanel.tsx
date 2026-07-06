@@ -11,7 +11,7 @@ import type { Catalog } from '../providerCatalog';
 import { CloseButton } from './CloseButton';
 import { AttachmentChips, FileTile, type PendingAttachment } from './ImageAttachments';
 import { FilePathLink, childText, linkifyNodes, looksLikePath } from './FilePathLink';
-import { ModelSwitcher } from './ModelSwitcher';
+import { ModelSelector } from './ModelSelector';
 
 const BOTTOM_PIN_THRESHOLD_PX = 60;
 
@@ -297,34 +297,12 @@ export interface ChatThreadProps {
   attachmentNotice?: string | null;
 }
 
-interface Props {
+export interface ChatHeaderControlsProps {
   messages: ChatMessage[];
-  onSend: (text: string) => void;
-  /** Optional controlled composer draft for persistence across pane/view switches. */
-  composerDraft?: string;
-  /** Called when the composer draft changes. */
-  onComposerDraftChange?: (next: string) => void;
-  /** Pending attachments (owned by the App-level useImageAttachments hook
-   * so drops/pastes land regardless of which panel is showing). */
-  pendingAttachments?: PendingAttachment[];
-  onRemoveAttachment?: (id: string) => void;
-  /** True while a file is being dragged over the window. */
-  draggingFile?: boolean;
-  /** Transient "unsupported file" message from the attachments hook. */
-  attachmentNotice?: string | null;
-  onCancel?: () => void;
   disabled?: boolean;
   modelLabel?: string;
   onClose?: () => void;
   onClearContext?: () => void;
-  /** Called when the user clicks "view this run on the canvas" in a
-   * `run_workflow` tool card. The host can swap the canvas to render the
-   * run's frozen `workflow_snapshot`. */
-  onViewRun?: (runId: string) => void;
-  /** Orchestrator-started run ids for the active workflow, newest first. */
-  orchestratorRunIds?: string[];
-  /** Drop a run id from any host-owned run lists after it is deleted. */
-  onForgetRun?: (runId: string) => void;
 
   // --- continuation mode ------------------------------------------------
   /** When set, this pane shows an agent continuation (entered from a node's
@@ -339,6 +317,35 @@ interface Props {
   catalog?: Catalog | null;
   onPickModel?: (sel: ModelSelection) => void;
   onCycleVariant?: (next: string | null) => void;
+  /** Tighter layout for embedding in the right-panel tab row. */
+  compact?: boolean;
+}
+
+interface Props extends ChatHeaderControlsProps {
+  onSend: (text: string) => void;
+  /** Optional controlled composer draft for persistence across pane/view switches. */
+  composerDraft?: string;
+  /** Called when the composer draft changes. */
+  onComposerDraftChange?: (next: string) => void;
+  /** Pending attachments (owned by the App-level useImageAttachments hook
+   * so drops/pastes land regardless of which panel is showing). */
+  pendingAttachments?: PendingAttachment[];
+  onRemoveAttachment?: (id: string) => void;
+  /** True while a file is being dragged over the window. */
+  draggingFile?: boolean;
+  /** Transient "unsupported file" message from the attachments hook. */
+  attachmentNotice?: string | null;
+  onCancel?: () => void;
+  /** Called when the user clicks "view this run on the canvas" in a
+   * `run_workflow` tool card. The host can swap the canvas to render the
+   * run's frozen `workflow_snapshot`. */
+  onViewRun?: (runId: string) => void;
+  /** Orchestrator-started run ids for the active workflow, newest first. */
+  orchestratorRunIds?: string[];
+  /** Drop a run id from any host-owned run lists after it is deleted. */
+  onForgetRun?: (runId: string) => void;
+  /** The tab row can host these controls, letting the chat body reclaim space. */
+  hideHeader?: boolean;
 }
 
 function ThinkingBlock({
@@ -1740,6 +1747,230 @@ export function ChatThread({
   );
 }
 
+export function ChatHeaderControls({
+  messages,
+  disabled,
+  modelLabel,
+  onClose,
+  onClearContext,
+  conversationLabel,
+  onBack,
+  modelSelection,
+  modelVariants,
+  catalog,
+  onPickModel,
+  onCycleVariant,
+  compact,
+}: ChatHeaderControlsProps) {
+  const totalCost = messages.reduce(
+    (sum, m) => sum + (m.role === 'assistant' ? m.cost ?? 0 : 0),
+    0,
+  );
+  const showConversationTitle = !compact || !!conversationLabel;
+  const showModelControl = !!onPickModel || !!modelLabel;
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: compact ? 'center' : 'baseline',
+        gap: compact ? 10 : 8,
+        minWidth: 0,
+        width: compact ? 'auto' : '100%',
+      }}
+    >
+      {showConversationTitle && (
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: compact ? 'center' : 'baseline',
+            gap: 8,
+            minWidth: 0,
+            flex: '1 1 auto',
+          }}
+        >
+          {conversationLabel ? (
+            // Breadcrumb: an explicit, labeled "← orchestrator" back link, then
+            // the current continuation. The lone chevron wasn't an obvious way
+            // back; spelling out "orchestrator" + the arrow makes it clear.
+            <>
+              <button
+                type="button"
+                className="text-btn"
+                onClick={onBack}
+                title="back to the orchestrator chat"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: compact ? 'center' : 'baseline',
+                  gap: 5,
+                  flexShrink: 0,
+                }}
+              >
+                <span aria-hidden>←</span>
+                orchestrator
+              </button>
+              <span className="smallcaps" aria-hidden style={{ color: 'var(--ink-4)', flexShrink: 0 }}>
+                /
+              </span>
+              <span
+                className="smallcaps"
+                title={conversationLabel}
+                style={{
+                  color: 'var(--ink-3)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {conversationLabel}
+              </span>
+            </>
+          ) : (
+            <span className="smallcaps" style={{ whiteSpace: 'nowrap' }}>
+              orchestrator agent
+            </span>
+          )}
+        </span>
+      )}
+      {!showConversationTitle && !compact && <span style={{ flex: '1 1 auto', minWidth: 0 }} />}
+      <span
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: compact ? 10 : 8,
+          minWidth: 0,
+          flex: '0 1 auto',
+        }}
+      >
+        {showModelControl && (
+          onPickModel ? (
+            <ModelSelector
+              selection={modelSelection ?? null}
+              catalog={catalog ?? null}
+              onChange={onPickModel}
+              disabled={disabled}
+              compact={compact}
+              align={compact ? 'right' : 'left'}
+            />
+          ) : (
+            <span
+              className="mono"
+              title={modelLabel}
+              style={{
+                fontSize: 10.5,
+                color: 'var(--ink-4)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                minWidth: 0,
+              }}
+            >
+              {modelLabel}
+            </span>
+          )
+        )}
+        {totalCost > 0 && (
+          <>
+            <span
+              className="asterisk"
+              aria-hidden
+              style={{ fontSize: 12, color: 'var(--ink-4)' }}
+            >
+              ·
+            </span>
+            <span
+              className="mono"
+              title="total provider-reported cost across this chat context"
+              style={{ fontSize: 10.5, color: 'var(--ink-4)', whiteSpace: 'nowrap' }}
+            >
+              ${totalCost.toFixed(4)}
+            </span>
+          </>
+        )}
+        {onClearContext && !conversationLabel && messages.length > 0 && !disabled && (
+          <button
+            type="button"
+            onClick={onClearContext}
+            className="text-btn"
+            title="clear chat context while keeping this project and its runs"
+            style={{
+              marginLeft: compact ? 8 : 8,
+              padding: compact ? '2px 0' : undefined,
+              flexShrink: 0,
+              color: compact ? 'var(--ink-4)' : undefined,
+            }}
+          >
+            clear context
+          </button>
+        )}
+        {onClose && (
+          <CloseButton
+            onClick={onClose}
+            title="close chat"
+            style={{ marginLeft: compact ? 0 : 8 }}
+          />
+        )}
+      </span>
+    </div>
+  );
+}
+
+function ConversationStrip({
+  label,
+  onBack,
+}: {
+  label: string;
+  onBack?: () => void;
+}) {
+  return (
+    <div
+      style={{
+        flexShrink: 0,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 9,
+        minWidth: 0,
+        padding: '9px 22px',
+        borderBottom: '1px solid var(--rule)',
+        background: 'var(--surface-raised)',
+      }}
+    >
+      <button
+        type="button"
+        className="text-btn"
+        onClick={onBack}
+        title="back to the orchestrator chat"
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 5,
+          flexShrink: 0,
+          color: 'var(--ink-3)',
+        }}
+      >
+        <span aria-hidden>←</span>
+        orchestrator
+      </button>
+      <span className="smallcaps" aria-hidden style={{ color: 'var(--ink-5)', flexShrink: 0 }}>
+        /
+      </span>
+      <span
+        className="smallcaps"
+        title={label}
+        style={{
+          minWidth: 0,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          color: 'var(--ink-3)',
+        }}
+      >
+        {label}
+      </span>
+    </div>
+  );
+}
+
 export function ChatPanel({
   messages,
   onSend,
@@ -1764,12 +1995,8 @@ export function ChatPanel({
   onCycleVariant,
   orchestratorRunIds,
   onForgetRun,
+  hideHeader,
 }: Props) {
-  const totalCost = messages.reduce(
-    (sum, m) => sum + (m.role === 'assistant' ? m.cost ?? 0 : 0),
-    0,
-  );
-
   return (
     <div
       style={{
@@ -1779,106 +2006,32 @@ export function ChatPanel({
         background: 'var(--paper)',
       }}
     >
-      <div
-        style={{
-          padding: '14px 22px 12px',
-          borderBottom: '1px solid var(--rule)',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0 }}>
-          {conversationLabel ? (
-            // Breadcrumb: an explicit, labeled "← orchestrator" back link, then
-            // the current continuation. The lone chevron wasn't an obvious way
-            // back; spelling out "orchestrator" + the arrow makes it clear.
-            <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 8, minWidth: 0 }}>
-              <button
-                type="button"
-                className="text-btn"
-                onClick={onBack}
-                title="back to the orchestrator chat"
-                style={{ display: 'inline-flex', alignItems: 'baseline', gap: 5, flexShrink: 0 }}
-              >
-                <span aria-hidden>←</span>
-                orchestrator
-              </button>
-              <span className="smallcaps" aria-hidden style={{ color: 'var(--ink-4)', flexShrink: 0 }}>
-                /
-              </span>
-              <span
-                className="smallcaps"
-                title={conversationLabel}
-                style={{ color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-              >
-                {conversationLabel}
-              </span>
-            </span>
-          ) : (
-            <span className="smallcaps">orchestrator agent</span>
-          )}
-          <span style={{ flex: 1 }} />
-          {onPickModel ? (
-            <ModelSwitcher
-              selection={modelSelection ?? null}
-              variants={modelVariants ?? []}
-              catalog={catalog ?? null}
-              fallbackLabel={modelLabel}
-              onPick={onPickModel}
-              onCycleVariant={onCycleVariant}
-            />
-          ) : (
-            <span
-              className="mono"
-              title={modelLabel || 'no orchestrator model set — using server fallback'}
-              style={{
-                fontSize: 10.5,
-                color: 'var(--ink-4)',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                minWidth: 0,
-              }}
-            >
-              {modelLabel || '(default)'}
-            </span>
-          )}
-          {totalCost > 0 && (
-            <>
-              <span
-                className="asterisk"
-                aria-hidden
-                style={{ fontSize: 12, color: 'var(--ink-4)' }}
-              >
-                ·
-              </span>
-              <span
-                className="mono"
-                title="total provider-reported cost across this chat context"
-                style={{ fontSize: 10.5, color: 'var(--ink-4)', whiteSpace: 'nowrap' }}
-              >
-                ${totalCost.toFixed(4)}
-              </span>
-            </>
-          )}
-          {onClearContext && !conversationLabel && messages.length > 0 && !disabled && (
-            <button
-              type="button"
-              onClick={onClearContext}
-              className="text-btn"
-              title="clear chat context while keeping this project and its runs"
-              style={{ marginLeft: 8, flexShrink: 0 }}
-            >
-              reset chat
-            </button>
-          )}
-          {onClose && (
-            <CloseButton
-              onClick={onClose}
-              title="close chat"
-              style={{ marginLeft: 8 }}
-            />
-          )}
+      {!hideHeader && (
+        <div
+          style={{
+            padding: '14px 22px 12px',
+            borderBottom: '1px solid var(--rule)',
+          }}
+        >
+          <ChatHeaderControls
+            messages={messages}
+            disabled={disabled}
+            modelLabel={modelLabel}
+            onClose={onClose}
+            onClearContext={onClearContext}
+            conversationLabel={conversationLabel}
+            onBack={onBack}
+            modelSelection={modelSelection}
+            modelVariants={modelVariants}
+            catalog={catalog}
+            onPickModel={onPickModel}
+            onCycleVariant={onCycleVariant}
+          />
         </div>
-      </div>
+      )}
+      {hideHeader && conversationLabel && (
+        <ConversationStrip label={conversationLabel} onBack={onBack} />
+      )}
 
       <ChatThread
         messages={messages}

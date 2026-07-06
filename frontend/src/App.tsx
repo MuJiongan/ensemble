@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { TopBar } from './components/TopBar';
 import { Canvas } from './components/Canvas';
-import { ChatPanel, type ChatMessage } from './components/ChatPanel';
+import { ChatHeaderControls, ChatPanel, type ChatBlock, type ChatMessage } from './components/ChatPanel';
 import { NodePanel } from './components/NodePanel';
 import { aggregateEvents } from './components/NodeTraceCard';
 import { RunPanel } from './components/RunPanel';
@@ -65,6 +65,25 @@ const contKey = (c: CallChat) => `${c.node_run_id}:${c.call_id}`;
 const runIsActive = (run: Pick<RunSummary, 'status'>) =>
   run.status === 'running' || run.status === 'pending';
 
+function resetActiveTurnForReplay(messages: ChatMessage[]): ChatMessage[] {
+  if (messages.length === 0) {
+    return [{ role: 'assistant', content: [], streaming: true }];
+  }
+  const last = messages[messages.length - 1];
+  if (last.role !== 'assistant') {
+    return [...messages, { role: 'assistant', content: [], streaming: true }];
+  }
+  const leadingNotices: ChatBlock[] = [];
+  for (const block of last.content) {
+    if (block.t !== 'notice') break;
+    leadingNotices.push(block);
+  }
+  return [
+    ...messages.slice(0, -1),
+    { role: 'assistant', content: leadingNotices, streaming: true },
+  ];
+}
+
 export default function App() {
   const [view, setView] = useState<View>('workflow');
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
@@ -75,7 +94,7 @@ export default function App() {
   // (run details / node config / snapshot view) and the orchestrator chat.
   // The chat used to float as an overlay; tabbing replaces it cleanly so the
   // run/execute footer is never blocked.
-  const [rightPanelMode, setRightPanelMode] = useState<'workspace' | 'chat'>('workspace');
+  const [rightPanelMode, setRightPanelMode] = useState<'workspace' | 'chat'>('chat');
 
   // Image attachments live at the App level so dropping/pasting an image
   // works anywhere in the workflow view — Hero, canvas, or either right-panel
@@ -97,9 +116,6 @@ export default function App() {
   const [chatByWorkflow, setChatByWorkflow] = useState<Record<string, ChatMessage[]>>({});
   // Workflows whose orchestrator is currently streaming.
   const [orchestratingIds, setOrchestratingIds] = useState<Set<string>>(new Set());
-  // Orchestrator turns discovered after a reload. These have no local SSE
-  // reader, so we poll the persisted session until the backend reports done.
-  const [recoveringOrchestratorIds, setRecoveringOrchestratorIds] = useState<Set<string>>(new Set());
   const [orchestratorRunIdsByWorkflow, setOrchestratorRunIdsByWorkflow] =
     useState<Record<string, string[]>>({});
   const sessionByWorkflowRef = useRef<Record<string, string>>({});
@@ -454,7 +470,7 @@ export default function App() {
     });
   };
 
-  const { streamToOrchestrator, abortStream, dropWorkflow } = useOrchestratorStream({
+  const { streamToOrchestrator, resumeOrchestratorStream, abortStream, dropWorkflow } = useOrchestratorStream({
     setChatByWorkflow,
     setOrchestratingIds,
     refreshDetail,
@@ -599,11 +615,18 @@ export default function App() {
       const sid = sessions[0].id;
       const history = await api.getSessionMessages(wid, sid);
       const hasLocalChat = (chatByWorkflowRef.current[wid]?.length ?? 0) > 0;
-      const bubbles = historyToChatMessages(
+      const persistedBubbles = historyToChatMessages(
         history.messages,
-        history.active_turn,
+        false,
         history.active_runs,
       );
+      const bubbles = history.active_turn && history.active_turn_id
+        ? resetActiveTurnForReplay(persistedBubbles)
+        : historyToChatMessages(
+            history.messages,
+            history.active_turn,
+            history.active_runs,
+          );
       // Race: if the user typed into a brand-new workflow, handleSend may have
       // already created a session and started a stream while we were fetching.
       // Trampling the optimistic [user, placeholder] would orphan the
@@ -627,18 +650,9 @@ export default function App() {
           s.add(wid);
           return s;
         });
-        setRecoveringOrchestratorIds((prev) => {
-          const s = new Set(prev);
-          s.add(wid);
-          return s;
-        });
-      } else if (!history.active_turn) {
-        setRecoveringOrchestratorIds((prev) => {
-          if (!prev.has(wid)) return prev;
-          const s = new Set(prev);
-          s.delete(wid);
-          return s;
-        });
+        if (history.active_turn_id) {
+          void resumeOrchestratorStream(wid, sid, history.active_turn_id);
+        }
       }
     } catch {
       /* ignore — leave panel empty */
@@ -676,61 +690,6 @@ export default function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
-
-  const activeSessionId = activeId ? sessionByWorkflow[activeId] : undefined;
-  const recoveringActiveOrchestrator =
-    !!activeId && recoveringOrchestratorIds.has(activeId);
-  useEffect(() => {
-    if (!activeId || !activeSessionId || !recoveringActiveOrchestrator) return;
-    const wid = activeId;
-    let cancelled = false;
-    let timer: number | undefined;
-
-    const poll = async () => {
-      try {
-        const history = await api.getSessionMessages(wid, activeSessionId);
-        if (cancelled) return;
-        setChatByWorkflow((prev) => ({
-          ...prev,
-          [wid]: historyToChatMessages(
-            history.messages,
-            history.active_turn,
-            history.active_runs,
-          ),
-        }));
-        rememberOrchestratorRuns(wid, (history.active_runs ?? []).map((run) => run.id));
-        if (history.active_turn) {
-          timer = window.setTimeout(poll, 2000);
-          return;
-        }
-      } catch {
-        if (!cancelled) timer = window.setTimeout(poll, 3000);
-        return;
-      }
-
-      setOrchestratingIds((prev) => {
-        if (!prev.has(wid)) return prev;
-        const s = new Set(prev);
-        s.delete(wid);
-        return s;
-      });
-      setRecoveringOrchestratorIds((prev) => {
-        if (!prev.has(wid)) return prev;
-        const s = new Set(prev);
-        s.delete(wid);
-        return s;
-      });
-      refreshDetail(wid);
-      void restoreActiveRuns(wid);
-    };
-
-    timer = window.setTimeout(poll, 1200);
-    return () => {
-      cancelled = true;
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId, activeSessionId, recoveringActiveOrchestrator]);
 
   // Live-run sockets stay open across workflow switches so background runs
   // keep streaming; only tear them down when the app unmounts.
@@ -794,12 +753,6 @@ export default function App() {
       api.patchWorkflow(wid, { name: nextName }).then(() => refreshWorkflows()).catch(() => {});
     }
 
-    setRecoveringOrchestratorIds((prev) => {
-      if (!prev.has(wid)) return prev;
-      const s = new Set(prev);
-      s.delete(wid);
-      return s;
-    });
     streamToOrchestrator(wid, sid, text, attachments);
   };
 
@@ -810,12 +763,6 @@ export default function App() {
     try { await api.cancelOrchestratorTurn(activeId, sid); } catch { /* ignore */ }
     abortStream(activeId);
     setOrchestratingIds((prev) => {
-      if (!prev.has(activeId)) return prev;
-      const s = new Set(prev);
-      s.delete(activeId);
-      return s;
-    });
-    setRecoveringOrchestratorIds((prev) => {
       if (!prev.has(activeId)) return prev;
       const s = new Set(prev);
       s.delete(activeId);
@@ -1430,6 +1377,21 @@ export default function App() {
                     exitSnapshotView();
                   }}
                   showChatActivityDot={isOrchestrating && rightPanelMode !== 'chat'}
+                  rightContent={rightPanelMode === 'chat' ? (
+                    <ChatHeaderControls
+                      compact
+                      messages={chatMessages}
+                      disabled={chatDisabled}
+                      modelLabel={chatModelLabel}
+                      onClearContext={cont || activeLiveCall ? undefined : clearChatContext}
+                      modelSelection={chatSelection}
+                      modelVariants={variantsFor(chatSelection)}
+                      catalog={catalog}
+                      // Live calls are read-only; orchestrator and finished
+                      // continuations share the same selector surface.
+                      onPickModel={activeLiveCall ? undefined : onChatPickModel}
+                    />
+                  ) : null}
                 />
                 <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
                   {rightPanelMode === 'chat' ? (
@@ -1475,6 +1437,7 @@ export default function App() {
                         onCycleVariant={activeLiveCall ? undefined : onChatCycleVariant}
                         orchestratorRunIds={orchestratorRunIds}
                         onForgetRun={forgetRunEverywhere}
+                        hideHeader
                         onViewRun={(runId) => {
                           // Snapshot view renders inside the workspace tab —
                           // flip back from chat so the run panel is actually
@@ -1689,6 +1652,7 @@ function RightPanelTabs({
   setMode,
   onWorkspaceTab,
   showChatActivityDot,
+  rightContent,
 }: {
   mode: 'workspace' | 'chat';
   setMode: (m: 'workspace' | 'chat') => void;
@@ -1699,6 +1663,7 @@ function RightPanelTabs({
   /** When true, paint a small accent dot on the chat tab to signal that
    * the orchestrator is doing work the user can't currently see. */
   showChatActivityDot: boolean;
+  rightContent?: React.ReactNode;
 }) {
   return (
     <div
@@ -1738,6 +1703,22 @@ function RightPanelTabs({
           )}
         </span>
       </PanelTabButton>
+      {rightContent && (
+        <div
+          style={{
+            marginLeft: 'auto',
+            padding: '4px 2px 4px 18px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'flex-end',
+            minWidth: 0,
+            flex: '1 1 auto',
+            overflow: 'visible',
+          }}
+        >
+          {rightContent}
+        </div>
+      )}
     </div>
   );
 }

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import traceback
 from typing import Iterator
 
@@ -222,10 +223,11 @@ def _summarize_orch(
 
 def _compact_session(
     db: DbSession, session_id: str, model: str, model_obj, cancel_event=None
-) -> bool:
+) -> int | None:
     """Summarize the older turns of this session and persist a compaction
-    anchor so future turns replay less history. Returns True if compaction
-    actually happened (head large enough + non-empty summary)."""
+    anchor so future turns replay less history. Returns the summarized message
+    count if compaction actually happened (head large enough + non-empty
+    summary)."""
     active, prev_summary = _active_rows(_ordered_rows(db, session_id))
     view: list[dict] = []
     view_rows: list = []
@@ -244,22 +246,22 @@ def _compact_session(
     )
     head = view[:tail_start]
     if len(head) < 2:
-        return False
+        return None
 
     head_msgs = ([compaction.summary_message(prev_summary)] if prev_summary else []) + head
     prompt = compaction.build_prompt(previous_summary=prev_summary)
     summary = _summarize_orch(db, model, head_msgs, prompt, cancel_event)
     if not summary:
-        return False
+        return None
 
     tail_start_id = view_rows[tail_start].id if tail_start < len(view_rows) else None
     _persist_compaction(db, session_id, summary, tail_start_id)
-    return True
+    return len(head)
 
 
 def _maybe_compact(
     db: DbSession, session_id: str, model: str, usage: dict, cancel_event=None
-) -> bool:
+) -> int | None:
     """Compact the session when the last round's token count has reached the
     model's usable context budget. No-op for models with an unknown context
     window (catalog miss)."""
@@ -270,7 +272,7 @@ def _maybe_compact(
     provider_id = (os.getenv("LLM_PROVIDER_ID") or "").strip()
     model_obj = md.get_model(provider_id, model) if provider_id else None
     if not model_obj or model_obj.limit.context == 0:
-        return False
+        return None
     token_count = (usage.get("prompt_tokens") or 0) + (usage.get("completion_tokens") or 0)
     if not compaction.is_overflow(
         token_count=token_count,
@@ -278,7 +280,7 @@ def _maybe_compact(
         output_limit=model_obj.limit.output,
         input_limit=model_obj.limit.input,
     ):
-        return False
+        return None
     return _compact_session(db, session_id, model, model_obj, cancel_event)
 
 
@@ -289,6 +291,7 @@ def run_turn(
     attachments: list[dict] | None = None,
     *,
     auto_user: bool = False,
+    cancel_event: threading.Event | None = None,
 ) -> Iterator[dict]:
     """Run one user-message turn end-to-end. Yields event dicts:
 
@@ -317,31 +320,34 @@ def run_turn(
 
     # Claim this session's turn slot. If a prior turn was running, this signals
     # it to wind down (the prior generator will bail at its next checkpoint).
-    cancel_event = _claim_turn(session_id)
-
-    model = _resolve_model(db)
-    if not model:
-        yield {
-            "kind": "error",
-            "message": "No orchestrator model configured. Set a default orchestrator model in Settings.",
-        }
-        yield {"kind": "done"}
-        return
-    tool_specs = orch_tools.llm_tool_specs()
-    # Pin custom instructions for the whole turn. The middleware sets process env
-    # once per request; concurrent requests can mutate it while this generator
-    # is still streaming.
-    pinned_custom_instructions = os.getenv("ORCHESTRATOR_CUSTOM_INSTRUCTIONS", "").strip()
-
-    def _cancellation_events():
-        """Yield the right tail-events when a cancel is observed: a noisy
-        error banner if we were superseded by a newer message, nothing if the
-        user just clicked cancel — followed always by ``done``."""
-        if _was_superseded(session_id, cancel_event):
-            yield {"kind": "error", "message": "superseded by a newer message"}
-        yield {"kind": "done"}
+    # Background turn services may pre-claim and pass the Event in, so the work
+    # can be registered before a client subscribes to its event stream.
+    if cancel_event is None:
+        cancel_event = _claim_turn(session_id)
 
     try:
+        model = _resolve_model(db)
+        if not model:
+            yield {
+                "kind": "error",
+                "message": "No orchestrator model configured. Set a default orchestrator model in Settings.",
+            }
+            yield {"kind": "done"}
+            return
+        tool_specs = orch_tools.llm_tool_specs()
+        # Pin custom instructions for the whole turn. The middleware sets process env
+        # once per request; concurrent requests can mutate it while this generator
+        # is still streaming.
+        pinned_custom_instructions = os.getenv("ORCHESTRATOR_CUSTOM_INSTRUCTIONS", "").strip()
+
+        def _cancellation_events():
+            """Yield the right tail-events when a cancel is observed: a noisy
+            error banner if we were superseded by a newer message, nothing if the
+            user just clicked cancel — followed always by ``done``."""
+            if _was_superseded(session_id, cancel_event):
+                yield {"kind": "error", "message": "superseded by a newer message"}
+            yield {"kind": "done"}
+
         while True:
             # Bail between LLM turns.
             if cancel_event.is_set():
@@ -505,8 +511,9 @@ def run_turn(
             # The loop will run another round (tool calls were made) — keep its
             # input within the context window before we get there. Emit an event
             # so the chat panel can show that history was compacted.
-            if _maybe_compact(db, session_id, model, round_usage, cancel_event):
-                yield {"kind": "context_compacted"}
+            summarized = _maybe_compact(db, session_id, model, round_usage, cancel_event)
+            if summarized is not None:
+                yield {"kind": "context_compacted", "summarized": summarized}
     except Exception as e:  # pragma: no cover — defensive
         # The chat panel only sees the brief error string; surface the full
         # traceback to stderr so server logs retain it for diagnostics.
