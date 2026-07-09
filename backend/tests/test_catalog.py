@@ -5,8 +5,9 @@ reasoning-effort tiers don't silently drift.
 """
 from __future__ import annotations
 
-from app.catalog.models_dev import CatalogModel, ModelLimit
 from app.catalog import variants as V
+from app.catalog import models_dev as MD
+from app.catalog.models_dev import CatalogModel, ModelLimit
 
 
 def _model(**kw) -> CatalogModel:
@@ -39,6 +40,16 @@ def test_openai_gpt5_pro_only_high():
 def test_openai_gpt5_versioned_efforts():
     m = _model(id="gpt-5.2", api_id="gpt-5.2", npm="@ai-sdk/openai")
     assert list(m.variants) == ["none", "low", "medium", "high", "xhigh"]
+
+
+def test_openai_gpt56_family_efforts():
+    sol = _model(id="gpt-5.6-sol", api_id="gpt-5.6-sol", npm="@ai-sdk/openai")
+    terra = _model(id="gpt-5.6-terra", api_id="gpt-5.6-terra", npm="@ai-sdk/openai")
+    luna = _model(id="gpt-5.6-luna", api_id="gpt-5.6-luna", npm="@ai-sdk/openai")
+
+    assert list(sol.variants) == ["low", "medium", "high", "xhigh", "max", "ultra"]
+    assert list(terra.variants) == ["low", "medium", "high", "xhigh", "max", "ultra"]
+    assert list(luna.variants) == ["low", "medium", "high", "xhigh", "max"]
 
 
 def test_anthropic_adaptive_sonnet():
@@ -117,3 +128,27 @@ def test_to_openai_body_translation():
 def test_default_variant_prefers_medium():
     m = _model(id="gpt-5.2", api_id="gpt-5.2", npm="@ai-sdk/openai")
     assert V.default_variant(m) == "medium"
+
+
+def test_codex_gpt56_catalog_metadata():
+    catalog = MD._parse_catalog({})
+    models = catalog["codex"].models
+
+    sol = models["gpt-5.6-sol"]
+    terra = models["gpt-5.6-terra"]
+    luna = models["gpt-5.6-luna"]
+
+    assert (sol.name, terra.name, luna.name) == (
+        "GPT-5.6 Sol",
+        "GPT-5.6 Terra",
+        "GPT-5.6 Luna",
+    )
+    assert all(
+        model.limit == ModelLimit(context=372000, output=128000)
+        for model in (sol, terra, luna)
+    )
+    assert all(model.responses_lite for model in (sol, terra, luna))
+    assert not models["gpt-5.5"].responses_lite
+    assert V.default_variant(sol) == "low"
+    assert V.default_variant(terra) == "medium"
+    assert V.default_variant(luna) == "medium"

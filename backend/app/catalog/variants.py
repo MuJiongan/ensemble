@@ -35,6 +35,8 @@ OPENAI_GPT5_PRO_2_PLUS_EFFORTS = ["medium", "high", "xhigh"]
 OPENAI_GPT5_CHAT_EFFORTS = ["medium"]
 OPENAI_GPT5_CODEX_XHIGH_EFFORTS = [*WIDELY_SUPPORTED_EFFORTS, "xhigh"]
 OPENAI_GPT5_CODEX_3_PLUS_EFFORTS = ["none", *OPENAI_GPT5_CODEX_XHIGH_EFFORTS]
+OPENAI_GPT56_SOL_TERRA_EFFORTS = [*WIDELY_SUPPORTED_EFFORTS, "xhigh", "max", "ultra"]
+OPENAI_GPT56_LUNA_EFFORTS = [*WIDELY_SUPPORTED_EFFORTS, "xhigh", "max"]
 
 # Dates OpenAI rolled out the `none` / `xhigh` reasoning_effort tiers. Models
 # older than these 400 on the new tier, so we only expose it when new enough.
@@ -76,6 +78,15 @@ def _versioned_gpt5_efforts(api_id: str):
     return OPENAI_GPT5_2_PLUS_EFFORTS
 
 
+def _gpt56_efforts(api_id: str):
+    model_id = api_id.rsplit("/", 1)[-1]
+    if model_id in ("gpt-5.6-sol", "gpt-5.6-terra"):
+        return OPENAI_GPT56_SOL_TERRA_EFFORTS
+    if model_id == "gpt-5.6-luna":
+        return OPENAI_GPT56_LUNA_EFFORTS
+    return None
+
+
 def _gpt5_codex_efforts(api_id: str):
     if not GPT5_FAMILY_RE.search(api_id) or "codex" not in api_id:
         return None
@@ -97,6 +108,9 @@ def openai_reasoning_efforts(api_id: str, release_date: str):
     cid = api_id.lower()
     if "deep-research" in cid:
         return ["medium"]
+    gpt56 = _gpt56_efforts(cid)
+    if gpt56 is not None:
+        return gpt56
     chat = _gpt5_chat_efforts(cid)
     if chat is not None:
         return chat
@@ -120,6 +134,9 @@ def openai_reasoning_efforts(api_id: str, release_date: str):
 
 def openai_compatible_reasoning_efforts(model_id: str):
     api_id = model_id.lower()
+    gpt56 = _gpt56_efforts(api_id)
+    if gpt56 is not None:
+        return gpt56
     chat = _gpt5_chat_efforts(api_id)
     if chat is not None:
         return chat
@@ -510,7 +527,7 @@ def base_options(model: "CatalogModel") -> dict:
 
     if "gpt-5" in cid and "gpt-5-chat" not in cid:
         if "gpt-5-pro" not in cid:
-            result["reasoningEffort"] = "medium"
+            result["reasoningEffort"] = "low" if cid.endswith("gpt-5.6-sol") else "medium"
             result["reasoningSummary"] = "auto"
             if npm in ("@ai-sdk/openai", "@ai-sdk/amazon-bedrock/mantle"):
                 result["include"] = INCLUDE_ENCRYPTED_REASONING
@@ -583,10 +600,12 @@ def variant_names(model: "CatalogModel") -> list[str]:
 
 
 def default_variant(model: "CatalogModel"):
-    """Best default variant: prefer ``medium``, else the middle of the list."""
+    """Catalog default, then ``medium``, then the middle variant."""
     names = variant_names(model)
     if not names:
         return None
+    if model.default_variant in names:
+        return model.default_variant
     if "medium" in names:
         return "medium"
     return names[len(names) // 2]
