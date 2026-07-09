@@ -107,7 +107,7 @@ def usable(
     Mirrors ``overflow.ts``: reserve room for the model's output (capped at
     ``COMPACTION_BUFFER``), then subtract from the input window. Providers that
     publish a dedicated ``input`` limit use it directly; otherwise we derive it
-    from ``context - output``.
+    from ``context - reserved``.
     """
     if context == 0:
         return 0
@@ -116,7 +116,7 @@ def usable(
         reserved = min(COMPACTION_BUFFER, out_max) if out_max else COMPACTION_BUFFER
     if input_limit:
         return max(0, input_limit - reserved)
-    return max(0, context - out_max)
+    return max(0, context - reserved)
 
 
 def is_overflow(

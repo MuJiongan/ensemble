@@ -100,6 +100,8 @@ class CatalogModel:
     # Extra request-body options merged from experimental.modes, if any.
     options: dict = field(default_factory=dict)
     headers: dict = field(default_factory=dict)
+    default_variant: Optional[str] = None
+    responses_lite: bool = False
 
 
 @dataclass(frozen=True)
@@ -152,6 +154,8 @@ def _model_from_raw(provider: dict, raw: dict) -> CatalogModel:
         limit=_parse_limit(raw.get("limit")),
         cost=raw.get("cost"),
         modalities=raw.get("modalities"),
+        default_variant=raw.get("default_variant"),
+        responses_lite=bool(raw.get("use_responses_lite")),
     )
 
 
@@ -189,6 +193,8 @@ def _expand_experimental_modes(provider: dict, raw: dict, base: CatalogModel) ->
             modalities=base.modalities,
             options=options,
             headers=headers,
+            default_variant=base.default_variant,
+            responses_lite=base.responses_lite,
         )
     return out
 
@@ -204,22 +210,54 @@ _SYNTHETIC_RAW: dict[str, dict] = {
         "npm": "@ai-sdk/openai",
         "env": [],
         "models": {
-            mid: {
-                "id": mid,
-                "name": mid,
+            "gpt-5.6-sol": {
+                "id": "gpt-5.6-sol",
+                "name": "GPT-5.6 Sol",
                 "reasoning": True,
                 "tool_call": True,
-                "release_date": "2025-11-13",
-                "limit": {"context": 400000, "output": 128000},
-            }
-            for mid in (
-                "gpt-5.5",
-                "gpt-5.4",
-                "gpt-5.4-mini",
-                "gpt-5.3-codex",
-                "gpt-5.3-codex-spark",
-                "gpt-5.2",
-            )
+                "release_date": "2026-07-09",
+                "limit": {"context": 372000, "output": 128000},
+                "default_variant": "low",
+                "use_responses_lite": True,
+            },
+            "gpt-5.6-terra": {
+                "id": "gpt-5.6-terra",
+                "name": "GPT-5.6 Terra",
+                "reasoning": True,
+                "tool_call": True,
+                "release_date": "2026-07-09",
+                "limit": {"context": 372000, "output": 128000},
+                "default_variant": "medium",
+                "use_responses_lite": True,
+            },
+            "gpt-5.6-luna": {
+                "id": "gpt-5.6-luna",
+                "name": "GPT-5.6 Luna",
+                "reasoning": True,
+                "tool_call": True,
+                "release_date": "2026-07-09",
+                "limit": {"context": 372000, "output": 128000},
+                "default_variant": "medium",
+                "use_responses_lite": True,
+            },
+            **{
+                mid: {
+                    "id": mid,
+                    "name": mid,
+                    "reasoning": True,
+                    "tool_call": True,
+                    "release_date": "2025-11-13",
+                    "limit": {"context": 400000, "output": 128000},
+                }
+                for mid in (
+                    "gpt-5.5",
+                    "gpt-5.4",
+                    "gpt-5.4-mini",
+                    "gpt-5.3-codex",
+                    "gpt-5.3-codex-spark",
+                    "gpt-5.2",
+                )
+            },
         },
     },
 }

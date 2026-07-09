@@ -38,6 +38,7 @@ from app.runner.tools import prepare_tool_result
 
 
 CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
+RESPONSES_LITE_HEADER = "x-openai-internal-codex-responses-lite"
 
 log = logging.getLogger(__name__)
 
@@ -66,29 +67,51 @@ def _request_payload(
     messages: list[dict],
     tool_schemas: list[dict],
     extra: dict,
+    responses_lite: Optional[bool] = None,
 ) -> dict:
+    if responses_lite is None:
+        model_info = md.get_model("codex", model)
+        responses_lite = bool(model_info and model_info.responses_lite)
     instructions, input_items = _to_responses_input(messages)
     if not instructions:
-        # Codex's Responses endpoint rejects requests without ``instructions``
-        # (HTTP 400 ``Instructions are required``). Reaching here means the
-        # caller passed no system message and no user message either — there's
-        # nothing meaningful to send, so fail fast instead of guessing.
+        # Codex requires instruction context. Legacy models carry it in the
+        # top-level field; Responses Lite models carry it in a developer input
+        # item. Reaching here means there is no system or user text to use.
         raise RuntimeError("Codex requires a system or user message; got an empty prompt")
     payload: dict = {
         "model": model,
         "input": input_items,
-        "instructions": instructions,
         # Don't have OpenAI persist response state on their side — Codex's
         # ChatGPT-account flow doesn't need a server-managed thread.
         "store": False,
     }
-    if tool_schemas:
-        payload["tools"] = to_responses_tools(tool_schemas)
+    tools = to_responses_tools(tool_schemas)
+    if responses_lite:
+        prefix = [{"type": "additional_tools", "role": "developer", "tools": tools}]
+        if instructions:
+            prefix.append({
+                "type": "message",
+                "role": "developer",
+                "content": [{"type": "input_text", "text": instructions}],
+            })
+        payload["input"] = [*prefix, *input_items]
+    else:
+        payload["instructions"] = instructions
+        if tools:
+            payload["tools"] = tools
     payload.update(extra)
+    if responses_lite:
+        payload["parallel_tool_calls"] = False
+        reasoning = payload.setdefault("reasoning", {})
+        reasoning["context"] = "all_turns"
     return payload
 
 
-def _request_headers(access_token: str, account_id: Optional[str]) -> dict:
+def _request_headers(
+    access_token: str,
+    account_id: Optional[str],
+    responses_lite: bool = False,
+) -> dict:
     h = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
@@ -98,6 +121,8 @@ def _request_headers(access_token: str, account_id: Optional[str]) -> dict:
     }
     if account_id:
         h["ChatGPT-Account-Id"] = account_id
+    if responses_lite:
+        h[RESPONSES_LITE_HEADER] = "true"
     return h
 
 
@@ -115,10 +140,16 @@ def call_codex_stream(
     Same signature shape as :func:`app.orchestrator.agent.llm_stream._call_llm_stream`,
     just routed through the Codex Responses API.
     """
+    model_info = md.get_model("codex", model)
+    responses_lite = bool(model_info and model_info.responses_lite)
     payload = _request_payload(
-        model, messages, tool_specs, {"stream": True, **_variant_body(variant_opts)}
+        model,
+        messages,
+        tool_specs,
+        {"stream": True, **_variant_body(variant_opts)},
+        responses_lite=responses_lite,
     )
-    headers = _request_headers(access_token, account_id)
+    headers = _request_headers(access_token, account_id, responses_lite=responses_lite)
     with httpx.Client(timeout=None) as client:
         with client.stream("POST", CODEX_API_ENDPOINT, headers=headers, json=payload) as r:
             if r.status_code >= 400:

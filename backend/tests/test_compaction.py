@@ -76,9 +76,22 @@ def test_usable_caps_reserve_at_buffer():
     assert u == 400_000 - compaction.COMPACTION_BUFFER
 
 
+def test_usable_caps_context_derived_reserve_at_buffer():
+    # Some catalogs publish the same value for context and output. That means
+    # "large shared window", not "zero input budget".
+    u = compaction.usable(context=500_000, output_limit=500_000, input_limit=None)
+    assert u == 500_000 - compaction.COMPACTION_BUFFER
+
+
 def test_is_overflow_true_at_or_above_budget():
     assert compaction.is_overflow(token_count=192_000, context=200_000, input_limit=190_000)
     assert not compaction.is_overflow(token_count=10_000, context=200_000, input_limit=190_000)
+    assert not compaction.is_overflow(
+        token_count=1,
+        context=500_000,
+        output_limit=500_000,
+        input_limit=None,
+    )
 
 
 def test_unknown_context_never_overflows():
@@ -330,12 +343,12 @@ def test_codex_chat_compacts_on_overflow(monkeypatch):
     registry = {"noop": lambda **k: {"ok": True}}
     schemas = {"noop": {"type": "function", "function": {"name": "noop", "parameters": {}}}}
 
-    # Round 1: a tool call with usage that trips overflow (codex usable ~272k).
+    # Round 1: a tool call with usage that trips overflow (codex usable ~380k).
     # Round 2: no tool calls → the loop exits.
     rounds = iter([
         [("done", {"message": {"role": "assistant", "content": "working", "tool_calls": [
             {"id": "c1", "type": "function", "function": {"name": "noop", "arguments": "{}"}}
-        ]}, "usage": {"prompt_tokens": 300_000, "completion_tokens": 50}})],
+        ]}, "usage": {"prompt_tokens": 390_000, "completion_tokens": 50}})],
         [("done", {"message": {"role": "assistant", "content": "done"},
                    "usage": {"prompt_tokens": 100, "completion_tokens": 10}})],
     ])

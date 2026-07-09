@@ -295,6 +295,47 @@ def test_codex_payload_merges_variant_body():
     assert payload["reasoning"] == {"effort": "high", "summary": "auto"}
 
 
+def test_codex_gpt56_payload_uses_responses_lite_contract():
+    from app.auth.codex_api import _request_payload
+
+    payload = _request_payload(
+        "gpt-5.6-sol",
+        [
+            {"role": "system", "content": "be precise"},
+            {"role": "user", "content": "hi"},
+        ],
+        [{"type": "function", "function": {"name": "f", "description": "d", "parameters": {}}}],
+        {"stream": True, "reasoning": {"effort": "max"}, "parallel_tool_calls": True},
+    )
+
+    assert "instructions" not in payload
+    assert "tools" not in payload
+    assert payload["parallel_tool_calls"] is False
+    assert payload["input"] == [
+        {
+            "type": "additional_tools",
+            "role": "developer",
+            "tools": [{"type": "function", "name": "f", "description": "d", "parameters": {}}],
+        },
+        {
+            "type": "message",
+            "role": "developer",
+            "content": [{"type": "input_text", "text": "be precise"}],
+        },
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+    ]
+    assert payload["reasoning"] == {"effort": "max", "context": "all_turns"}
+
+
+def test_codex_gpt56_request_header_marks_responses_lite():
+    from app.auth.codex_api import RESPONSES_LITE_HEADER, _request_headers
+
+    headers = _request_headers("token", "account", responses_lite=True)
+    assert headers[RESPONSES_LITE_HEADER] == "true"
+    assert headers["ChatGPT-Account-Id"] == "account"
+    assert RESPONSES_LITE_HEADER not in _request_headers("token", "account")
+
+
 def test_parse_non_streaming_response_json():
     msg, usage = resp._parse_response_json(
         {
