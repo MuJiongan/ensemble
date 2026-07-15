@@ -86,6 +86,16 @@ def _node_name(db: Session, node_run: models.NodeRun) -> str:
     return node_run.node_id
 
 
+def _snapshot_node_code(db: Session, node_run: models.NodeRun) -> str:
+    """Frozen source for the node that produced ``node_run``."""
+
+    run = db.get(models.Run, node_run.run_id)
+    for node in ((run.workflow_snapshot if run else None) or {}).get("nodes", []) or []:
+        if node.get("id") == node_run.node_id:
+            return node.get("code") or ""
+    return ""
+
+
 def _build_continuation(db: Session, nr: models.NodeRun, call_id: str) -> models.CallChat:
     """Build — but do NOT persist — the continuation for one agent call,
     seeded from its recorded transcript. Raises 404 if the node run, the call,
@@ -255,6 +265,7 @@ def send_call_chat_turn(
         tools=list(chat.tools or []),
         model=model,
         child_env=child_env,
+        node_code=_snapshot_node_code(db, nr),
     )
     return schemas.CallChatTurnOut(turn_id=turn_id)
 

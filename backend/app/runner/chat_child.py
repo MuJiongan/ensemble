@@ -7,7 +7,8 @@ run), and streams the result back. One turn of a continued agent conversation.
 
 Reads a JSON payload from stdin::
 
-    {"messages": [...], "tools": [...], "model": "...", "workdir": "...", "env": {...}}
+    {"messages": [...], "tools": [...], "model": "...", "node_code": "...",
+     "workdir": "...", "env": {...}}
 
 Emits the same per-call event contract a run does — ``llm_call_started``,
 ``llm_round_started``, ``llm_call_chunk``, ``tool_call_started/finished``,
@@ -36,6 +37,7 @@ def main() -> None:
     payload = _read_payload()
     messages = payload.get("messages") or []
     tools = payload.get("tools") or []
+    node_code = payload.get("node_code") or ""
     model = payload.get("model") or payload.get("default_model") or ""
     workdir = Path(payload.get("workdir") or ".")
     workdir.mkdir(parents=True, exist_ok=True)
@@ -55,6 +57,14 @@ def main() -> None:
 
     cancelled = False
     try:
+        # A continuation exposes the exact custom tools from the run it
+        # continues, not whatever the live node contains now. The API sends
+        # frozen node source; loading it registers NodeTool subclasses but
+        # never invokes the node's ``run`` function.
+        if node_code:
+            from app.runner.node_tools import execute_node_source
+
+            execute_node_source(node_code, ctx.register_node_tool)
         result = ctx.agent(model=model, prompt=messages, tools=tools)
     except KeyboardInterrupt:
         cancelled = True

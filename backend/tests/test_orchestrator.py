@@ -1891,6 +1891,15 @@ def test_system_prompt_offers_both_direct_and_llm_tool_forms():
     assert "tools=[...]" in p or "tools=[" in p
 
 
+def test_system_prompt_teaches_embedded_custom_tool_contract():
+    p = SYSTEM_PROMPT
+    assert "from app.runner.node_tools import NodeTool" in p
+    assert "class lookup_order(NodeTool)" in p
+    assert 'tools=["lookup_order"]' in p
+    assert "lowercase snake_case" in p
+    assert "registers it automatically" in p
+
+
 def test_system_prompt_lists_node_runtime_tool_signatures():
     """The orchestrator writes Python like `ctx.tools.web_fetch(...)` — it
     needs the canonical signatures (param names + types) in the prompt or it

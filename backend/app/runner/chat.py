@@ -176,6 +176,7 @@ def start_chat_turn(
     tools: list[str],
     model: str,
     child_env: dict[str, str],
+    node_code: str = "",
 ) -> None:
     """Begin a chat turn in the background. Returns immediately.
 
@@ -189,7 +190,7 @@ def start_chat_turn(
     ev_mod.get_or_create(turn_id)
     threading.Thread(
         target=_run_turn,
-        args=(turn_id, chat_id, messages, tools, model, child_env),
+        args=(turn_id, chat_id, messages, tools, model, child_env, node_code),
         daemon=True,
     ).start()
 
@@ -215,6 +216,7 @@ def _run_turn(
     tools: list[str],
     model: str,
     child_env: dict[str, str],
+    node_code: str = "",
 ) -> None:
     workdir = tempfile.mkdtemp(prefix="wfchat-")
     try:
@@ -222,6 +224,10 @@ def _run_turn(
             "messages": messages,
             "tools": tools,
             "model": model,
+            # Frozen source from the run that produced this conversation.
+            # The chat child re-executes it to recover embedded NodeTool
+            # subclasses without storing a second copy on CallChat.
+            "node_code": node_code,
             "workdir": workdir,
             "env": child_env,
         }

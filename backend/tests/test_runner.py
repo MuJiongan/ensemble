@@ -246,6 +246,45 @@ def run(inputs, ctx):
     assert any(tc["name"] == "shell" for tc in nr["tool_calls"])
 
 
+def test_node_embedded_tool_runs_in_child_subprocess():
+    code = '''
+from app.runner.node_tools import NodeTool
+
+class lookup_order(NodeTool):
+    description = "Look up an order by id."
+    parameters = {
+        "type": "object",
+        "properties": {"order_id": {"type": "string"}},
+        "required": ["order_id"],
+    }
+
+    def execute(self, ctx, order_id):
+        return {"status": f"{order_id}:shipped"}
+
+def run(inputs, ctx):
+    result = ctx.tools.lookup_order(order_id=inputs["order_id"])
+    return {"status": result["status"]}
+'''
+    wf = {
+        "id": "wf",
+        "input_node_id": "a",
+        "output_node_id": "a",
+        "nodes": [make_node(
+            "a",
+            code,
+            inputs=[{"name": "order_id", "required": True}],
+            outputs=[{"name": "status"}],
+        )],
+        "edges": [],
+    }
+
+    result = run_workflow_sync(wf, {"order_id": "ord-3"})
+
+    assert result["status"] == "success", result
+    assert result["outputs"] == {"status": "ord-3:shipped"}
+    assert result["node_runs"][0]["tool_calls"][0]["name"] == "lookup_order"
+
+
 def test_run_workdir_is_removed(tmp_path, monkeypatch):
     workdir = tmp_path / "wfrun-test"
     monkeypatch.setattr(runner_mod.tempfile, "mkdtemp", lambda prefix: str(workdir))

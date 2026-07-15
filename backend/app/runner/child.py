@@ -141,8 +141,9 @@ def _emit_node_skipped(node_id: str, inputs: dict, output_ports: list[dict]) -> 
 def _execute_node(node: dict, ctx, inputs: dict) -> dict:
     """Exec the node's user code and return its (port-normalised) outputs.
     Raises if the code is malformed or returns the wrong shape."""
-    ns: dict = {}
-    exec(node.get("code") or "", ns, ns)
+    from app.runner.node_tools import execute_node_source
+
+    ns = execute_node_source(node.get("code") or "", ctx.register_node_tool)
     run_fn = ns.get("run")
     if not callable(run_fn):
         raise RuntimeError("node code must define `run(inputs, ctx)` function")

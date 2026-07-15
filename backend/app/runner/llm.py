@@ -34,6 +34,8 @@ def call_llm(
     tools: list[str] | None = None,
     on_event: Callable[[dict], None] | None = None,
     call_id: str | None = None,
+    tool_registry: dict | None = None,
+    tool_schemas_by_name: dict | None = None,
     **opts,
 ) -> dict:
     """
@@ -50,11 +52,23 @@ def call_llm(
                   tagged with ``call_id``.
         call_id:  unique id for this call, included on every emitted event so
                   concurrent calls within one node can be disambiguated.
+        tool_registry: per-context callable registry; defaults to the process
+                  runtime registry. Nodes pass a private copy containing their
+                  embedded custom tools.
+        tool_schemas_by_name: schemas paired with ``tool_registry``; defaults
+                  to the process runtime schemas.
         **opts:   forwarded as additional fields in the request body.
 
     Returns:
         {content, messages, tool_calls_made, usage, cost}
     """
+    registry = tool_registry if tool_registry is not None else REGISTRY
+    schemas_by_name = (
+        tool_schemas_by_name
+        if tool_schemas_by_name is not None
+        else TOOL_SCHEMAS
+    )
+
     # Subscription-OAuth provider dispatch — the runner subprocess gets an
     # OAuth bearer + (for Codex) account id pre-resolved in env at spawn time.
     # Codex uses the Responses API, not chat completions, so the call shape
@@ -69,8 +83,8 @@ def call_llm(
             model=model,
             prompt=prompt,
             tools=tools,
-            tool_registry=REGISTRY,
-            tool_schemas_by_name=TOOL_SCHEMAS,
+            tool_registry=registry,
+            tool_schemas_by_name=schemas_by_name,
             on_event=on_event,
             call_id=call_id,
             access_token=os.getenv("LLM_API_KEY", ""),
@@ -102,7 +116,7 @@ def call_llm(
         messages = list(prompt)
 
     tools = tools or []
-    tool_schemas = [TOOL_SCHEMAS[t] for t in tools if t in TOOL_SCHEMAS]
+    tool_schemas = [schemas_by_name[t] for t in tools if t in schemas_by_name]
 
     # Model limits drive compaction. Unknown model (catalog miss) → limits stay
     # zero and is_overflow() never fires, so a long node loop runs unchanged.
@@ -249,7 +263,7 @@ def call_llm(
                     "round": round_idx,
                 }
             )
-            fn = REGISTRY.get(fn_name)
+            fn = registry.get(fn_name)
             if fn is None:
                 # An MCP tool whose server didn't connect never lands in the
                 # registry — report the server's state (and the needs_auth
