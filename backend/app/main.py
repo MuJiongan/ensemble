@@ -2,8 +2,10 @@ from __future__ import annotations
 import base64
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.db import init_db, SessionLocal
 from app.api import workflows, nodes, edges, runs, orchestrator, call_chats
@@ -153,3 +155,15 @@ app.include_router(auth_api.router)
 app.include_router(mcp_api.router)
 app.include_router(catalog_api.router)
 app.include_router(files_api.router)
+
+# A production build is served by the API process so deployment only needs one
+# loopback listener.  Keep this mount last: /api routes (including WebSockets)
+# must take precedence over the frontend's root mount.  During normal Vite
+# development ``frontend/dist`` is absent and the backend remains API-only.
+_FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+if _FRONTEND_DIST.is_dir():
+    app.mount(
+        "/",
+        StaticFiles(directory=str(_FRONTEND_DIST), html=True),
+        name="frontend",
+    )

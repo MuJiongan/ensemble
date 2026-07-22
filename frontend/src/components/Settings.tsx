@@ -32,6 +32,7 @@ import {
   pollMcpLogin,
   probeStatus,
   startMcpLogin,
+  submitMcpCallbackUrl,
   type McpLoginStatus,
   type McpProbeResult,
   type McpServerProbe,
@@ -116,8 +117,14 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
     setS((prev) => ({ ...prev, [target]: sel }));
 
   return (
-    <div style={{ width: '100%', height: '100%', overflow: 'auto', background: 'var(--paper)' }}>
-      <div style={{ maxWidth: 640, margin: '0 auto', padding: '20px 32px 40px' }}>
+    <div
+      className="settings-panel"
+      style={{ width: '100%', height: '100%', overflow: 'auto', background: 'var(--paper)' }}
+    >
+      <div
+        className="settings-panel__content"
+        style={{ maxWidth: 640, margin: '0 auto', padding: '20px 32px 40px' }}
+      >
         <div
           style={{
             display: 'flex',
@@ -1332,6 +1339,9 @@ function McpOAuthControl({
   const [status, setStatus] = useState<McpLoginStatus>('signed_out');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [authorizeUrl, setAuthorizeUrl] = useState('');
+  const [callbackUrl, setCallbackUrl] = useState('');
+  const [callbackBusy, setCallbackBusy] = useState(false);
   const popupRef = useRef<Window | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const name = row.name.trim();
@@ -1375,9 +1385,11 @@ function McpOAuthControl({
     }
     setError(null);
     setBusy(true);
+    setAuthorizeUrl('');
     try {
-      const { authorizeUrl } = await startMcpLogin(name, row.url.trim(), oauthArgs());
-      if (authorizeUrl) popupRef.current = window.open(authorizeUrl, '_blank', 'noopener,noreferrer');
+      const { authorizeUrl: url } = await startMcpLogin(name, row.url.trim(), oauthArgs());
+      setAuthorizeUrl(url);
+      if (url) popupRef.current = window.open(url, '_blank', 'noopener,noreferrer');
       setStatus('pending');
       abortRef.current = new AbortController();
       const result = await pollMcpLogin(name, abortRef.current.signal);
@@ -1407,6 +1419,23 @@ function McpOAuthControl({
     setBusy(false);
   };
 
+  const onSubmitCallback = async () => {
+    if (!callbackUrl.trim()) {
+      setError('paste the full localhost callback URL from Safari');
+      return;
+    }
+    setCallbackBusy(true);
+    setError(null);
+    try {
+      await submitMcpCallbackUrl(name, callbackUrl.trim());
+      setCallbackUrl('');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCallbackBusy(false);
+    }
+  };
+
   const onSignOut = async () => {
     setBusy(true);
     try {
@@ -1427,8 +1456,9 @@ function McpOAuthControl({
   const needsAuth = probe?.status === 'needs_auth' && status !== 'pending';
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-      <span className="serif" style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <span className="serif" style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>
         {status === 'pending' ? (
           <span style={{ fontStyle: 'italic' }}>waiting for browser authorization…</span>
         ) : status === 'error' ? (
@@ -1446,25 +1476,61 @@ function McpOAuthControl({
         ) : (
           <span style={{ fontStyle: 'italic' }}>not authorized.</span>
         )}
-      </span>
-      {status === 'pending' ? (
-        <button className="text-btn" type="button" onClick={onCancel} style={{ marginLeft: 'auto' }}>
-          cancel
-        </button>
-      ) : status === 'signed_in' && !needsAuth ? (
-        <button className="text-btn" type="button" onClick={onSignOut} disabled={busy} style={{ marginLeft: 'auto' }}>
-          log out
-        </button>
-      ) : (
-        <button
-          className="text-btn text-btn--accent"
-          type="button"
-          onClick={onSignIn}
-          disabled={busy}
-          style={{ marginLeft: 'auto' }}
-        >
-          {status === 'error' || status === 'signed_in' ? 're-authenticate' : 'log in'} →
-        </button>
+        </span>
+        {status === 'pending' ? (
+          <button className="text-btn" type="button" onClick={onCancel} style={{ marginLeft: 'auto' }}>
+            cancel
+          </button>
+        ) : status === 'signed_in' && !needsAuth ? (
+          <button className="text-btn" type="button" onClick={onSignOut} disabled={busy} style={{ marginLeft: 'auto' }}>
+            log out
+          </button>
+        ) : (
+          <button
+            className="text-btn text-btn--accent"
+            type="button"
+            onClick={onSignIn}
+            disabled={busy}
+            style={{ marginLeft: 'auto' }}
+          >
+            {status === 'error' || status === 'signed_in' ? 're-authenticate' : 'log in'} →
+          </button>
+        )}
+      </div>
+      {status === 'pending' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <span className="serif" style={{ fontSize: 12, color: 'var(--ink-4)' }}>
+            On a phone, tablet, or other remote device, copy the full address from the final
+            localhost page that fails to load, then paste it here—with or without
+            <span className="mono"> http://</span>.
+          </span>
+          {authorizeUrl && (
+            <a
+              className="text-btn text-btn--accent"
+              href={authorizeUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ alignSelf: 'flex-start' }}
+            >
+              open authorization page →
+            </a>
+          )}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              className="field field--mono field--compact"
+              value={callbackUrl}
+              onChange={(e) => setCallbackUrl(e.target.value)}
+              placeholder="http://127.0.0.1:…?code=…&state=…"
+              autoComplete="off"
+              spellCheck={false}
+              style={{ flex: 1 }}
+              aria-label="mcp oauth callback url"
+            />
+            <button className="text-btn text-btn--accent" type="button" onClick={onSubmitCallback} disabled={callbackBusy}>
+              send
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );

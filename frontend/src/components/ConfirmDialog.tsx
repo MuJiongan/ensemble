@@ -26,7 +26,7 @@ function DialogShell({ title, message, onDismiss, actions }: DialogShellProps) {
   return createPortal(
     <div
       onClick={onDismiss}
-      className="fade-in"
+      className="fade-in modal-backdrop"
       style={{
         position: 'fixed',
         inset: 0,
@@ -44,7 +44,7 @@ function DialogShell({ title, message, onDismiss, actions }: DialogShellProps) {
         aria-modal="true"
         aria-labelledby="dialog-title"
         onClick={(e) => e.stopPropagation()}
-        className="shadow-card"
+        className="shadow-card modal-card"
         style={{
           width: '100%',
           maxWidth: 420,
@@ -54,7 +54,7 @@ function DialogShell({ title, message, onDismiss, actions }: DialogShellProps) {
           overflow: 'hidden',
         }}
       >
-        <div style={{ padding: '18px 20px 16px' }}>
+        <div className="modal-card__body" style={{ padding: '18px 20px 16px' }}>
           <div
             style={{
               display: 'flex',
@@ -82,6 +82,7 @@ function DialogShell({ title, message, onDismiss, actions }: DialogShellProps) {
           </p>
         </div>
         <div
+          className="modal-card__actions"
           style={{
             display: 'flex',
             justifyContent: 'flex-end',

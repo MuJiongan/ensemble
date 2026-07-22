@@ -1,4 +1,4 @@
-.PHONY: install backend frontend dev test clean
+.PHONY: install backend frontend dev build serve test clean
 
 VENV := backend/.venv
 
@@ -19,6 +19,15 @@ dev:
 	$(MAKE) backend & \
 	$(MAKE) frontend & \
 	wait
+
+# Production: build the UI once, then serve it and /api from one loopback-only
+# process. A private reverse proxy such as Tailscale Serve can safely expose it.
+build:
+	cd frontend && npm run build
+
+serve:
+	@test -f frontend/dist/index.html || (echo "Run 'make build' first" && exit 1)
+	cd backend && .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips=127.0.0.1
 
 test:
 	cd backend && .venv/bin/pytest -q

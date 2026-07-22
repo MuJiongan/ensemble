@@ -51,7 +51,7 @@ export function ProjectTransferPanel({
   return createPortal(
     <div
       onClick={onClose}
-      className="fade-in"
+      className="fade-in modal-backdrop"
       style={{
         position: 'fixed',
         inset: 0,
@@ -69,7 +69,7 @@ export function ProjectTransferPanel({
         aria-modal="true"
         aria-labelledby="project-transfer-title"
         onClick={(e) => e.stopPropagation()}
-        className="shadow-card"
+        className="shadow-card modal-card modal-card--wide"
         style={{
           width: '100%',
           maxWidth: 640,
@@ -82,7 +82,10 @@ export function ProjectTransferPanel({
           flexDirection: 'column',
         }}
       >
-        <div style={{ padding: '18px 20px 20px', overflow: 'auto', minHeight: 0 }}>
+        <div
+          className="modal-card__body"
+          style={{ padding: '18px 20px 20px', overflow: 'auto', minHeight: 0 }}
+        >
           <div
             style={{
               display: 'flex',

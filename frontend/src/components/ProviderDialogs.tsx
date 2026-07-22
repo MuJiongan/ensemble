@@ -17,7 +17,12 @@ import type { Catalog, CatalogProvider, CatalogModel } from '../providerCatalog'
 import { CUSTOM_PROVIDER, CUSTOM_PROVIDER_ID } from '../providerCatalog';
 import { isConnected } from '../localSettings';
 import { variantLabel } from '../modelVariant';
-import { startLogin, pollUntilDone, logout as oauthLogout } from '../auth';
+import {
+  startLogin,
+  pollUntilDone,
+  submitCallbackUrl,
+  logout as oauthLogout,
+} from '../auth';
 import { CloseButton } from './CloseButton';
 import { SecretInput } from './SecretInput';
 
@@ -45,7 +50,7 @@ function Modal({
   return createPortal(
     <div
       onClick={onClose}
-      className="fade-in"
+      className="fade-in modal-backdrop modal-backdrop--stretch"
       style={{
         position: 'fixed',
         inset: 0,
@@ -60,7 +65,7 @@ function Modal({
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="shadow-card"
+        className="shadow-card modal-card modal-card--provider"
         style={{
           flex: 1,
           maxWidth: width,
@@ -87,7 +92,7 @@ function Modal({
           <span style={{ flex: 1 }} />
           <CloseButton onClick={onClose} title="close" />
         </div>
-        <div className="scroll" style={{ flex: 1, overflow: 'auto', padding: 18 }}>
+        <div className="scroll modal-card__body" style={{ flex: 1, overflow: 'auto', padding: 18 }}>
           {children}
         </div>
       </div>
@@ -227,6 +232,9 @@ export function DialogConnectProvider({
     settings.connections[provider.id]?.baseURL ?? provider.base_url ?? '',
   );
   const [oauthState, setOauthState] = useState<'idle' | 'pending' | 'error'>('idle');
+  const [authorizeUrl, setAuthorizeUrl] = useState('');
+  const [callbackUrl, setCallbackUrl] = useState('');
+  const [callbackBusy, setCallbackBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -255,10 +263,12 @@ export function DialogConnectProvider({
   const doOAuth = async (authProviderId: string) => {
     setError(null);
     setOauthState('pending');
+    setAuthorizeUrl('');
     abortRef.current = new AbortController();
     try {
-      const { authorizeUrl } = await startLogin(authProviderId);
-      window.open(authorizeUrl, '_blank', 'noopener,noreferrer,width=520,height=720');
+      const { authorizeUrl: url } = await startLogin(authProviderId);
+      setAuthorizeUrl(url);
+      window.open(url, '_blank', 'noopener,noreferrer,width=520,height=720');
       const res = await pollUntilDone(authProviderId, abortRef.current.signal);
       if (res.status === 'signed_in') {
         onConnect(provider.id, { method: 'oauth' });
@@ -270,6 +280,23 @@ export function DialogConnectProvider({
     } catch (e) {
       setOauthState('error');
       setError(String(e instanceof Error ? e.message : e));
+    }
+  };
+
+  const handoffCallback = async (authProviderId: string) => {
+    if (!callbackUrl.trim()) {
+      setError('paste the full localhost callback URL from Safari');
+      return;
+    }
+    setCallbackBusy(true);
+    setError(null);
+    try {
+      await submitCallbackUrl(authProviderId, callbackUrl.trim());
+      setCallbackUrl('');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCallbackBusy(false);
     }
   };
 
@@ -378,17 +405,54 @@ export function DialogConnectProvider({
       {method?.type === 'oauth' && (
         <div>
           {oauthState === 'pending' ? (
-            <div className="serif" style={{ fontStyle: 'italic', color: 'var(--ink-3)' }}>
-              waiting for sign-in in the popup…{' '}
-              <button
-                className="ed-btn ed-btn--mini"
-                onClick={() => {
-                  abortRef.current?.abort();
-                  setOauthState('idle');
-                }}
-              >
-                cancel
-              </button>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div className="serif" style={{ fontStyle: 'italic', color: 'var(--ink-3)' }}>
+                waiting for sign-in in the browser…{' '}
+                <button
+                  className="ed-btn ed-btn--mini"
+                  onClick={() => {
+                    abortRef.current?.abort();
+                    setOauthState('idle');
+                  }}
+                >
+                  cancel
+                </button>
+              </div>
+              <div className="serif" style={{ fontSize: 12, color: 'var(--ink-4)' }}>
+                On a phone, tablet, or other remote device, the final localhost page will not
+                load. Copy its full address from your browser and paste it below—with or without
+                <span className="mono"> http://</span>.
+              </div>
+              {authorizeUrl && (
+                <a
+                  className="text-btn text-btn--accent"
+                  href={authorizeUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ alignSelf: 'flex-start' }}
+                >
+                  open sign-in page →
+                </a>
+              )}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  className="field field--mono field--compact"
+                  value={callbackUrl}
+                  onChange={(e) => setCallbackUrl(e.target.value)}
+                  placeholder="http://localhost:…?code=…&state=…"
+                  autoComplete="off"
+                  spellCheck={false}
+                  style={{ flex: 1 }}
+                  aria-label="oauth callback url"
+                />
+                <button
+                  className="ed-btn ed-btn--mini"
+                  disabled={callbackBusy}
+                  onClick={() => handoffCallback(method.provider || provider.id)}
+                >
+                  send
+                </button>
+              </div>
             </div>
           ) : (
             <button

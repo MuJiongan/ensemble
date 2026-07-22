@@ -248,7 +248,7 @@ function CanvasLegend() {
     { k: 'skipped', s: 'skipped' },
   ];
   return (
-    <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
+    <div className="canvas-legend" style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
       {items.map((i) => (
         <span
           key={i.k}
@@ -495,6 +495,7 @@ function CanvasInner({ detail, selectedNodeId, onSelectNode, nodeStates, headerA
   return (
     <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column' }}>
       <div
+        className="canvas-header"
         style={{
           padding: '10px 22px 8px',
           display: 'flex',

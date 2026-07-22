@@ -38,7 +38,7 @@ export function Hero({
 
   return (
     <div
-      className="dotgrid"
+      className="dotgrid hero"
       style={{
         position: 'absolute',
         inset: 0,
@@ -53,10 +53,13 @@ export function Hero({
         overflowX: 'hidden',
       }}
     >
-      <div style={{ width: '100%', maxWidth: 640, display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div
+        className="hero__content"
+        style={{ width: '100%', maxWidth: 640, display: 'flex', flexDirection: 'column', gap: 18 }}
+      >
         <span className="smallcaps" style={{ color: 'var(--ink-4)' }}>ensemble</span>
         <h1
-          className="serif"
+          className="serif hero__title"
           style={{
             margin: 0,
             fontSize: 40,
@@ -70,7 +73,7 @@ export function Hero({
           {hasApiKey ? 'describe what you want to achieve.' : 'set up your keys to begin.'}
         </h1>
         <p
-          className="serif"
+          className="serif hero__description"
           style={{
             margin: 0,
             fontStyle: 'italic',
@@ -147,6 +150,7 @@ export function Hero({
           </>
         ) : (
           <div
+            className="hero__setup-card"
             style={{
               marginTop: 8,
               display: 'flex',
@@ -164,7 +168,10 @@ export function Hero({
               openai-compatible endpoint (openrouter by default) — keys are stored in your
               browser only.
             </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center' }}>
+            <div
+              className="hero__setup-actions"
+              style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center' }}
+            >
               <button className="btn-ink" onClick={onOpenSettings}>
                 open settings <span className="italic-em">→</span>
               </button>

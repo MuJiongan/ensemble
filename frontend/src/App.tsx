@@ -44,6 +44,7 @@ import type {
 } from './types';
 
 type View = 'workflow' | 'settings';
+type MobilePanelMode = 'canvas' | 'workspace' | 'chat';
 
 // How often to re-verify that OAuth LLM provider sessions are still alive
 // server-side. The status check also refreshes a near-expiry token, so this
@@ -95,14 +96,19 @@ export default function App() {
   // The chat used to float as an overlay; tabbing replaces it cleanly so the
   // run/execute footer is never blocked.
   const [rightPanelMode, setRightPanelMode] = useState<'workspace' | 'chat'>('chat');
+  // Narrow screens show one full-width surface at a time. Keeping this
+  // separate from the desktop right-panel tabs preserves the split desktop
+  // layout while giving touch devices enough room for the canvas and chat.
+  const [mobilePanelMode, setMobilePanelMode] = useState<MobilePanelMode>('chat');
 
   // Image attachments live at the App level so dropping/pasting an image
   // works anywhere in the workflow view — Hero, canvas, or either right-panel
   // tab — not just while the chat composer happens to be mounted. A drop
   // flips the right panel to chat so the attachment chips are visible.
-  const imageAttachments = useImageAttachments(view === 'workflow', () =>
-    setRightPanelMode('chat'),
-  );
+  const imageAttachments = useImageAttachments(view === 'workflow', () => {
+    setRightPanelMode('chat');
+    setMobilePanelMode('chat');
+  });
 
   // Mirror of `activeId` so async callbacks (SSE handlers, refreshDetail)
   // can read the latest value without being trapped by render-time closures.
@@ -906,6 +912,7 @@ export default function App() {
   /** Forward an error from a run/node into the orchestrator chat as a user message. */
   const sendErrorToOrchestrator = (message: string) => {
     setRightPanelMode('chat');
+    setMobilePanelMode('chat');
     handleSend(message);
   };
 
@@ -974,6 +981,7 @@ export default function App() {
       setActiveLiveCall(null);
       setActiveContinuation(chat);
       setRightPanelMode('chat');
+      setMobilePanelMode('chat');
     } catch (e) {
       setDialog({
         kind: 'alert',
@@ -989,6 +997,7 @@ export default function App() {
     setActiveContinuation(null);
     setActiveLiveCall({ runId, nodeId, callId, label });
     setRightPanelMode('chat');
+    setMobilePanelMode('chat');
   };
 
   // The live call's bubbles, derived from a lazy node-filtered run stream.
@@ -1188,6 +1197,7 @@ export default function App() {
 
   return (
     <div
+      className="app-shell"
       style={{
         width: '100vw',
         height: '100vh',
@@ -1204,6 +1214,7 @@ export default function App() {
           setActiveId(id);
           setView('workflow');
           setSelectedNodeId(null);
+          setMobilePanelMode('chat');
         }}
         onNew={handleNew}
         onRename={handleRename}
@@ -1212,13 +1223,15 @@ export default function App() {
         onOpenRun={() => {
           // RunPanel is the default right-side surface — "Runs" in the
           // top bar is now just a deselect shortcut so it returns to view.
+          setRightPanelMode('workspace');
+          setMobilePanelMode('workspace');
           setSelectedNodeId(null);
         }}
         runDisabled={!detail}
         status={topBarStatus}
       />
 
-      <main style={{ height: 'calc(100vh - 54px)', position: 'relative' }}>
+      <main className="app-main" style={{ height: 'calc(100vh - 54px)', position: 'relative' }}>
         {view === 'settings' && <SettingsPanel onClose={() => setView('workflow')} />}
 
         {view === 'workflow' &&
@@ -1230,6 +1243,7 @@ export default function App() {
               onChange={(next) => setChatDraft(orchestratorDraftKey, next)}
               onSend={(text) => {
                 setRightPanelMode('chat');
+                setMobilePanelMode('chat');
                 handleSend(text);
               }}
               onImport={handleOpenImport}
@@ -1243,9 +1257,27 @@ export default function App() {
 
         {view === 'workflow' && detail && !(detail.nodes.length === 0 && messages.length === 0) && (
           <>
-            <div style={{ display: 'flex', height: '100%' }}>
+            <div
+              className="workflow-layout"
+              data-mobile-panel={mobilePanelMode}
+              style={{ display: 'flex', height: '100%' }}
+            >
+              <MobilePanelTabs
+                mode={mobilePanelMode}
+                setMode={(next) => {
+                  setMobilePanelMode(next);
+                  if (next === 'chat') setRightPanelMode('chat');
+                  if (next === 'workspace') {
+                    setRightPanelMode('workspace');
+                    setSelectedNodeId(null);
+                    exitSnapshotView();
+                  }
+                }}
+                showChatActivityDot={isOrchestrating && mobilePanelMode !== 'chat'}
+              />
               {/* left 2/5 — canvas */}
               <div
+                className="workflow-canvas-pane"
                 style={{
                   flex: 2,
                   display: 'flex',
@@ -1275,7 +1307,10 @@ export default function App() {
                           // surface the node detail; the chat hides the
                           // workspace where NodePanel lives. Pane deselects
                           // (id === null) shouldn't yank the user out of chat.
-                          if (id !== null) setRightPanelMode('workspace');
+                          if (id !== null) {
+                            setRightPanelMode('workspace');
+                            setMobilePanelMode('workspace');
+                          }
                         }}
                         nodeStates={snapshotNodeStates}
                         headerActions={
@@ -1307,7 +1342,10 @@ export default function App() {
                     selectedNodeId={selectedNodeId}
                     onSelectNode={(id) => {
                       setSelectedNodeId(id);
-                      if (id !== null) setRightPanelMode('workspace');
+                      if (id !== null) {
+                        setRightPanelMode('workspace');
+                        setMobilePanelMode('workspace');
+                      }
                     }}
                     // Live graph editing is not tied to a single run: users
                     // and the orchestrator can start several runs at once.
@@ -1357,6 +1395,7 @@ export default function App() {
               {/* right 3/5 — workspace (run/node) or orchestrator chat,
                   toggled via the tabs at the top. */}
               <div
+                className="workflow-right-pane"
                 style={{
                   flex: 3,
                   minWidth: 0,
@@ -1373,6 +1412,7 @@ export default function App() {
                     // panel or a snapshot run view would otherwise stick
                     // around and greet the user instead of the runs.
                     setRightPanelMode('workspace');
+                    setMobilePanelMode('workspace');
                     setSelectedNodeId(null);
                     exitSnapshotView();
                   }}
@@ -1443,6 +1483,7 @@ export default function App() {
                           // flip back from chat so the run panel is actually
                           // visible after the click.
                           setRightPanelMode('workspace');
+                          setMobilePanelMode('workspace');
                           void enterSnapshotView(runId);
                         }}
                       />
@@ -1551,7 +1592,10 @@ export default function App() {
                             open the{' '}
                             <button
                               type="button"
-                              onClick={() => setRightPanelMode('chat')}
+                              onClick={() => {
+                                setRightPanelMode('chat');
+                                setMobilePanelMode('chat');
+                              }}
                               className="italic-em"
                               style={{
                                 background: 'none',
@@ -1647,6 +1691,41 @@ export default function App() {
   );
 }
 
+function MobilePanelTabs({
+  mode,
+  setMode,
+  showChatActivityDot,
+}: {
+  mode: MobilePanelMode;
+  setMode: (mode: MobilePanelMode) => void;
+  showChatActivityDot: boolean;
+}) {
+  const tabs: { mode: MobilePanelMode; label: string }[] = [
+    { mode: 'canvas', label: 'canvas' },
+    { mode: 'workspace', label: 'workspace' },
+    { mode: 'chat', label: 'chat' },
+  ];
+
+  return (
+    <nav className="mobile-panel-tabs" aria-label="project views">
+      {tabs.map((tab) => (
+        <button
+          key={tab.mode}
+          type="button"
+          className="mobile-panel-tab"
+          aria-current={mode === tab.mode ? 'page' : undefined}
+          onClick={() => setMode(tab.mode)}
+        >
+          {tab.label}
+          {tab.mode === 'chat' && showChatActivityDot && (
+            <span className="mobile-panel-tab__dot" aria-label="orchestrator is working" />
+          )}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
 function RightPanelTabs({
   mode,
   setMode,
@@ -1667,6 +1746,7 @@ function RightPanelTabs({
 }) {
   return (
     <div
+      className={`right-panel-tabs${rightContent ? ' right-panel-tabs--has-controls' : ''}`}
       style={{
         display: 'flex',
         alignItems: 'stretch',
@@ -1705,6 +1785,7 @@ function RightPanelTabs({
       </PanelTabButton>
       {rightContent && (
         <div
+          className="right-panel-tabs__controls"
           style={{
             marginLeft: 'auto',
             padding: '4px 2px 4px 18px',

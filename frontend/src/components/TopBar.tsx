@@ -94,6 +94,7 @@ export function TopBar({
 
   return (
     <div
+      className="topbar"
       style={{
         height: 54,
         borderBottom: '1px solid var(--rule)',
@@ -106,7 +107,7 @@ export function TopBar({
         zIndex: 60,
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+      <div className="topbar__brand" style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
         <span
           className="serif"
           style={{
@@ -122,6 +123,7 @@ export function TopBar({
 
       <div
         ref={pickerRef}
+        className="topbar__project"
         style={{
           position: 'relative',
           display: 'flex',
@@ -214,7 +216,7 @@ export function TopBar({
 
       {activeWorkflow && (
         <span
-          className="smallcaps"
+          className="smallcaps topbar__status"
           style={{
             color: 'var(--ink-3)',
             display: 'flex',
@@ -231,14 +233,32 @@ export function TopBar({
         theme={theme}
         onChange={(next) => saveTheme(next)}
       />
-      <button className="topbar-btn" onClick={onOpenSettings}>
-        settings
+      <button
+        className="topbar-btn topbar-btn--settings"
+        onClick={onOpenSettings}
+        aria-label="settings"
+        title="settings"
+      >
+        <span className="topbar-btn__label">settings</span>
       </button>
-      <button className="topbar-btn" onClick={onNew}>
-        new project
+      <button
+        className="topbar-btn topbar-btn--new"
+        onClick={onNew}
+        aria-label="new project"
+        title="new project"
+      >
+        <span className="topbar-btn__mobile-mark" aria-hidden="true">＋</span>
+        <span className="topbar-btn__label">new project</span>
       </button>
-      <button className="topbar-btn" onClick={onOpenRun} disabled={runDisabled}>
-        runs
+      <button
+        className="topbar-btn topbar-btn--runs"
+        onClick={onOpenRun}
+        disabled={runDisabled}
+        aria-label="runs"
+        title="runs"
+      >
+        <span className="topbar-btn__mobile-mark" aria-hidden="true">↗</span>
+        <span className="topbar-btn__label">runs</span>
       </button>
 
       {deleteTarget && (

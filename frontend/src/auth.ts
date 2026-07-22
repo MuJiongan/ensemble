@@ -90,6 +90,28 @@ export async function fetchStatus(authProviderId: string): Promise<AuthStatusRes
   return res.json();
 }
 
+/** Hand a failed localhost redirect from a remote browser back to the Mac. */
+export async function submitCallbackUrl(
+  authProviderId: string,
+  url: string,
+): Promise<void> {
+  const res = await fetch(`/api/auth/${authProviderId}/callback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  });
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const body = await res.json();
+      if (typeof body?.detail === 'string') detail = body.detail;
+    } catch {
+      /* non-JSON body */
+    }
+    throw new Error(detail || `callback failed (${res.status})`);
+  }
+}
+
 export async function logout(authProviderId: string): Promise<void> {
   await fetch(`/api/auth/${authProviderId}/logout`, { method: 'POST' });
   markSignedOut(authProviderId);

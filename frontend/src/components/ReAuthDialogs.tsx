@@ -47,7 +47,7 @@ export function McpAuthDialog({
   return createPortal(
     <div
       onClick={onClose}
-      className="fade-in"
+      className="fade-in modal-backdrop"
       style={{
         position: 'fixed',
         inset: 0,
@@ -64,7 +64,7 @@ export function McpAuthDialog({
         role="dialog"
         aria-modal="true"
         onClick={(e) => e.stopPropagation()}
-        className="shadow-card"
+        className="shadow-card modal-card"
         style={{
           width: '100%',
           maxWidth: 420,
@@ -74,7 +74,7 @@ export function McpAuthDialog({
           overflow: 'hidden',
         }}
       >
-        <div style={{ padding: '18px 20px 16px' }}>
+        <div className="modal-card__body" style={{ padding: '18px 20px 16px' }}>
           <div
             style={{
               display: 'flex',
@@ -106,6 +106,7 @@ export function McpAuthDialog({
           </p>
         </div>
         <div
+          className="modal-card__actions"
           style={{
             display: 'flex',
             justifyContent: 'flex-end',
@@ -140,7 +141,7 @@ export function LlmAuthToast({
 }) {
   return createPortal(
     <div
-      className="fade-in shadow-card"
+      className="fade-in shadow-card auth-toast"
       style={{
         position: 'fixed',
         right: 16,
