@@ -105,6 +105,10 @@ class LoginStartResponse(BaseModel):
     status: str  # 'started'
 
 
+class LoginCallbackRequest(BaseModel):
+    url: str
+
+
 class LoginStatusResponse(BaseModel):
     """State of a server's login / stored credential.
 
@@ -146,6 +150,21 @@ def login_status(server: str, db: Session = Depends(get_db)) -> LoginStatusRespo
         return LoginStatusResponse(status="signed_out")
     if s.status == "error":
         return LoginStatusResponse(status="error", error=s.error)
+    return LoginStatusResponse(status="pending")
+
+
+@router.post("/{server}/login/callback", response_model=LoginStatusResponse)
+def login_callback(server: str, req: LoginCallbackRequest) -> LoginStatusResponse:
+    """Relay a loopback OAuth callback copied from a remote browser."""
+    s = login_state.get(mcp_oauth.state_key(server))
+    if s is None or s.status != "pending" or s.server is None:
+        raise HTTPException(status_code=409, detail="no MCP sign-in is waiting for a callback")
+    try:
+        accepted = s.server.deliver_callback_url(req.url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not accepted:
+        raise HTTPException(status_code=409, detail="this sign-in already received a callback")
     return LoginStatusResponse(status="pending")
 
 

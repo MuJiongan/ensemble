@@ -34,6 +34,10 @@ class StartResponse(BaseModel):
     status: str  # 'started' | 'already_pending'
 
 
+class CallbackRequest(BaseModel):
+    url: str
+
+
 class StatusResponse(BaseModel):
     """Reports the state of either an in-flight login OR a persisted creds row.
 
@@ -94,6 +98,22 @@ def status(provider: str, db: Session = Depends(get_db)) -> StatusResponse:
         return StatusResponse(status="signed_out")
     if s.status == "error":
         return StatusResponse(status="error", error=s.error)
+    return StatusResponse(status="pending")
+
+
+@router.post("/{provider}/callback", response_model=StatusResponse)
+def callback(provider: str, req: CallbackRequest) -> StatusResponse:
+    """Relay a loopback callback copied from a browser on another device."""
+    _provider_or_404(provider)
+    s = login_state.get(provider)
+    if s is None or s.status != "pending" or s.server is None:
+        raise HTTPException(status_code=409, detail="no sign-in is waiting for a callback")
+    try:
+        accepted = s.server.deliver_callback_url(req.url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not accepted:
+        raise HTTPException(status_code=409, detail="this sign-in already received a callback")
     return StatusResponse(status="pending")
 
 

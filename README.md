@@ -37,6 +37,46 @@ make test        # backend pytest suite
 
 The Vite dev server proxies `/api` (including WebSockets) to the backend, so just open **http://localhost:5173**. Then open **Settings** and connect at least one LLM provider — there is no built-in default model, so a run or chat turn will fail with a "configure a model in Settings" message until you pick one. See [Configuring providers & models](#configuring-providers--models) for the details.
 
+## Mac mini + Tailscale
+
+For an always-on, private installation, build the frontend and run the single
+production server on the Mac mini's loopback interface:
+
+```bash
+make install
+make build
+make serve
+```
+
+Then expose that loopback server only to your tailnet:
+
+```bash
+tailscale serve --bg --https=8443 http://127.0.0.1:8000
+```
+
+On another device signed in to the same tailnet, open
+`https://<mac-mini-magicdns-name>:8443`. Tailscale terminates HTTPS and proxies
+API, streaming, and WebSocket traffic to the same application process. The
+application port stays bound to `127.0.0.1`, so it is not exposed directly to
+the LAN or internet.
+
+When using a macOS login service, keep its runtime copy outside Desktop,
+Documents, and Downloads because macOS privacy controls can block background
+processes from those folders. This Mac uses
+`~/Library/Application Support/Ensemble/app` for the service runtime while this
+repository remains the editable source.
+
+The app is still single-user and has no application-level login. Tailnet access
+is the security boundary, so only grant tailnet access to people you trust.
+Provider settings and API keys are stored in each browser separately; configure
+them once on each phone, tablet, or other remote device. For Codex, xAI, and
+remote MCP OAuth, the mobile browser's final redirect points to that device's
+`localhost` and will not load. Copy the callback address from the browser and
+paste it into the waiting field in Ensemble—with or without the `http://`
+prefix; the Mac mini will securely finish the token exchange. Local MCP
+commands configured from a remote device execute on the Mac mini, so their
+commands and filesystem paths must exist on the Mac.
+
 ## Architecture
 
 Three moving parts: the **orchestrator** that designs the team, the **runtime** that executes it, and the **LLM transport** they both talk through.

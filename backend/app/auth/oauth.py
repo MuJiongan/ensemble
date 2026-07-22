@@ -163,11 +163,52 @@ class LoopbackCallbackServer:
         host = self.host
         return f"http://{host}:{self.port}{self.expected_path}"
 
-    def _deliver(self, result: CallbackResult) -> None:
+    def _deliver(self, result: CallbackResult) -> bool:
         with self._lock:
             if self._result is None:
                 self._result = result
                 self._event.set()
+                return True
+            return False
+
+    def deliver_callback_url(self, callback_url: str) -> bool:
+        """Deliver a callback copied from a browser on another device.
+
+        OAuth clients used by Codex, xAI, and many MCP servers pin a loopback
+        redirect URI. On a phone, tablet, or other remote device that redirect
+        targets the remote device's localhost, not this Mac. The user can copy
+        the failed redirect URL back to the app; this method validates that it
+        targets this exact callback listener and feeds it into the same
+        one-shot result path as a local browser.
+        """
+        normalized_url = callback_url.strip()
+        # Mobile browsers often omit the obvious scheme when copying what they
+        # display in the address bar (``localhost:1455/...``). OAuth loopback
+        # callbacks are HTTP, so make that shorthand unambiguous before parsing.
+        if "://" not in normalized_url:
+            normalized_url = f"http://{normalized_url.lstrip('/')}"
+        parsed = urlparse(normalized_url)
+        expected_host = self.host.lower().strip("[]")
+        actual_host = (parsed.hostname or "").lower().strip("[]")
+        try:
+            actual_port = parsed.port
+        except ValueError as exc:
+            raise ValueError("callback URL has an invalid port") from exc
+        if (
+            parsed.scheme != "http"
+            or actual_host != expected_host
+            or actual_port != self.port
+            or parsed.path != self.expected_path
+        ):
+            raise ValueError(f"expected a callback URL beginning with {self.redirect_uri}")
+
+        qs = parse_qs(parsed.query)
+        code = (qs.get("code") or [None])[0]
+        state = (qs.get("state") or [None])[0]
+        error = (qs.get("error_description") or qs.get("error") or [None])[0]
+        if not code and not error:
+            raise ValueError("callback URL does not contain an authorization code or error")
+        return self._deliver(CallbackResult(code=code, state=state, error=error))
 
     def start(self) -> None:
         if self._server is not None:

@@ -179,7 +179,10 @@ def test_responses_events_roundtrip_through_sdk_models():
                 "id": "r1", "object": "response", "created_at": 1, "model": "gpt-5.5",
                 "parallel_tool_calls": True, "tool_choice": "auto", "tools": [], "output": [],
                 "usage": {"input_tokens": 8, "output_tokens": 2, "total_tokens": 10,
-                          "input_tokens_details": {"cached_tokens": 5},
+                              "input_tokens_details": {
+                                  "cached_tokens": 5,
+                                  "cache_write_tokens": 0,
+                              },
                           "output_tokens_details": {"reasoning_tokens": 0}},
             },
         }),

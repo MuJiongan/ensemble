@@ -1409,7 +1409,7 @@ function MessageBubble({
   if (msg.role === 'user') {
     return (
       <div
-        className="fade-in"
+        className="fade-in chat-message"
         style={{ padding: '14px 22px', borderBottom: '1px solid var(--rule-2)' }}
       >
         {showRoleLabel && (
@@ -1465,7 +1465,7 @@ function MessageBubble({
     const topPadding = showRoleLabel ? 10 : separatedFromPrevious ? 7 : 1;
     return (
       <div
-        className="fade-in"
+        className="fade-in chat-message chat-message--notice"
         style={{
           padding: `${topPadding}px 22px 1px`,
           borderBottom: '0',
@@ -1494,7 +1494,7 @@ function MessageBubble({
   }
   return (
     <div
-      className="fade-in"
+      className="fade-in chat-message"
       style={{
         padding: showRoleLabel ? '14px 22px' : '3px 22px 12px',
         borderBottom: '1px solid var(--rule-2)',
@@ -1682,6 +1682,7 @@ export function ChatThread({
       {aboveComposer}
 
       <form
+        className="chat-thread__form"
         onSubmit={submit}
         style={{
           padding: '14px 22px 16px',
@@ -1704,7 +1705,10 @@ export function ChatThread({
             style={{ marginBottom: 10 }}
           />
         )}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div
+          className="chat-thread__composer-row"
+          style={{ display: 'flex', alignItems: 'center', gap: 12 }}
+        >
           <div
             className="chat-composer field-shell"
             style={draggingFile ? { outline: '1.5px dashed var(--accent-ink)', outlineOffset: 2 } : undefined}
@@ -1771,6 +1775,7 @@ export function ChatHeaderControls({
 
   return (
     <div
+      className="chat-header-controls"
       style={{
         display: 'flex',
         alignItems: compact ? 'center' : 'baseline',
@@ -1924,6 +1929,7 @@ function ConversationStrip({
 }) {
   return (
     <div
+      className="conversation-strip"
       style={{
         flexShrink: 0,
         display: 'flex',
@@ -1999,6 +2005,7 @@ export function ChatPanel({
 }: Props) {
   return (
     <div
+      className="chat-panel"
       style={{
         display: 'flex',
         flexDirection: 'column',
@@ -2061,7 +2068,7 @@ export function ChatPanel({
         emptyState={
           conversationLabel ? (
             <div
-              className="serif"
+              className="serif chat-empty-state"
               style={{
                 padding: '32px 22px',
                 fontStyle: 'italic',
@@ -2075,7 +2082,7 @@ export function ChatPanel({
             </div>
           ) : (
             <div
-              className="serif"
+              className="serif chat-empty-state"
               style={{
                 padding: '32px 22px',
                 fontStyle: 'italic',

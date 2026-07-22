@@ -72,10 +72,13 @@ export function HeroComposer({
           minWidth: 0,
         }}
       />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+      <div
+        className="hero-input__footer"
+        style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}
+      >
         {footerHint ? (
           <span
-            className="serif"
+            className="serif hero-input__hint"
             style={{ fontStyle: 'italic', fontSize: 11.5, color: 'var(--ink-4)' }}
           >
             {footerHint}
@@ -86,7 +89,7 @@ export function HeroComposer({
         <span style={{ flex: 1 }} />
         <button
           type="button"
-          className="btn-ink btn-ink--accent"
+          className="btn-ink btn-ink--accent hero-input__action"
           onClick={onAction}
           disabled={actionDisabled}
         >
