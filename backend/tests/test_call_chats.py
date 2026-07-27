@@ -431,9 +431,10 @@ def test_send_turn_materializes_chat_lazily_and_persists(db_factory, monkeypatch
 
     captured = {}
 
-    def fake_start(turn_id, chat_id, messages, tools, model, child_env):
+    def fake_start(turn_id, chat_id, messages, tools, model, child_env, node_code=""):
         captured.update(
-            turn_id=turn_id, chat_id=chat_id, messages=messages, tools=tools, model=model
+            turn_id=turn_id, chat_id=chat_id, messages=messages, tools=tools,
+            model=model, node_code=node_code,
         )
 
     monkeypatch.setattr(cc_api.chat_service, "start_chat_turn", fake_start)
@@ -459,6 +460,7 @@ def test_send_turn_materializes_chat_lazily_and_persists(db_factory, monkeypatch
     assert captured["model"] == "anthropic/claude-sonnet-4.5"
     assert captured["messages"][-1]["content"] == "now expand point 2"
     assert captured["tools"] == ["web_search"]
+    assert "def run(inputs, ctx)" in captured["node_code"]
 
 
 def test_send_turn_empty_message_400_without_materializing(db_factory):
@@ -481,7 +483,7 @@ def test_send_turn_uses_switched_model_and_persists_selection(db_factory, monkey
 
     captured = {}
 
-    def fake_start(turn_id, chat_id, messages, tools, model, child_env):
+    def fake_start(turn_id, chat_id, messages, tools, model, child_env, node_code=""):
         captured.update(model=model)
 
     monkeypatch.setattr(cc_api.chat_service, "start_chat_turn", fake_start)
@@ -595,7 +597,7 @@ def test_send_turn_coalesces_dangling_user_message(db_factory, monkeypatch):
 
     captured = {}
 
-    def fake_start(turn_id, chat_id, messages, tools, model, child_env):
+    def fake_start(turn_id, chat_id, messages, tools, model, child_env, node_code=""):
         captured.update(messages=messages)
 
     monkeypatch.setattr(cc_api.chat_service, "start_chat_turn", fake_start)

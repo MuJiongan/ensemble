@@ -134,6 +134,32 @@ def run(inputs, ctx):
 
 The six built-in tools available to every node are `shell`, `read_file`, `write_file`, `edit_file`, `web_search`, and `web_fetch`. `read_file` also returns images (PNG/JPEG/GIF/WebP) as attachments for vision-capable models; `web_search` and `web_fetch` are backed by parallel.ai. Tools can be invoked either *agentically* — named in `ctx.agent(tools=[...])` so the node's own model decides when to call them — or *directly* via `ctx.tools.<name>(...)`, which runs them deterministically with no model in the loop (see [Design decisions](#design-decisions)).
 
+Nodes can also declare custom tools inside the same Python block—there is no separate node field or registry configuration. A lowercase `NodeTool` subclass registers automatically while the node source is loaded, and then uses the same quoted-name surfaces as built-ins:
+
+```python
+from app.runner.node_tools import NodeTool
+
+class lookup_order(NodeTool):
+    description = "Look up an order by id."
+    parameters = {
+        "type": "object",
+        "properties": {"order_id": {"type": "string"}},
+        "required": ["order_id"],
+    }
+
+    def execute(self, ctx, order_id):
+        return {"order_id": order_id, "status": "shipped"}
+
+def run(inputs, ctx):
+    result = ctx.agent(
+        prompt=f"Help with order {inputs['order_id']}",
+        tools=["lookup_order"],
+    )
+    return {"answer": result["content"]}
+```
+
+Custom tool names must use the same lowercase `snake_case` convention as native tools and cannot shadow built-in or MCP names. They are isolated to their node, included automatically in frozen run source, traced like native calls, and restored from that frozen source when an agent conversation is continued.
+
 ## Design decisions
 
 A few choices that shape how the system behaves in use:

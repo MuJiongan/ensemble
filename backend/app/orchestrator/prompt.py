@@ -159,6 +159,23 @@ Avoid one-shotting a large JSON/output. Have an agentic loop use `read_file` / `
 
 Every node defines a `run(inputs, ctx)` function. Top-level `import`s and small helper functions alongside `run` are fine — the whole code blob is `exec`'d into a fresh namespace per run, so reach for `json`, `re`, `pathlib`, etc. when they're cleaner than routing through an LLM.
 
+A node may also declare custom tools directly in the same code blob. Subclass `NodeTool`; the lowercase snake_case class name is the tool name and the runtime registers it automatically when the node source executes. Do not add a separate registry, decorator, or list. Custom tools are node-local, may call `ctx.tools.*`, and are available through the same name-based surfaces as native tools: agentically (`tools=["lookup_order"]`) and directly (`ctx.tools.lookup_order(...)`). Keep top-level code declarative (imports, helpers, tool classes, and `run`) because the frozen source is also loaded when continuing one of the node's agent calls.
+
+```python
+from app.runner.node_tools import NodeTool
+
+class lookup_order(NodeTool):
+    description = "Look up an order by id."
+    parameters = {
+        "type": "object",
+        "properties": {"order_id": {"type": "string"}},
+        "required": ["order_id"],
+    }
+
+    def execute(self, ctx, order_id):
+        return {"order_id": order_id, "status": "shipped"}
+```
+
 If a node imports a third-party package, make sure it's installed *before* the workflow runs.
 
 ```python
@@ -171,7 +188,7 @@ def run(inputs, ctx):
 
 `ctx` provides:
 
-- `ctx.agent(prompt, tools=[...])` — runs an LLM inside the node. Pass tool names ([[NODE_TOOL_NAMES]]) in the `tools` list; the LLM running inside the node decides when to invoke them. Returns a dict with keys `content` (str), `tool_calls_made` (list), `usage`, `cost`. Omit the `model` arg (see *# design conventions*). Optional `label` when a node makes several calls — keep it short and meaningful.
+- `ctx.agent(prompt, tools=[...])` — runs an LLM inside the node. Pass registered tool names ([[NODE_TOOL_NAMES]] plus any lowercase custom `NodeTool` class names) as strings; the LLM running inside the node decides when to invoke them. Returns a dict with keys `content` (str), `tool_calls_made` (list), `usage`, `cost`. Omit the `model` arg (see *# design conventions*). Optional `label` when a node makes several calls — keep it short and meaningful.
 - `ctx.tools.shell(...)` / `ctx.tools.read_file(...)` / `ctx.tools.web_fetch(...)` / … — direct (non-LLM) tool calls, same names, returning the same dicts the LLM-mediated form would produce. The agentic form above is the default; reserve direct calls for when there's nothing for a model to decide (see *# direct calls vs wrapping the tool in an agent*).
 - `ctx.log("...")` — appends a visible line to the run log.
 - `ctx.workdir` — `pathlib.Path` to a per-run scratch directory.
