@@ -67,6 +67,15 @@ def test_anthropic_sonnet5_uses_adaptive_thinking():
     }
 
 
+def test_anthropic_opus5_uses_adaptive_thinking():
+    m = _model(id="claude-opus-5", api_id="claude-opus-5", npm="@ai-sdk/anthropic")
+    assert list(m.variants) == ["low", "medium", "high", "xhigh", "max"]
+    assert m.variants["max"] == {
+        "thinking": {"type": "adaptive", "display": "summarized"},
+        "effort": "max",
+    }
+
+
 def test_anthropic_claude5_sonnet_name_uses_adaptive_thinking():
     m = _model(id="claude-5-sonnet", api_id="claude-5-sonnet", npm="@ai-sdk/anthropic")
     assert m.variants["max"]["thinking"]["type"] == "adaptive"
