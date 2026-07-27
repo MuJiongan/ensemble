@@ -2312,8 +2312,9 @@ com-1password-button {
 }
 
 /* Responsive application shell ------------------------------------------------
-   Desktop keeps the canvas + detail split. Tablet portrait and phones switch
-   to one full-width surface at a time so every view remains genuinely usable. */
+   Desktop keeps the canvas + detail split. A narrow viewport, or a portrait
+   viewport up through large-tablet size, switches to one full-width surface at
+   a time so every view remains genuinely usable. */
 .topbar-btn__mobile-mark,
 .mobile-panel-tabs {
   display: none;
@@ -2346,7 +2347,7 @@ com-1password-button {
   }
 }
 
-@media (max-width: 820px) {
+@media (max-width: 820px), (orientation: portrait) and (max-width: 1100px) {
   .topbar {
     padding-inline: 12px !important;
     gap: 9px !important;

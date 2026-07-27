@@ -49,7 +49,7 @@ GPT5_VERSION_RE = re.compile(r"(?:^|/)gpt-5[.-](\d+)(?:[.-]|$)")
 GPT5_PRO_RE = re.compile(r"(?:^|/)gpt-5[.-]?pro(?:[.-]|$)")
 GPT5_VERSIONED_PRO_RE = re.compile(r"(?:^|/)gpt-5[.-]\d+[.-]pro(?:[.-]|$)")
 _OPUS_47_RE = re.compile(
-    r"opus-(\d+)[.-](\d+)(?:[.@-]|$)|claude-(\d+)[.-](\d+)-opus(?:[.@-]|$)", re.I
+    r"opus-(\d+)(?:[.-](\d+))?(?:[.@-]|$)|claude-(\d+)(?:[.-](\d+))?-opus(?:[.@-]|$)", re.I
 )
 _SONNET_VERSION_RE = re.compile(
     r"sonnet-(\d+)(?:[.-](\d+))?(?:[.@-]|$)|claude-(\d+)(?:[.-](\d+))?-sonnet(?:[.@-]|$)", re.I
@@ -150,7 +150,7 @@ def anthropic_opus_47_or_later(api_id: str) -> bool:
     if not m:
         return False
     major = int(m.group(1) or m.group(3))
-    minor = int(m.group(2) or m.group(4))
+    minor = int(m.group(2) or m.group(4) or 0)
     return major > 4 or (major == 4 and minor >= 7)
 
 
