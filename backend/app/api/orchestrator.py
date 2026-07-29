@@ -108,9 +108,51 @@ def get_messages(
 @router.delete("/workflows/{wid}/sessions/{sid}/messages")
 def clear_messages(wid: str, sid: str, db: DbSession = Depends(get_db)) -> dict:
     _get_session(db, wid, sid)
+
+    # Inline-agent traces belong to the chat tool cards that reference them,
+    # not to workspace run history. Collect those private run ids before the
+    # messages disappear, then delete the complete trace graph as part of the
+    # same clear-context transaction. CallChat uses string references instead
+    # of a foreign key, so remove continuations explicitly before the Run ->
+    # NodeRun -> CallTranscript cascades fire.
+    inline_run_ids: set[str] = set()
+    tool_rows = (
+        db.query(models.Message)
+        .filter_by(session_id=sid, role="tool", name="run_agent")
+        .all()
+    )
+    for row in tool_rows:
+        try:
+            payload = json.loads(row.content or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        display = payload.get("_display") if isinstance(payload, dict) else None
+        run_id = display.get("run_id") if isinstance(display, dict) else None
+        if isinstance(run_id, str) and run_id:
+            inline_run_ids.add(run_id)
+
+    private_runs = []
+    if inline_run_ids:
+        private_runs = (
+            db.query(models.Run)
+            .filter(
+                models.Run.id.in_(inline_run_ids),
+                models.Run.workflow_id == wid,
+                models.Run.kind == "inline_agent",
+            )
+            .all()
+        )
+        node_run_ids = [nr.id for run in private_runs for nr in run.node_runs]
+        if node_run_ids:
+            db.query(models.CallChat).filter(
+                models.CallChat.node_run_id.in_(node_run_ids)
+            ).delete(synchronize_session=False)
+        for run in private_runs:
+            db.delete(run)
+
     db.query(models.Message).filter_by(session_id=sid).delete(synchronize_session=False)
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "deleted_inline_agents": len(private_runs)}
 
 
 @router.post("/workflows/{wid}/sessions/{sid}/cancel")

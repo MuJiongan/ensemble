@@ -18,6 +18,7 @@ This module owns the orchestration loop itself plus :func:`render_history`
 from __future__ import annotations
 import json
 import os
+import queue
 import sys
 import threading
 import traceback
@@ -492,15 +493,58 @@ def run_turn(
                     "args_full": args,
                 }
 
-                result = orch_tools.execute(db, workflow_id, name, args)
+                if name == "run_agent":
+                    # The tool remains synchronous from the orchestrator LLM's
+                    # perspective, but execute it beside this generator so we
+                    # can forward the child node's normal live RunEvents into
+                    # the inline card while waiting for its final tool result.
+                    inline_events: queue.Queue[dict] = queue.Queue()
+                    result_box: dict[str, dict] = {}
 
-                # `run_workflow` returns immediately with `{run_id, status:"running"}`
-                # — the actual run executes in a background thread. Emit a
+                    def _execute_inline_agent() -> None:
+                        result_box["result"] = orch_tools.execute(
+                            db,
+                            workflow_id,
+                            name,
+                            args,
+                            cancel_event=cancel_event,
+                            event_callback=inline_events.put,
+                        )
+
+                    worker = threading.Thread(
+                        target=_execute_inline_agent,
+                        daemon=True,
+                    )
+                    worker.start()
+                    while worker.is_alive() or not inline_events.empty():
+                        try:
+                            inline_event = inline_events.get(timeout=0.05)
+                        except queue.Empty:
+                            continue
+                        yield {
+                            "kind": "run_agent_event",
+                            "event": inline_event,
+                        }
+                    worker.join()
+                    result = result_box.get("result") or {
+                        "error": "run_agent ended without a result"
+                    }
+                else:
+                    result = orch_tools.execute(
+                        db,
+                        workflow_id,
+                        name,
+                        args,
+                        cancel_event=cancel_event,
+                    )
+
+                # `run_workflow` returns immediately with
+                # `{run_id, status:"running"}` — the actual run executes in a
+                # background thread. Emit a
                 # `run_started` event so the frontend can attach its run panel
                 # to the live WS (same code path the manual Run button uses),
-                # then give the LLM the non-blocking start result. This keeps
-                # the orchestrator turn free to start other independent runs
-                # instead of parking on a long workflow.
+                # then give the LLM the non-blocking start result. `run_agent`
+                # is intentionally absent: that tool blocks and returns inline.
                 if (
                     name == "run_workflow"
                     and isinstance(result, dict)

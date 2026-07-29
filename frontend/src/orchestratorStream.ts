@@ -9,7 +9,7 @@ import {
   type AssistantMutation,
 } from './assistantStream';
 import type { AssistantMessage, ChatMessage } from './components/ChatPanel';
-import type { OrchestratorEvent } from './types';
+import type { OrchestratorEvent, RunEvent } from './types';
 
 export const mapOrchestratorEvent = mapAssistantWireEvent;
 
@@ -29,6 +29,11 @@ interface UseOrchestratorStreamArgs {
     (runId: string, workflowId: string) => void
   >;
   onOrchestratorRunStarted?: (workflowId: string, runId: string) => void;
+  onRunAgentStarted?: (workflowId: string) => void;
+  /** Surface node-runtime events that need app-level handling (for example,
+   * an inline agent reporting an MCP server that needs authorization). */
+  onRunAgentEvent?: (workflowId: string, event: RunEvent) => void;
+  onRunAgentFinished?: (workflowId: string, result: unknown) => void;
 }
 
 /** Hook that owns per-workflow orchestrator-stream lifecycle: abort
@@ -41,6 +46,9 @@ export function useOrchestratorStream({
   refreshWorkflows,
   attachToRunRef,
   onOrchestratorRunStarted,
+  onRunAgentStarted,
+  onRunAgentEvent,
+  onRunAgentFinished,
 }: UseOrchestratorStreamArgs) {
   const abortRefs = useRef<Record<string, AbortController>>({});
 
@@ -62,6 +70,12 @@ export function useOrchestratorStream({
     for (const streamEvent of mapAssistantWireEvent(ev)) {
       assistantStream.apply(wid, streamEvent);
     }
+    if (ev.kind === 'tool_call_start' && ev.tool === 'run_agent') {
+      onRunAgentStarted?.(wid);
+    }
+    if (ev.kind === 'tool_call_end' && ev.tool === 'run_agent') {
+      onRunAgentFinished?.(wid, ev.result);
+    }
     if (ev.kind === 'tool_call_end' && ev.status === 'ok' && GRAPH_MUTATING_TOOLS.has(ev.tool)) {
       refreshDetail(wid);
     } else if (ev.kind === 'tool_call_end' && ev.status === 'ok' && WORKFLOW_METADATA_TOOLS.has(ev.tool)) {
@@ -72,6 +86,8 @@ export function useOrchestratorStream({
       // gets live progress while the run continues in the background.
       onOrchestratorRunStarted?.(ev.workflow_id, ev.run_id);
       attachToRunRef.current(ev.run_id, ev.workflow_id);
+    } else if (ev.kind === 'run_agent_event') {
+      onRunAgentEvent?.(wid, ev.event);
     }
   };
 

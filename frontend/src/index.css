@@ -404,7 +404,7 @@ button.pill--ghost:hover:not(:disabled) {
 /* chat */
 .chat-msg-user {
   background: var(--surface-hover);
-  border-left: 2px solid var(--ink);
+  box-shadow: inset 2px 0 0 var(--ink-4);
 }
 .tool-call {
   background: var(--muted-fill);
@@ -412,6 +412,100 @@ button.pill--ghost:hover:not(:disabled) {
   border-radius: 3px;
 }
 .tool-call:hover { background: var(--hover); }
+
+.run-agent-card {
+  --run-agent-tone: var(--state-ok);
+  position: relative;
+  width: 100%;
+  min-height: 96px;
+  margin: 12px 0;
+  padding: 14px 16px 13px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  overflow: hidden;
+  color: inherit;
+  text-align: left;
+  background:
+    linear-gradient(110deg, color-mix(in srgb, var(--run-agent-tone) 10%, transparent), transparent 45%),
+    var(--muted-fill);
+  border: 1px solid var(--rule-2);
+  border-left: 3px solid color-mix(in srgb, var(--run-agent-tone) 68%, var(--rule));
+  border-radius: 5px;
+  transition:
+    transform 120ms ease,
+    background-color 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.run-agent-card[data-status='running'] {
+  --run-agent-tone: var(--state-run);
+}
+
+.run-agent-card[data-status='failed'] {
+  --run-agent-tone: var(--state-err);
+}
+
+.run-agent-card:hover {
+  border-color: var(--ink-4) !important;
+  border-left-color: var(--run-agent-tone) !important;
+  background:
+    linear-gradient(110deg, color-mix(in srgb, var(--run-agent-tone) 15%, transparent), transparent 48%),
+    var(--surface-raised) !important;
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--ink-1) 9%, transparent);
+  transform: translateY(-1px);
+}
+
+.run-agent-card:focus-visible {
+  outline: 1.5px solid var(--run-agent-tone);
+  outline-offset: 2px;
+}
+
+.run-agent-card__header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.run-agent-card__eyebrow {
+  color: var(--ink-4);
+  font-size: 8.5px;
+  letter-spacing: 0.18em;
+}
+
+.run-agent-card__status {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 8.5px;
+}
+
+.run-agent-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.run-agent-card__name {
+  color: var(--accent-ink);
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.run-agent-card__description {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: 13px;
+  font-style: italic;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
 
 /* dense, clickable row for run trace inputs/outputs/logs */
 .port-row:hover { background: var(--hover); }
@@ -2298,7 +2392,155 @@ textarea.field.field--scrollable::-webkit-scrollbar-thumb {
 }
 [data-theme="dark"] .chat-msg-user {
   background: color-mix(in oklch, var(--accent) 8%, var(--surface-raised));
-  border-left-color: var(--ink-3);
+  box-shadow: inset 2px 0 0 var(--ink-3);
+}
+
+/* The project stage and chat keep the same geometry before and after the first
+   workflow node appears. Only the left-hand surface changes, which prevents
+   the conversation from jumping when the canvas materialises. */
+.workflow-chat-surface {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.workflow-canvas-stage {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workflow-canvas-stage--live {
+  animation: canvasMaterialise 260ms cubic-bezier(0.2, 0.72, 0.25, 1) both;
+}
+
+.run-agent-inspector {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--paper);
+}
+
+.run-agent-inspector__header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 74px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.run-agent-inspector__description {
+  margin-top: 6px;
+  overflow: hidden;
+  color: var(--ink-4);
+  font-size: 12px;
+  font-style: italic;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-agent-inspector__tabs {
+  display: flex;
+  flex-shrink: 0;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.run-agent-inspector__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.run-agent-inspector__empty {
+  padding: 16px;
+  color: var(--ink-4);
+  font-style: italic;
+}
+
+@keyframes canvasMaterialise {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.workflow-forming {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 40px;
+}
+
+.workflow-forming::before {
+  content: '';
+  position: absolute;
+  width: min(360px, calc(100% - 72px));
+  aspect-ratio: 1;
+  border: 1px solid var(--rule-2);
+  border-radius: 50%;
+  opacity: 0.72;
+}
+
+.workflow-forming__content {
+  position: relative;
+  z-index: 1;
+  width: min(320px, 100%);
+}
+
+.workflow-forming__eyebrow {
+  margin-bottom: 22px;
+  color: var(--ink-4);
+}
+
+.workflow-forming__mark {
+  margin-bottom: 10px;
+  color: var(--accent-ink);
+  font-family: var(--serif);
+  font-size: 16px;
+}
+
+.workflow-forming h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: clamp(23px, 2.4vw, 30px);
+  font-style: italic;
+  font-weight: 400;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.workflow-forming p {
+  margin: 15px 0 20px;
+  color: var(--ink-3);
+  font-size: 14px;
+  font-style: italic;
+  line-height: 1.65;
+}
+
+.workflow-forming__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule);
+  color: var(--ink-4);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workflow-canvas-stage--live { animation: none; }
 }
 
 /* KaTeX inherits editorial ink in dark mode */
@@ -2407,6 +2649,11 @@ com-1password-button {
   .mobile-panel-tab[aria-current="page"] {
     border-bottom-color: var(--accent);
     color: var(--ink);
+  }
+  .mobile-panel-tab:disabled {
+    cursor: default;
+    color: var(--ink-5);
+    opacity: 0.55;
   }
   .mobile-panel-tab__dot {
     width: 5px;

@@ -12,6 +12,7 @@ import { CloseButton } from './CloseButton';
 import { AttachmentChips, FileTile, type PendingAttachment } from './ImageAttachments';
 import { FilePathLink, childText, linkifyNodes, looksLikePath } from './FilePathLink';
 import { ModelSelector } from './ModelSelector';
+import { RunAgentCard, type RunAgentInspection } from './RunAgentCard';
 
 const BOTTOM_PIN_THRESHOLD_PX = 60;
 
@@ -278,6 +279,8 @@ export interface ChatThreadProps {
   disabled?: boolean;
   onCancel?: () => void;
   onViewRun?: (runId: string) => void;
+  /** Show a one-off agent's node-style inspector in the project pane. */
+  onInspectAgent?: (inspection: RunAgentInspection) => void;
   /** Composer placeholder when idle. */
   placeholder?: string;
   /** Controlled composer value. When provided, the host owns draft state. */
@@ -340,6 +343,7 @@ interface Props extends ChatHeaderControlsProps {
    * `run_workflow` tool card. The host can swap the canvas to render the
    * run's frozen `workflow_snapshot`. */
   onViewRun?: (runId: string) => void;
+  onInspectAgent?: (inspection: RunAgentInspection) => void;
   /** Orchestrator-started run ids for the active workflow, newest first. */
   orchestratorRunIds?: string[];
   /** Drop a run id from any host-owned run lists after it is deleted. */
@@ -1311,6 +1315,7 @@ function OrchestratorRunsTray({
   if (runIds.length === 0) return null;
   return (
     <div
+      className="orchestrator-runs-tray"
       style={{
         borderTop: '1px solid var(--rule)',
         background: 'var(--paper)',
@@ -1396,12 +1401,14 @@ function OrchestratorRunsTray({
 function MessageBubble({
   msg,
   onViewRun,
+  onInspectAgent,
   shouldAutoScroll,
   showRoleLabel = true,
   separatedFromPrevious = false,
 }: {
   msg: ChatMessage;
   onViewRun?: (runId: string) => void;
+  onInspectAgent?: (inspection: RunAgentInspection) => void;
   shouldAutoScroll?: () => boolean;
   showRoleLabel?: boolean;
   separatedFromPrevious?: boolean;
@@ -1409,7 +1416,7 @@ function MessageBubble({
   if (msg.role === 'user') {
     return (
       <div
-        className="fade-in chat-message"
+        className="fade-in chat-message chat-msg-user"
         style={{ padding: '14px 22px', borderBottom: '1px solid var(--rule-2)' }}
       >
         {showRoleLabel && (
@@ -1569,7 +1576,9 @@ function MessageBubble({
           if (c.t === 'notice') {
             return <InlineNotice key={i} text={c.text} kind={c.kind} />;
           }
-          return <ToolCallCard key={i} {...c} />;
+          return c.tool === 'run_agent'
+            ? <RunAgentCard key={i} {...c} onInspect={onInspectAgent} />
+            : <ToolCallCard key={i} {...c} />;
         })}
         {msg.streaming && <span className="caret" />}
       </div>
@@ -1586,6 +1595,7 @@ export function ChatThread({
   disabled,
   onCancel,
   onViewRun,
+  onInspectAgent,
   placeholder = 'type a message',
   draft = '',
   onDraftChange,
@@ -1667,6 +1677,7 @@ export function ChatThread({
               key={i}
               msg={m}
               onViewRun={onViewRun}
+              onInspectAgent={onInspectAgent}
               shouldAutoScroll={shouldAutoScroll}
               showRoleLabel={i === 0 || messages[i - 1]?.role !== m.role}
               separatedFromPrevious={
@@ -1992,6 +2003,7 @@ export function ChatPanel({
   onClose,
   onClearContext,
   onViewRun,
+  onInspectAgent,
   conversationLabel,
   onBack,
   modelSelection,
@@ -2015,6 +2027,7 @@ export function ChatPanel({
     >
       {!hideHeader && (
         <div
+          className="chat-panel__header"
           style={{
             padding: '14px 22px 12px',
             borderBottom: '1px solid var(--rule)',
@@ -2046,6 +2059,7 @@ export function ChatPanel({
         disabled={disabled}
         onCancel={onCancel}
         onViewRun={onViewRun}
+        onInspectAgent={onInspectAgent}
         draft={composerDraft}
         onDraftChange={onComposerDraftChange}
         placeholder={conversationLabel ? 'continue this conversation…' : 'refine, add a node, or ask anything'}

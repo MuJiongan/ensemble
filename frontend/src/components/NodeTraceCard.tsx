@@ -334,6 +334,7 @@ interface HistoricalLLMCall {
   tool_calls_made?: Array<{
     name?: string;
     arguments?: Record<string, unknown>;
+    args?: Record<string, unknown>;
     result?: unknown;
     error?: string;
   }>;
@@ -345,6 +346,7 @@ interface HistoricalToolCall {
   call_id?: string;
   name?: string;
   arguments?: Record<string, unknown>;
+  args?: Record<string, unknown>;
   result?: unknown;
   error?: string;
   via?: 'llm' | 'direct';
@@ -361,8 +363,8 @@ export function nodeRunToTrace(nr: NodeRun): NodeTrace {
       tc_index: j,
       round: 0,
       tool: tc.name ?? '',
-      args_str: JSON.stringify(tc.arguments ?? {}),
-      args: tc.arguments,
+      args_str: JSON.stringify(tc.arguments ?? tc.args ?? {}),
+      args: tc.arguments ?? tc.args,
       status: tc.error ? 'err' : 'ok',
       result: tc.result,
       error: tc.error,
@@ -403,7 +405,7 @@ export function nodeRunToTrace(nr: NodeRun): NodeTrace {
     const dtc: DirectToolCall = {
       call_id: id,
       tool: tc.name ?? '',
-      args: tc.arguments ?? {},
+      args: tc.arguments ?? tc.args ?? {},
       status: tc.error ? 'err' : 'ok',
       result: tc.result,
       error: tc.error,

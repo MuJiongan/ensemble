@@ -134,6 +134,11 @@ function mapOrchestratorWireEvent(ev: OrchestratorEvent): AssistantStreamEvent[]
       result: ev.result,
     }];
   }
+  if (ev.kind === 'run_agent_event') {
+    // App owns and batches the inline node trace. Keeping token events out of
+    // the chat block avoids a second event copy and a render per token.
+    return [];
+  }
   if (ev.kind === 'run_started') {
     return [{ type: 'tool_patch', tool: 'run_workflow', patch: { runId: ev.run_id } }];
   }

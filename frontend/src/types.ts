@@ -439,6 +439,10 @@ export type OrchestratorEvent =
       status: 'ok' | 'err';
       result?: unknown;
     }
+  // A standard node-runtime event emitted by the hidden execution inside a
+  // blocking run_agent call. The app batches it into the agent inspector; it
+  // never attaches the workspace run panel.
+  | { kind: 'run_agent_event'; event: RunEvent }
   // Emitted by the agent loop when the orchestrator's `run_workflow` tool
   // kicks off a run. The frontend attaches the run panel to the run's WS
   // (same code path the manual Run button uses), so the user sees live

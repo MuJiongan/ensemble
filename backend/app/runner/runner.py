@@ -108,6 +108,7 @@ def drive_child_subprocess(
     module: str,
     payload: dict,
     terminal_event: Callable[[str, str | None], dict],
+    on_event: Callable[[dict], None] | None = None,
 ) -> dict | None:
     """Spawn ``python -m <module>``, pipe ``payload`` to its stdin, stream its
     JSON-line stdout events into ``run_id``'s pub/sub, and drain stderr
@@ -126,6 +127,16 @@ def drive_child_subprocess(
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
 
+    def _publish(event: dict) -> None:
+        ev_mod.append_event(run_id, event)
+        if on_event is not None:
+            try:
+                on_event(event)
+            except Exception:
+                # A UI listener must never be able to break execution or keep
+                # the child subprocess from being drained.
+                pass
+
     try:
         proc = subprocess.Popen(
             [sys.executable, "-m", module],
@@ -135,7 +146,7 @@ def drive_child_subprocess(
             env=env,
         )
     except Exception as e:
-        ev_mod.append_event(run_id, terminal_event("error", f"failed to spawn {module}: {e}"))
+        _publish(terminal_event("error", f"failed to spawn {module}: {e}"))
         return None
 
     ev_mod.set_proc(run_id, proc)
@@ -158,7 +169,7 @@ def drive_child_subprocess(
         proc.stdin.write(json.dumps(payload).encode())
         proc.stdin.close()
     except Exception as e:
-        ev_mod.append_event(run_id, terminal_event("error", f"failed to write to {module} stdin: {e}"))
+        _publish(terminal_event("error", f"failed to write to {module} stdin: {e}"))
         try:
             proc.kill()
         except Exception:
@@ -191,7 +202,7 @@ def drive_child_subprocess(
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
-        ev_mod.append_event(run_id, event)
+        _publish(event)
         if event.get("type") == "run_finished":
             terminal = event
 
@@ -204,10 +215,13 @@ def drive_child_subprocess(
         cancelled = bool(st and st.cancelled)
         if cancelled or rc < 0:
             detail = "cancelled by user" if cancelled else f"{module} killed (rc={rc})"
-            ev_mod.append_event(run_id, terminal_event("cancelled", detail))
+            _publish(terminal_event("cancelled", detail))
         else:
-            ev_mod.append_event(
-                run_id, terminal_event("error", f"{module} exited rc={rc}: {stderr_text[-1000:]}")
+            _publish(
+                terminal_event(
+                    "error",
+                    f"{module} exited rc={rc}: {stderr_text[-1000:]}",
+                )
             )
     return terminal
 
@@ -217,6 +231,7 @@ def run_workflow_streaming(
     workflow: dict,
     inputs: dict[str, Any],
     default_model: str = "",
+    on_event: Callable[[dict], None] | None = None,
 ) -> None:
     """Run a workflow in a child subprocess. Blocks until the child exits.
 
@@ -244,7 +259,13 @@ def run_workflow_streaming(
                 "total_cost": 0.0,
             }
 
-        drive_child_subprocess(run_id, "app.runner.child", payload, _terminal)
+        drive_child_subprocess(
+            run_id,
+            "app.runner.child",
+            payload,
+            _terminal,
+            on_event=on_event,
+        )
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
@@ -253,12 +274,44 @@ def run_workflow_sync(
     workflow: dict,
     inputs: dict[str, Any],
     default_model: str = "",
+    cancel_event: threading.Event | None = None,
+    on_event: Callable[[dict], None] | None = None,
 ) -> dict:
     """Compat wrapper. Runs a workflow to completion and materializes the
-    legacy result shape: `{status, error, outputs, node_runs, total_cost}`."""
+    legacy result shape: `{status, error, outputs, node_runs, total_cost}`.
+
+    Synchronous callers have no WebSocket subscribers, so discard the
+    temporary in-memory event stream after materialising the result.
+    """
     run_id = "sync-" + uuid.uuid4().hex[:8]
-    run_workflow_streaming(run_id, workflow, inputs, default_model)
-    return materialize_run_result(run_id)
+    watcher_stop = threading.Event()
+    watcher: threading.Thread | None = None
+    # Pre-create the state so cancellation during the subprocess spawn window
+    # is remembered and honored as soon as the child is attached.
+    ev_mod.get_or_create(run_id)
+    if cancel_event is not None:
+        def _watch_cancel() -> None:
+            while not watcher_stop.wait(0.05):
+                if cancel_event.is_set():
+                    ev_mod.cancel(run_id)
+                    return
+
+        watcher = threading.Thread(target=_watch_cancel, daemon=True)
+        watcher.start()
+    try:
+        run_workflow_streaming(
+            run_id,
+            workflow,
+            inputs,
+            default_model,
+            on_event=on_event,
+        )
+        return materialize_run_result(run_id)
+    finally:
+        watcher_stop.set()
+        if watcher is not None:
+            watcher.join(timeout=0.2)
+        ev_mod.discard(run_id)
 
 
 def materialize_run_result(run_id: str) -> dict:
