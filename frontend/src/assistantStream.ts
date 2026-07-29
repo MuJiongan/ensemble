@@ -143,6 +143,12 @@ function mapOrchestratorWireEvent(ev: OrchestratorEvent): AssistantStreamEvent[]
   if (ev.kind === 'context_compacted') {
     return [{ type: 'context_compacted', summarized: ev.summarized }];
   }
+  if (ev.kind === 'rate_limit_retry') {
+    return [{
+      type: 'notice',
+      text: `provider overloaded — retrying in ${ev.delay_seconds}s (${ev.attempt}/${ev.max_retries})`,
+    }];
+  }
   if (ev.kind === 'error') {
     return [{ type: 'error', message: ev.message }];
   }
@@ -179,6 +185,12 @@ function mapCallChatWireEvent(ev: CallChatTurnEvent): AssistantStreamEvent[] {
   }
   if (ev.type === 'context_compacted') {
     return [{ type: 'context_compacted', summarized: ev.summarized }];
+  }
+  if (ev.type === 'rate_limit_retry') {
+    return [{
+      type: 'notice',
+      text: `provider overloaded — retrying in ${ev.delay_seconds}s (${ev.attempt}/${ev.max_retries})`,
+    }];
   }
   if (ev.type === 'error') {
     return [{ type: 'error', message: ev.error }];

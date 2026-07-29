@@ -25,6 +25,7 @@ from typing import Callable
 
 from app import compaction
 from app.catalog import models_dev as md
+from app.llm.rate_limit import RateLimitRetry, retry_rate_limited_stream
 from app.runner.tools import REGISTRY, TOOL_SCHEMAS, mcp_unavailable_error, prepare_tool_result
 
 
@@ -34,6 +35,7 @@ def call_llm(
     tools: list[str] | None = None,
     on_event: Callable[[dict], None] | None = None,
     call_id: str | None = None,
+    retry_rate_limits: bool = False,
     **opts,
 ) -> dict:
     """
@@ -50,6 +52,8 @@ def call_llm(
                   tagged with ``call_id``.
         call_id:  unique id for this call, included on every emitted event so
                   concurrent calls within one node can be disambiguated.
+        retry_rate_limits: retry pre-stream HTTP 429 responses after the shared
+                  bounded backoff schedule. Intended for interactive chats.
         **opts:   forwarded as additional fields in the request body.
 
     Returns:
@@ -76,6 +80,7 @@ def call_llm(
             access_token=os.getenv("LLM_API_KEY", ""),
             account_id=os.getenv("LLM_ACCOUNT_ID") or None,
             variant_opts=codex_plan.variant_opts,
+            retry_rate_limits=retry_rate_limits,
             **opts,
         )
 
@@ -116,18 +121,26 @@ def call_llm(
     def _summarize(head: list[dict], prompt: str) -> str:
         """Run one non-tool model round to summarize ``head`` into an anchor."""
         parts: list[str] = []
-        for item in exec_plan.stream_round(
-            model=model,
-            messages=[*head, {"role": "user", "content": prompt}],
-            tool_schemas=[],
-            base_url=exec_plan.base_url,
-            api_key=api_key,
-            variant_opts=exec_plan.variant_opts,
-            extra_headers=exec_plan.extra_headers,
-            model_output_limit=exec_plan.model_output_limit,
-            cost=exec_plan.cost,
-            streaming=False,
-        ):
+
+        def _stream():
+            return exec_plan.stream_round(
+                model=model,
+                messages=[*head, {"role": "user", "content": prompt}],
+                tool_schemas=[],
+                base_url=exec_plan.base_url,
+                api_key=api_key,
+                variant_opts=exec_plan.variant_opts,
+                extra_headers=exec_plan.extra_headers,
+                model_output_limit=exec_plan.model_output_limit,
+                cost=exec_plan.cost,
+                streaming=False,
+            )
+
+        stream = retry_rate_limited_stream(_stream) if retry_rate_limits else _stream()
+        for item in stream:
+            if isinstance(item, RateLimitRetry):
+                _emit_rate_limit_retry(item)
+                continue
             if item[0] == "done":
                 return (item[1]["message"].get("content") or "").strip()
             if item[0] == "text":
@@ -175,6 +188,14 @@ def call_llm(
             ev = {**ev, "call_id": call_id}
         on_event(ev)
 
+    def _emit_rate_limit_retry(retry: RateLimitRetry) -> None:
+        _emit({
+            "type": "rate_limit_retry",
+            "attempt": retry.attempt,
+            "max_retries": retry.max_retries,
+            "delay_seconds": retry.delay_seconds,
+        })
+
     # No turn cap — the agent loop runs until the LLM produces a final message
     # with no tool calls. Node code that hangs is the user's cancel button to
     # address; matches the orchestrator runtime model (see app/runner/child.py
@@ -184,19 +205,31 @@ def call_llm(
             _emit({"type": "llm_round_started", "round": round_idx})
         assembled_msg: dict | None = None
         round_usage: dict = {}
-        for item in exec_plan.stream_round(
-            model=model,
-            messages=messages,
-            tool_schemas=tool_schemas,
-            base_url=exec_plan.base_url,
-            api_key=api_key,
-            variant_opts=exec_plan.variant_opts,
-            extra_headers=exec_plan.extra_headers,
-            model_output_limit=exec_plan.model_output_limit,
-            cost=exec_plan.cost,
-            streaming=streaming,
-            extra_body=opts,
-        ):
+
+        def _stream_round():
+            return exec_plan.stream_round(
+                model=model,
+                messages=messages,
+                tool_schemas=tool_schemas,
+                base_url=exec_plan.base_url,
+                api_key=api_key,
+                variant_opts=exec_plan.variant_opts,
+                extra_headers=exec_plan.extra_headers,
+                model_output_limit=exec_plan.model_output_limit,
+                cost=exec_plan.cost,
+                streaming=streaming,
+                extra_body=opts,
+            )
+
+        round_stream = (
+            retry_rate_limited_stream(_stream_round)
+            if retry_rate_limits
+            else _stream_round()
+        )
+        for item in round_stream:
+            if isinstance(item, RateLimitRetry):
+                _emit_rate_limit_retry(item)
+                continue
             kind = item[0]
             if kind == "text":
                 _emit({"type": "llm_call_chunk", "kind": "content", "round": round_idx, "delta": item[1]})

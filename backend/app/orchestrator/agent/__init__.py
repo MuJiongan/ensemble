@@ -26,6 +26,7 @@ from typing import Iterator
 from sqlalchemy.orm import Session as DbSession
 
 from app import compaction, models
+from app.llm.rate_limit import RateLimitRetry, retry_rate_limited_stream
 from app.orchestrator import tools as orch_tools
 from app.orchestrator.prompt import (
     build_system_prompt,
@@ -210,9 +211,18 @@ def _summarize_orch(
 ) -> str:
     """Run one non-tool model round to summarize ``head`` into an anchor."""
     parts: list[str] = []
-    for kind, payload in _resolve_llm_stream(
-        db, model, [*head, {"role": "user", "content": prompt}], [], cancel_event
-    ):
+    def _stream():
+        return _resolve_llm_stream(
+            db, model, [*head, {"role": "user", "content": prompt}], [], cancel_event
+        )
+
+    for item in retry_rate_limited_stream(_stream, cancel_event=cancel_event):
+        # Compaction runs inside an already-active agent turn, so its retry
+        # notices are not separately rendered. The main response stream below
+        # does surface the same control item to the chat UI.
+        if isinstance(item, RateLimitRetry):
+            continue
+        kind, payload = item
         if kind == "text":
             parts.append(payload)
         elif kind == "done":
@@ -371,8 +381,23 @@ def run_turn(
             # the "done" marker; we only persist *once* per round.
             assembled_msg: dict | None = None
             round_usage: dict = {}
-            stream = _resolve_llm_stream(db, model, messages, tool_specs, cancel_event)
-            for kind, payload in stream:
+
+            def _stream():
+                return _resolve_llm_stream(
+                    db, model, messages, tool_specs, cancel_event
+                )
+
+            stream = retry_rate_limited_stream(_stream, cancel_event=cancel_event)
+            for item in stream:
+                if isinstance(item, RateLimitRetry):
+                    yield {
+                        "kind": "rate_limit_retry",
+                        "attempt": item.attempt,
+                        "max_retries": item.max_retries,
+                        "delay_seconds": item.delay_seconds,
+                    }
+                    continue
+                kind, payload = item
                 if kind == "text":
                     yield {"kind": "assistant_text_chunk", "text": payload}
                 elif kind == "thinking":

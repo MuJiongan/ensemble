@@ -448,6 +448,7 @@ export type OrchestratorEvent =
   // stay within the model's context window. Purely informational — the chat
   // shows a divider so the user knows context was compacted mid-turn.
   | { kind: 'context_compacted'; summarized?: number }
+  | { kind: 'rate_limit_retry'; attempt: number; max_retries: number; delay_seconds: number }
   | { kind: 'error'; message: string }
   | { kind: 'done' };
 
@@ -519,6 +520,13 @@ export type CallChatTurnEvent =
       round?: number;
     }
   | { type: 'context_compacted'; call_id?: string; summarized: number }
+  | {
+      type: 'rate_limit_retry';
+      call_id?: string;
+      attempt: number;
+      max_retries: number;
+      delay_seconds: number;
+    }
   | {
       type: 'run_finished';
       status: RunStatus;
