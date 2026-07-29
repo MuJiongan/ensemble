@@ -28,6 +28,7 @@ import httpx
 
 from app import compaction
 from app.catalog import models_dev as md
+from app.llm.rate_limit import RateLimitRetry, retry_rate_limited_stream
 from app.llm.openai_responses import (
     _variant_body,
     parse_responses_sse,
@@ -176,6 +177,7 @@ def call_codex_chat(
     access_token: str,
     account_id: Optional[str],
     variant_opts: dict | None = None,
+    retry_rate_limits: bool = False,
     **opts,
 ) -> dict:
     """Node-runtime entry point — mirrors ``runner.llm.call_llm``. Runs the
@@ -210,13 +212,34 @@ def call_codex_chat(
             ev = {**ev, "call_id": call_id}
         on_event(ev)
 
+    def _emit_rate_limit_retry(retry: RateLimitRetry) -> None:
+        _emit({
+            "type": "rate_limit_retry",
+            "attempt": retry.attempt,
+            "max_retries": retry.max_retries,
+            "delay_seconds": retry.delay_seconds,
+        })
+
+    def _stream(msgs: list[dict], specs: list[dict]):
+        def _factory():
+            return call_codex_stream(
+                model,
+                msgs,
+                specs,
+                access_token,
+                account_id,
+                variant_opts=variant_opts,
+            )
+
+        return retry_rate_limited_stream(_factory) if retry_rate_limits else _factory()
+
     def _summarize(head: list[dict], prompt: str) -> str:
         """Run one non-tool Responses-API round to summarize ``head``."""
         parts: list[str] = []
-        for item in call_codex_stream(
-            model, [*head, {"role": "user", "content": prompt}], [],
-            access_token, account_id, variant_opts=variant_opts,
-        ):
+        for item in _stream([*head, {"role": "user", "content": prompt}], []):
+            if isinstance(item, RateLimitRetry):
+                _emit_rate_limit_retry(item)
+                continue
             if item[0] == "done":
                 return (item[1]["message"].get("content") or "").strip()
             if item[0] == "text":
@@ -257,10 +280,10 @@ def call_codex_chat(
         round_usage: dict = {}
 
         if streaming:
-            for item in call_codex_stream(
-                model, messages, tool_schemas, access_token, account_id,
-                variant_opts=variant_opts,
-            ):
+            for item in _stream(messages, tool_schemas):
+                if isinstance(item, RateLimitRetry):
+                    _emit_rate_limit_retry(item)
+                    continue
                 kind = item[0]
                 if kind == "text":
                     _emit({
@@ -293,10 +316,10 @@ def call_codex_chat(
                     break
         else:
             # Non-streaming fallback: drain the stream with no callbacks.
-            for item in call_codex_stream(
-                model, messages, tool_schemas, access_token, account_id,
-                variant_opts=variant_opts,
-            ):
+            for item in _stream(messages, tool_schemas):
+                if isinstance(item, RateLimitRetry):
+                    _emit_rate_limit_retry(item)
+                    continue
                 if item[0] == "done":
                     assembled_msg = item[1]["message"]
                     round_usage = item[1].get("usage") or {}

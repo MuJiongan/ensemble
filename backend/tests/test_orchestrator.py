@@ -1650,6 +1650,53 @@ def test_run_turn_streams_chunks_executes_tools_and_persists(db, workflow, monke
     assert msgs[3].content == " done."
 
 
+def test_run_turn_retries_429_and_surfaces_backoff_notices(db, workflow, monkeypatch):
+    from app.llm import rate_limit
+
+    monkeypatch.setenv("DEFAULT_ORCHESTRATOR_MODEL", "test/model")
+    monkeypatch.setattr(rate_limit, "RATE_LIMIT_RETRY_DELAYS", (0, 0, 0, 0, 0))
+    sess = models.Session(workflow_id=workflow.id)
+    db.add(sess)
+    db.commit()
+    db.refresh(sess)
+    attempts = 0
+
+    def fake_stream(model, messages, tool_specs, cancel_event=None):
+        def events():
+            nonlocal attempts
+            attempts += 1
+            if attempts <= 2:
+                raise RuntimeError("LLM 429: overloaded")
+            yield ("text", "recovered")
+            yield (
+                "done",
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "recovered",
+                        "tool_calls": [],
+                    },
+                    "usage": {},
+                },
+            )
+
+        return events()
+
+    monkeypatch.setattr(orch_agent, "_call_llm_stream", fake_stream)
+
+    events = list(orch_agent.run_turn(db, sess.id, "hello"))
+
+    assert attempts == 3
+    retries = [event for event in events if event["kind"] == "rate_limit_retry"]
+    assert [event["attempt"] for event in retries] == [1, 2]
+    assert all(event["max_retries"] == 5 for event in retries)
+    assert any(
+        event.get("kind") == "assistant_text_chunk" and event.get("text") == "recovered"
+        for event in events
+    )
+    assert events[-1] == {"kind": "done"}
+
+
 def test_run_turn_does_not_wait_for_run_workflow(db, workflow, monkeypatch):
     """`run_workflow` should resolve to the LLM with the start result, not
     block the orchestrator turn until the background run finishes."""

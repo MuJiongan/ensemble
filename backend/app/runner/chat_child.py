@@ -55,7 +55,14 @@ def main() -> None:
 
     cancelled = False
     try:
-        result = ctx.agent(model=model, prompt=messages, tools=tools)
+        result = ctx.agent(
+            model=model,
+            prompt=messages,
+            tools=tools,
+            # Continued chats should ride out short provider overloads instead
+            # of making the user resend the same turn manually.
+            retry_rate_limits=True,
+        )
     except KeyboardInterrupt:
         cancelled = True
         _emit({

@@ -188,6 +188,7 @@ class Ctx:
         prompt=None,
         tools=None,
         label: str | None = None,
+        retry_rate_limits: bool = True,
         **opts,
     ) -> dict:
         m = model or self._default_model
@@ -212,6 +213,10 @@ class Ctx:
                 tools=tools,
                 on_event=self._on_event,
                 call_id=call_id,
+                # Interactive continuations and workflow-node agents share the
+                # same bounded overload recovery. A caller can explicitly opt
+                # out for a latency-sensitive one-shot call.
+                retry_rate_limits=retry_rate_limits,
                 **opts,
             )
         except Exception as e:
