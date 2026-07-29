@@ -670,8 +670,11 @@ export default function App() {
   const enterSnapshotView = async (runId: string) => {
     try {
       const run = await api.getRun(runId);
-      if (!run.workflow_snapshot) return;
+      if (!run.workflow_snapshot) return false;
       markRunHistoryAvailable(run.workflow_id);
+      // A selected workflow run owns the left project stage. Close any
+      // one-off agent inspector so the run snapshot can replace it.
+      setSelectedInlineAgent(null);
       setViewingRun(run);
       setSelectedSnapshotNodeId(null);
       setSelectedNodeId(null);
@@ -688,8 +691,10 @@ export default function App() {
         // Attaching is a no-op if this run's stream is already open.
         attachToRunRef.current(run.id, run.workflow_id, run.status, /* executesOnSnapshot */ true);
       }
+      return true;
     } catch {
       /* fetch failure: leave view as-is */
+      return false;
     }
   };
   const exitSnapshotView = () => {
@@ -1870,12 +1875,14 @@ export default function App() {
                         onInspectAgent={inspectInlineAgent}
                         hideHeader
                         onViewRun={(runId) => {
-                          // Snapshot view renders inside the workspace tab —
-                          // flip back from chat so the run panel is actually
-                          // visible after the click.
-                          setRightPanelMode('workspace');
-                          setMobilePanelMode('workspace');
-                          void enterSnapshotView(runId);
+                          // Keep the desktop conversation fixed on the right;
+                          // the selected run replaces the project/agent stage
+                          // on the left. Narrow screens reveal that stage once
+                          // the snapshot has loaded successfully.
+                          setRightPanelMode('chat');
+                          void enterSnapshotView(runId).then((opened) => {
+                            if (opened) setMobilePanelMode('canvas');
+                          });
                         }}
                       />
                     </div>
@@ -1957,7 +1964,11 @@ export default function App() {
                           workflow={detail}
                           currentRun={currentRun}
                           onStart={startRun}
-                          onViewRunOnCanvas={enterSnapshotView}
+                          onViewRunOnCanvas={(runId) => {
+                            void enterSnapshotView(runId).then((opened) => {
+                              if (opened) setMobilePanelMode('canvas');
+                            });
+                          }}
                           onRunDeleted={(runId) => {
                             forgetRunEverywhere(runId);
                             void refreshRunHistoryAvailability(detail.id);
