@@ -468,7 +468,10 @@ def list_runs(wid: str, db: Session = Depends(get_db)):
             models.Run.ended_at,
             models.Run.total_cost,
         )
-        .filter(models.Run.workflow_id == wid)
+        .filter(
+            models.Run.workflow_id == wid,
+            models.Run.kind != "inline_agent",
+        )
         .order_by(models.Run.started_at.desc())
         .all()
     )

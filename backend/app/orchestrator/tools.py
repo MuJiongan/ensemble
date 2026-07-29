@@ -342,12 +342,162 @@ def get_mcp_tool_schema(db: DbSession, wid: str, *, server: str, tool: str) -> d
 
 
 # ---------------------------------------------------------------------------
-# run trigger — kicks off a workflow run with explicit inputs and returns
-# immediately with `{run_id, status: "running"}`. The agent loop detects
-# this shape and emits a `run_started` chat event so the frontend can attach
-# its run panel to the live WS. The orchestrator does not wait for the run
-# to finish before continuing.
+# execution tools — `run_agent` blocks on one ephemeral node and returns its
+# outputs inline; `run_workflow` starts the persisted graph in the background
+# and emits a run id for the workspace UI.
 # ---------------------------------------------------------------------------
+
+
+def run_agent(
+    db: DbSession,
+    wid: str,
+    *,
+    name: str,
+    description: str,
+    code: str,
+    _cancel_event: Any = None,
+    _event_callback: Any = None,
+) -> dict:
+    """Execute node-shaped code inline and wait for its outputs.
+
+    The supplied code uses the same ``run(inputs, ctx)`` contract as a normal
+    node (with an empty inputs dict), but needs no declared ports because it has
+    no edges or rerun form. It never touches the canvas or user-facing run
+    history. A hidden completed NodeRun owns the inspectable trace and resumable
+    LLM transcripts; the orchestrator tool call remains its visible record.
+    """
+    _get_workflow(db, wid)
+
+    clean_name = (name or "").strip()
+    clean_code = (code or "").strip()
+    if not clean_name:
+        return {"error": "name must be non-empty"}
+    if not clean_code:
+        return {"error": "code must be non-empty"}
+
+    # Resolve the same default model a persisted node run would use.
+    import os as _os
+    default_model = (_os.getenv("DEFAULT_NODE_MODEL") or "").strip()
+    if not default_model:
+        setting = db.query(models.Setting).filter_by(key="default_node_model").first()
+        default_model = (setting.value if setting and setting.value else "").strip()
+    if not default_model:
+        return {
+            "error": (
+                "No node model configured. Ask the user to set a default node model "
+                "in Settings before running."
+            )
+        }
+
+    # Reuse the normal isolated node runtime. Events are forwarded into the
+    # orchestrator turn (not the workspace run channel) so the inline card can
+    # render the same live trace as a normal node while this call blocks.
+    from app.runner.runner import run_workflow_sync
+    from app.runner.service import _split_call_transcripts
+
+    node_id = "inline_agent"
+    workflow = {
+        "id": "inline_agent",
+        "input_node_id": node_id,
+        "output_node_id": node_id,
+        "nodes": [
+            {
+                "id": node_id,
+                "name": clean_name,
+                "description": (description or "").strip(),
+                "code": clean_code + "\n",
+                # Port declarations only matter to a persisted graph. Empty
+                # outputs preserve the complete dict returned by the code.
+                "inputs": [],
+                "outputs": [],
+                "position": {"x": 0, "y": 0},
+            }
+        ],
+        "edges": [],
+    }
+    started_at = datetime.utcnow()
+    result = run_workflow_sync(
+        workflow,
+        {},
+        default_model,
+        cancel_event=_cancel_event,
+        on_event=_event_callback,
+    )
+    ended_at = datetime.utcnow()
+    node_run = next(iter(result.get("node_runs") or []), {})
+    lean_calls, transcripts = _split_call_transcripts(node_run.get("llm_calls") or [])
+
+    # Persist the completed execution under a private run kind. It is excluded
+    # from every run list and never emits run_started, but gives continuation
+    # chat the exact NodeRun + CallTranscript ownership it already understands.
+    run_status = result.get("status") or "error"
+    raw_node_status = node_run.get("status")
+    node_status = raw_node_status if raw_node_status in {
+        "pending", "running", "success", "error", "skipped"
+    } else ("success" if run_status == "success" else "error")
+    hidden_run = models.Run(
+        workflow_id=wid,
+        kind="inline_agent",
+        status=run_status,
+        inputs={},
+        outputs=result.get("outputs") or {},
+        error=result.get("error"),
+        started_at=started_at,
+        ended_at=ended_at,
+        total_cost=float(result.get("total_cost") or 0.0),
+        workflow_snapshot=workflow,
+    )
+    db.add(hidden_run)
+    db.flush()
+    persisted_node_run = models.NodeRun(
+        run_id=hidden_run.id,
+        node_id=node_id,
+        status=node_status,
+        inputs=node_run.get("inputs") or {},
+        outputs=node_run.get("outputs") or result.get("outputs") or {},
+        logs=node_run.get("logs") or [],
+        llm_calls=lean_calls,
+        tool_calls=node_run.get("tool_calls") or [],
+        error=node_run.get("error") or result.get("error"),
+        duration_ms=int(node_run.get("duration_ms") or 0),
+        cost=float(node_run.get("cost") or result.get("total_cost") or 0.0),
+    )
+    db.add(persisted_node_run)
+    db.flush()
+    for call_id, messages in transcripts:
+        db.add(models.CallTranscript(
+            node_run_id=persisted_node_run.id,
+            call_id=call_id,
+            messages=messages,
+        ))
+    db.commit()
+
+    display_node_run = {
+        "id": persisted_node_run.id,
+        "node_id": node_id,
+        "status": persisted_node_run.status,
+        "inputs": persisted_node_run.inputs or {},
+        "outputs": persisted_node_run.outputs or {},
+        "logs": persisted_node_run.logs or [],
+        "llm_calls": persisted_node_run.llm_calls or [],
+        "tool_calls": persisted_node_run.tool_calls or [],
+        "error": persisted_node_run.error,
+        "duration_ms": persisted_node_run.duration_ms or 0,
+        "cost": persisted_node_run.cost or 0.0,
+    }
+    return {
+        "status": result.get("status", "error"),
+        "outputs": result.get("outputs") or {},
+        "error": result.get("error"),
+        "duration_ms": int(node_run.get("duration_ms") or 0),
+        "total_cost": float(result.get("total_cost") or 0.0),
+        # Stored/emitted for the chat UI; persistence._row_to_message removes
+        # this field before the result is replayed to the orchestrator model.
+        "_display": {
+            "run_id": hidden_run.id,
+            "node_run": display_node_run,
+        },
+    }
 
 
 def run_workflow(
@@ -552,7 +702,10 @@ def list_runs(
     if kind is not None and kind not in {"user", "orchestrator"}:
         raise ValueError('kind must be "user" or "orchestrator"')
 
-    query = db.query(models.Run).filter(models.Run.workflow_id == wid)
+    query = db.query(models.Run).filter(
+        models.Run.workflow_id == wid,
+        models.Run.kind != "inline_agent",
+    )
     if kind is not None:
         query = query.filter(models.Run.kind == kind)
 
@@ -763,6 +916,7 @@ REGISTRY = {
     "set_input_node": set_input_node,
     "set_output_node": set_output_node,
     "clean_canvas": clean_canvas,
+    "run_agent": run_agent,
     "run_workflow": run_workflow,
     "cancel_run": cancel_run,
     "list_runs": list_runs,
@@ -781,6 +935,7 @@ NON_GRAPH_MUTATING_TOOLS: set[str] = {
     "get_mcp_tool_schema",
     "list_runs",
     "view_run",
+    "run_agent",
     "run_workflow",
     "cancel_run",
     "rename_project",
@@ -1018,6 +1173,53 @@ TOOL_SCHEMAS: dict[str, dict] = {
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    "run_agent": {
+        "type": "function",
+        "function": {
+            "name": "run_agent",
+            "description": (
+                "Execute one bounded agent inline without changing the workspace. Supply "
+                "self-contained Python code implementing def run(inputs, ctx). The tool "
+                "passes an empty inputs dict; the code contains the one-off task and logic. "
+                "No input/output port declarations are needed, and the returned dict becomes "
+                "`outputs`. The tool "
+                "runs that code in the isolated node runtime, BLOCKS until it finishes, "
+                "then returns its outputs directly. It creates no canvas node or visible "
+                "run-history entry, so never call list_runs or view_run for its result. "
+                "Its inline chat card exposes the same code, live run trace, logs, direct "
+                "tool calls, and continuable LLM-call views as a normal node. Its code has the "
+                "same ctx.agent and ctx.tools capabilities as any node. Use graph tools "
+                "plus run_workflow when the work belongs in a "
+                "reusable, inspectable, multi-stage, or parallel workflow."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Short snake_case label for the inline agent.",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "One-line description of what this node does.",
+                    },
+                    "code": {
+                        "type": "string",
+                        "description": (
+                            "Complete Python node code implementing def run(inputs, ctx). "
+                            "Write it exactly as you would for configure_node, including "
+                            "ctx.agent and/or direct ctx.tools calls as needed."
+                        ),
+                    },
+                },
+                "required": [
+                    "name",
+                    "description",
+                    "code",
+                ],
+            },
+        },
+    },
     "run_workflow": {
         "type": "function",
         "function": {
@@ -1200,7 +1402,15 @@ def _active_run_id(db: DbSession, wid: str) -> str | None:
     return None
 
 
-def execute(db: DbSession, wid: str, name: str, args: dict) -> dict:
+def execute(
+    db: DbSession,
+    wid: str,
+    name: str,
+    args: dict,
+    *,
+    cancel_event: Any = None,
+    event_callback: Any = None,
+) -> dict:
     """Dispatch a tool call. Returns either the tool's result dict or
     {"error": "..."} on failure — never raises, so the agent loop can keep
     going and let the LLM self-correct."""
@@ -1222,7 +1432,11 @@ def execute(db: DbSession, wid: str, name: str, args: dict) -> dict:
                 )
             }
     try:
-        return fn(db, wid, **(args or {}))
+        call_args = dict(args or {})
+        if name == "run_agent":
+            call_args["_cancel_event"] = cancel_event
+            call_args["_event_callback"] = event_callback
+        return fn(db, wid, **call_args)
     except TypeError as e:
         # bad arguments — surface to LLM as an error result
         db.rollback()

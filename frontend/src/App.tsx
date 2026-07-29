@@ -3,6 +3,8 @@ import { TopBar } from './components/TopBar';
 import { Canvas } from './components/Canvas';
 import { ChatHeaderControls, ChatPanel, type ChatBlock, type ChatMessage } from './components/ChatPanel';
 import { NodePanel } from './components/NodePanel';
+import { RunAgentInspector } from './components/RunAgentInspector';
+import type { RunAgentInspection, RunAgentResult } from './components/RunAgentCard';
 import { aggregateEvents } from './components/NodeTraceCard';
 import { RunPanel } from './components/RunPanel';
 import { SettingsPanel } from './components/Settings';
@@ -40,11 +42,25 @@ import { useNodeRunEvents } from './runTraceStream';
 import { getCatalog, findModel, CATALOG_CHANGED_EVENT, type Catalog } from './providerCatalog';
 import type {
   Workflow, WorkflowDetail, NodeRunStatus, Run, RunSummary, CurrentRun, ModelSelection,
-  CallChat, RunStatus,
+  CallChat, RunEvent, RunStatus,
 } from './types';
 
 type View = 'workflow' | 'settings';
 type MobilePanelMode = 'canvas' | 'workspace' | 'chat';
+
+interface InlineAgentStreamRecord {
+  id: string;
+  events: RunEvent[];
+  finished: boolean;
+  result?: unknown;
+}
+
+interface SelectedInlineAgent {
+  workflowId: string;
+  inspection: RunAgentInspection;
+  streamIndex: number | null;
+  inspectionKey: string;
+}
 
 // How often to re-verify that OAuth LLM provider sessions are still alive
 // server-side. The status check also refreshes a near-expiry token, so this
@@ -65,6 +81,42 @@ function hasCredsForPreset(s: ReturnType<typeof loadSettings>): boolean {
 const contKey = (c: CallChat) => `${c.node_run_id}:${c.call_id}`;
 const runIsActive = (run: Pick<RunSummary, 'status'>) =>
   run.status === 'running' || run.status === 'pending';
+
+function appendCompactedRunEvents(existing: RunEvent[], incoming: RunEvent[]): RunEvent[] {
+  if (incoming.length === 0) return existing;
+  const next = [...existing];
+  for (const event of incoming) {
+    const last = next[next.length - 1];
+    if (
+      last?.type === 'llm_call_chunk' &&
+      event.type === 'llm_call_chunk' &&
+      last.node_id === event.node_id &&
+      last.call_id === event.call_id &&
+      last.kind === event.kind &&
+      last.round === event.round &&
+      last.tc_index === event.tc_index &&
+      last.tool === event.tool
+    ) {
+      next[next.length - 1] = { ...last, delta: last.delta + event.delta };
+    } else {
+      next.push(event);
+    }
+  }
+  return next;
+}
+
+function mcpAuthServersFromEvent(event: RunEvent): string[] {
+  if (event.type === 'mcp_status') {
+    return Object.entries(event.servers)
+      .filter(([, status]) => status.status === 'needs_auth')
+      .map(([name]) => name);
+  }
+  if (event.type === 'tool_call_finished') {
+    const result = event.result as { error_type?: string; server?: string } | null | undefined;
+    if (result?.error_type === 'needs_auth' && result.server) return [result.server];
+  }
+  return [];
+}
 
 function resetActiveTurnForReplay(messages: ChatMessage[]): ChatMessage[] {
   if (messages.length === 0) {
@@ -124,6 +176,10 @@ export default function App() {
   const [orchestratingIds, setOrchestratingIds] = useState<Set<string>>(new Set());
   const [orchestratorRunIdsByWorkflow, setOrchestratorRunIdsByWorkflow] =
     useState<Record<string, string[]>>({});
+  // Navigation to run history is independent from whether the live canvas
+  // currently has nodes. clean_canvas deliberately preserves normal runs.
+  const [hasRunHistoryByWorkflow, setHasRunHistoryByWorkflow] =
+    useState<Record<string, boolean>>({});
   const sessionByWorkflowRef = useRef<Record<string, string>>({});
   useEffect(() => {
     sessionByWorkflowRef.current = sessionByWorkflow;
@@ -160,6 +216,24 @@ export default function App() {
   const [activeLiveCall, setActiveLiveCall] = useState<
     { runId: string; nodeId: string; callId: string; label: string } | null
   >(null);
+  // One-off agents render in the left project pane. Their live events are
+  // retained per invocation so opening an inner call can reuse the established
+  // chat renderer on the right without creating a workspace run attachment.
+  const [inlineAgentStreams, setInlineAgentStreams] = useState<
+    Record<string, InlineAgentStreamRecord[]>
+  >({});
+  const inlineAgentSequenceRef = useRef(0);
+  const inlineAgentEventBuffersRef = useRef<Record<string, RunEvent[]>>({});
+  const inlineAgentEventTimersRef = useRef<Record<string, number>>({});
+  const inspectorSelectionSequenceRef = useRef(0);
+  const [selectedInlineAgent, setSelectedInlineAgent] =
+    useState<SelectedInlineAgent | null>(null);
+  const [activeInlineCall, setActiveInlineCall] = useState<{
+    workflowId: string;
+    streamIndex: number;
+    callId: string;
+    label: string;
+  } | null>(null);
   // Preserve composer text per chat context while navigating the UI.
   const [chatDraftByConversation, setChatDraftByConversation] = useState<Record<string, string>>({});
 
@@ -311,16 +385,7 @@ export default function App() {
     if (!currentRun || mcpAuthPromptedRef.current.has(currentRun.id)) return;
     const needing = new Set<string>();
     for (const ev of currentRun.events) {
-      if (ev.type === 'mcp_status') {
-        for (const [name, st] of Object.entries(ev.servers)) {
-          if (st.status === 'needs_auth') needing.add(name);
-        }
-      } else if (ev.type === 'tool_call_finished') {
-        // An MCP tool call that failed with an auth error mid-run (e.g. a
-        // token that expired after connect) carries this marker.
-        const r = ev.result as { error_type?: string; server?: string } | null | undefined;
-        if (r && r.error_type === 'needs_auth' && r.server) needing.add(r.server);
-      }
+      for (const server of mcpAuthServersFromEvent(ev)) needing.add(server);
     }
     if (needing.size > 0) {
       mcpAuthPromptedRef.current.add(currentRun.id);
@@ -476,13 +541,122 @@ export default function App() {
     });
   };
 
-  const { streamToOrchestrator, resumeOrchestratorStream, abortStream, dropWorkflow } = useOrchestratorStream({
+  const markRunHistoryAvailable = (wid: string) => {
+    setHasRunHistoryByWorkflow((prev) => (
+      prev[wid] ? prev : { ...prev, [wid]: true }
+    ));
+  };
+
+  const refreshRunHistoryAvailability = async (wid: string) => {
+    try {
+      const runs = await api.listRuns(wid);
+      setHasRunHistoryByWorkflow((prev) => ({ ...prev, [wid]: runs.length > 0 }));
+    } catch {
+      // Preserve the last known value when history cannot be refreshed.
+    }
+  };
+
+  const nextInlineAgentId = (wid: string) => (
+    `${wid}:inline-agent:${++inlineAgentSequenceRef.current}`
+  );
+
+  const flushInlineAgentEvents = (wid: string) => {
+    const timer = inlineAgentEventTimersRef.current[wid];
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      delete inlineAgentEventTimersRef.current[wid];
+    }
+    const pending = inlineAgentEventBuffersRef.current[wid];
+    if (!pending || pending.length === 0) return;
+    delete inlineAgentEventBuffersRef.current[wid];
+    setInlineAgentStreams((prev) => {
+      const records = [...(prev[wid] ?? [])];
+      let index = records.length - 1;
+      while (index >= 0 && records[index].finished) index -= 1;
+      if (index < 0) {
+        records.push({
+          id: nextInlineAgentId(wid),
+          events: appendCompactedRunEvents([], pending),
+          finished: false,
+        });
+      } else {
+        records[index] = {
+          ...records[index],
+          events: appendCompactedRunEvents(records[index].events, pending),
+        };
+      }
+      return { ...prev, [wid]: records };
+    });
+  };
+
+  const queueInlineAgentEvent = (wid: string, event: RunEvent) => {
+    const pending = inlineAgentEventBuffersRef.current[wid] ?? [];
+    pending.push(event);
+    inlineAgentEventBuffersRef.current[wid] = pending;
+    if (inlineAgentEventTimersRef.current[wid] !== undefined) return;
+    inlineAgentEventTimersRef.current[wid] = window.setTimeout(
+      () => flushInlineAgentEvents(wid),
+      33,
+    );
+  };
+
+  const clearInlineAgentEventBuffer = (wid: string) => {
+    const timer = inlineAgentEventTimersRef.current[wid];
+    if (timer !== undefined) window.clearTimeout(timer);
+    delete inlineAgentEventTimersRef.current[wid];
+    delete inlineAgentEventBuffersRef.current[wid];
+  };
+
+  useEffect(() => () => {
+    for (const timer of Object.values(inlineAgentEventTimersRef.current)) {
+      window.clearTimeout(timer);
+    }
+    inlineAgentEventTimersRef.current = {};
+    inlineAgentEventBuffersRef.current = {};
+  }, []);
+
+  const { streamToOrchestrator, resumeOrchestratorStream, dropWorkflow } = useOrchestratorStream({
     setChatByWorkflow,
     setOrchestratingIds,
     refreshDetail,
     refreshWorkflows,
     attachToRunRef,
-    onOrchestratorRunStarted: (wid, runId) => rememberOrchestratorRuns(wid, [runId]),
+    onOrchestratorRunStarted: (wid, runId) => {
+      rememberOrchestratorRuns(wid, [runId]);
+      markRunHistoryAvailable(wid);
+    },
+    onRunAgentStarted: (wid) => {
+      flushInlineAgentEvents(wid);
+      setInlineAgentStreams((prev) => ({
+        ...prev,
+        [wid]: [
+          ...(prev[wid] ?? []),
+          { id: nextInlineAgentId(wid), events: [], finished: false },
+        ],
+      }));
+    },
+    onRunAgentEvent: (wid, event) => {
+      queueInlineAgentEvent(wid, event);
+      const needing = mcpAuthServersFromEvent(event);
+      if (needing.length === 0) return;
+      setMcpAuthServers((prev) =>
+        prev ? Array.from(new Set([...prev, ...needing])) : needing,
+      );
+    },
+    onRunAgentFinished: (wid, result) => {
+      flushInlineAgentEvents(wid);
+      setInlineAgentStreams((prev) => {
+        const records = [...(prev[wid] ?? [])];
+        let index = records.length - 1;
+        while (index >= 0 && records[index].finished) index -= 1;
+        if (index < 0) {
+          records.push({ id: nextInlineAgentId(wid), events: [], finished: true, result });
+        } else {
+          records[index] = { ...records[index], finished: true, result };
+        }
+        return { ...prev, [wid]: records };
+      });
+    },
   });
   useEffect(() => {
     streamToOrchestratorRef.current = streamToOrchestrator;
@@ -497,6 +671,7 @@ export default function App() {
     try {
       const run = await api.getRun(runId);
       if (!run.workflow_snapshot) return;
+      markRunHistoryAvailable(run.workflow_id);
       setViewingRun(run);
       setSelectedSnapshotNodeId(null);
       setSelectedNodeId(null);
@@ -529,6 +704,8 @@ export default function App() {
     setSelectedSnapshotNodeId(null);
     setActiveContinuation(null);
     setActiveLiveCall(null);
+    setActiveInlineCall(null);
+    setSelectedInlineAgent(null);
     // Continuations belong to the previous workflow's runs — tear down any
     // in-flight turn sockets and drop their cached transcripts/model picks so
     // a stale stream can't mutate state under the newly-selected workflow.
@@ -668,6 +845,7 @@ export default function App() {
   const restoreActiveRuns = async (wid: string) => {
     try {
       const runs = await api.listRuns(wid);
+      setHasRunHistoryByWorkflow((prev) => ({ ...prev, [wid]: runs.length > 0 }));
       rememberOrchestratorRuns(
         wid,
         runs.filter((run) => run.kind === 'orchestrator').map((run) => run.id),
@@ -767,13 +945,10 @@ export default function App() {
     const sid = sessionByWorkflow[activeId];
     if (!sid) return;
     try { await api.cancelOrchestratorTurn(activeId, sid); } catch { /* ignore */ }
-    abortStream(activeId);
-    setOrchestratingIds((prev) => {
-      if (!prev.has(activeId)) return prev;
-      const s = new Set(prev);
-      s.delete(activeId);
-      return s;
-    });
+    // Keep the SSE attached after signalling cancellation. The backend still
+    // needs to emit the active tool's cancelled result and the terminal `done`
+    // event; aborting here strands its card in the local `pending` state even
+    // though the subprocess has already been stopped.
   };
 
   /**
@@ -821,6 +996,11 @@ export default function App() {
       const { [id]: _, ...rest } = prev;
       return rest;
     });
+    setHasRunHistoryByWorkflow((prev) => {
+      const { [id]: _, ...rest } = prev;
+      return rest;
+    });
+    clearInlineAgentEventBuffer(id);
     dropWorkflow(id);
     await refreshWorkflows();
   };
@@ -897,6 +1077,7 @@ export default function App() {
   const startRun = async (inputs: Record<string, unknown>) => {
     if (!detail) return;
     const run = await api.startRun(detail.id, inputs);
+    markRunHistoryAvailable(detail.id);
     attachToRun(run.id, detail.id, run.status);
     // Drop the user on the run's detail page so they can watch this specific
     // run's progress and see its inputs/outputs as they land. The run carries
@@ -938,7 +1119,17 @@ export default function App() {
     try {
       await api.clearSessionMessages(activeId, sid);
       clearOrchestratorRunsForWorkflow(activeId);
+      clearInlineAgentEventBuffer(activeId);
       setChatByWorkflow((prev) => ({ ...prev, [activeId]: [] }));
+      setInlineAgentStreams((prev) => {
+        if (!(activeId in prev)) return prev;
+        const { [activeId]: _, ...rest } = prev;
+        return rest;
+      });
+      setSelectedInlineAgent((current) =>
+        current?.workflowId === activeId ? null : current);
+      setActiveInlineCall((current) =>
+        current?.workflowId === activeId ? null : current);
     } catch (e) {
       setDialog({
         kind: 'alert',
@@ -957,6 +1148,43 @@ export default function App() {
     catalog && sel
       ? (findModel(catalog, sel.providerID, sel.modelID)?.variants ?? [])
       : [];
+
+  const inspectInlineAgent = (inspection: RunAgentInspection) => {
+    if (!activeId) return;
+    const records = inlineAgentStreams[activeId] ?? [];
+    let streamIndex: number | null = null;
+    const persistedRunId = inspection.result?._display?.run_id;
+    if (persistedRunId) {
+      for (let i = records.length - 1; i >= 0; i -= 1) {
+        const recordResult = records[i].result as RunAgentResult | undefined;
+        if (recordResult?._display?.run_id === persistedRunId) {
+          streamIndex = i;
+          break;
+        }
+      }
+    }
+    if (streamIndex === null && inspection.status === 'pending') {
+      for (let i = records.length - 1; i >= 0; i -= 1) {
+        if (!records[i].finished) {
+          streamIndex = i;
+          break;
+        }
+      }
+      if (streamIndex === null && records.length > 0) streamIndex = records.length - 1;
+    }
+    const inspectionKey = streamIndex !== null
+      ? records[streamIndex].id
+      : persistedRunId ?? `agent-selection:${++inspectorSelectionSequenceRef.current}`;
+    setSelectedInlineAgent({
+      workflowId: activeId,
+      inspection,
+      streamIndex,
+      inspectionKey,
+    });
+    setSelectedNodeId(null);
+    setSelectedSnapshotNodeId(null);
+    setMobilePanelMode('canvas');
+  };
 
   // "continue →" on a finished call: create-or-get its continuation, seed the
   // transcript on first open (re-opening must not clobber a live in-memory
@@ -979,6 +1207,7 @@ export default function App() {
               },
             });
       setActiveLiveCall(null);
+      setActiveInlineCall(null);
       setActiveContinuation(chat);
       setRightPanelMode('chat');
       setMobilePanelMode('chat');
@@ -995,7 +1224,36 @@ export default function App() {
   // from the run's live events.
   const openLiveCall = (runId: string, nodeId: string, callId: string, label: string) => {
     setActiveContinuation(null);
+    setActiveInlineCall(null);
     setActiveLiveCall({ runId, nodeId, callId, label });
+    setRightPanelMode('chat');
+    setMobilePanelMode('chat');
+  };
+
+  const openInlineLiveCall = (callId: string, label: string) => {
+    if (!selectedInlineAgent) return;
+    let streamIndex = selectedInlineAgent.streamIndex;
+    const records = inlineAgentStreams[selectedInlineAgent.workflowId] ?? [];
+    if (streamIndex === null) {
+      for (let i = records.length - 1; i >= 0; i -= 1) {
+        const trace = aggregateEvents(records[i].events).find(
+          (item) => item.node_id === 'inline_agent',
+        );
+        if (trace?.llmCalls.some((call) => call.call_id === callId)) {
+          streamIndex = i;
+          break;
+        }
+      }
+    }
+    if (streamIndex === null) return;
+    setActiveContinuation(null);
+    setActiveLiveCall(null);
+    setActiveInlineCall({
+      workflowId: selectedInlineAgent.workflowId,
+      streamIndex,
+      callId,
+      label,
+    });
     setRightPanelMode('chat');
     setMobilePanelMode('chat');
   };
@@ -1014,6 +1272,19 @@ export default function App() {
     return t?.llmCalls.find((c) => c.call_id === activeLiveCall.callId) ?? null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeLiveCall, activeLiveCallEvents]);
+
+  const inlineCallState = useMemo(() => {
+    if (!activeInlineCall) return null;
+    const record = inlineAgentStreams[activeInlineCall.workflowId]?.[activeInlineCall.streamIndex];
+    if (!record) return null;
+    const trace = aggregateEvents(record.events).find(
+      (item) => item.node_id === 'inline_agent',
+    );
+    const call = trace?.llmCalls.find(
+      (item) => item.call_id === activeInlineCall.callId,
+    ) ?? null;
+    return { record, call };
+  }, [activeInlineCall, inlineAgentStreams]);
 
   // When a live call's run finishes + persists, swap to its continuation so the
   // composer enables. Retries briefly — node_runs commit just after run_finished.
@@ -1080,9 +1351,81 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeLiveCall, liveRunStatus]);
 
+  // A blocking run_agent has no public live run id, but its terminal tool
+  // result contains the private trace ids after persistence. Once a watched
+  // call finishes successfully, use those ids to make the same seamless
+  // read-only-live → continuable-chat transition as a normal node call.
+  const inlineTerminalResult = inlineCallState?.record.result as RunAgentResult | undefined;
+  const inlineRunId = inlineTerminalResult?._display?.run_id;
+  const inlineNodeRunId = inlineTerminalResult?._display?.node_run?.id;
+  const inlineRecordFinished = inlineCallState?.record.finished ?? false;
+  const inlineCallStatus = inlineCallState?.call?.status;
+  useEffect(() => {
+    if (
+      !activeInlineCall ||
+      !inlineRecordFinished ||
+      inlineCallStatus !== 'done' ||
+      typeof inlineRunId !== 'string' ||
+      typeof inlineNodeRunId !== 'string'
+    ) {
+      return;
+    }
+    const target = activeInlineCall;
+    let cancelled = false;
+    let tries = 0;
+    let timer: number | undefined;
+    const attempt = async () => {
+      tries += 1;
+      try {
+        const chat = await api.viewCallChat(inlineRunId, inlineNodeRunId, target.callId);
+        if (cancelled) return;
+        const key = contKey(chat);
+        setCallChatMessages((prev) =>
+          prev[key] ? prev : { ...prev, [key]: messagesToChat(chat.messages) });
+        setCallChatModelById((prev) =>
+          prev[key]
+            ? prev
+            : {
+                ...prev,
+                [key]: {
+                  providerID: chat.provider_id,
+                  modelID: chat.model,
+                  variant: chat.variant || null,
+                },
+              });
+        setActiveInlineCall((current) => (
+          current?.workflowId === target.workflowId &&
+          current.streamIndex === target.streamIndex &&
+          current.callId === target.callId
+            ? null
+            : current
+        ));
+        setActiveContinuation(chat);
+        return;
+      } catch {
+        // The terminal tool event normally follows the DB commit, but retry a
+        // few times so this stays robust if event/persistence ordering changes.
+      }
+      if (!cancelled && tries < 6) timer = window.setTimeout(attempt, 300);
+    };
+    void attempt();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    activeInlineCall,
+    inlineRecordFinished,
+    inlineCallStatus,
+    inlineRunId,
+    inlineNodeRunId,
+  ]);
+
   // The active chat conversation: live > continuation > orchestrator.
   const cont = activeContinuation;
-  const activeChatDraftKey = activeLiveCall
+  const hasReadOnlyLiveCall = !!activeLiveCall || !!activeInlineCall;
+  const activeChatDraftKey = hasReadOnlyLiveCall
     ? null
     : cont
       ? `cont:${contKey(cont)}`
@@ -1106,28 +1449,32 @@ export default function App() {
   const orchestratorDraft = chatDraftByConversation[orchestratorDraftKey] ?? '';
   const chatMessages = activeLiveCall
     ? (liveCall ? liveCallToChat(liveCall) : [])
+    : activeInlineCall
+      ? (inlineCallState?.call ? liveCallToChat(inlineCallState.call) : [])
     : cont
       ? (callChatMessages[contKey(cont)] ?? [])
       : messages;
   // A live call is read-only (can't send while it streams / before it persists).
-  const chatDisabled = activeLiveCall
+  const chatDisabled = hasReadOnlyLiveCall
     ? true
     : cont
       ? streamingChatIds.has(contKey(cont))
       : isOrchestrating;
-  const chatSelection: ModelSelection | null = activeLiveCall
+  const chatSelection: ModelSelection | null = hasReadOnlyLiveCall
     ? null
     : cont
       ? (callChatModelById[contKey(cont)] ?? null)
       : orchestratorSelection;
   const chatModelLabel = activeLiveCall
     ? (liveCall?.model ?? '')
+    : activeInlineCall
+      ? (inlineCallState?.call?.model ?? '')
     : cont
       ? (chatSelection?.modelID ?? '')
       : orchestratorModel;
-  const conversationLabel = activeLiveCall?.label ?? cont?.label;
+  const conversationLabel = activeLiveCall?.label ?? activeInlineCall?.label ?? cont?.label;
   const onChatSend = (text: string) => {
-    if (activeLiveCall) return; // read-only while live
+    if (hasReadOnlyLiveCall) return;
     setChatDraft(activeChatDraftKey, '');
     if (cont) {
       void streamToCallChat(
@@ -1141,12 +1488,17 @@ export default function App() {
   };
   const onChatCancel = () => {
     if (activeLiveCall) return;
+    if (activeInlineCall) {
+      void cancelOrchestrator();
+      return;
+    }
     if (cont) cancelCallChat(contKey(cont));
     else void cancelOrchestrator();
   };
   const backToOrchestrator = () => {
     setActiveContinuation(null);
     setActiveLiveCall(null);
+    setActiveInlineCall(null);
   };
   // Model edits: a continuation's stay per-call (in memory); the orchestrator's
   // persist to Settings. A live call's model is fixed, so no picker (below).
@@ -1181,6 +1533,31 @@ export default function App() {
         ? 'ready'
         : 'idle';
 
+  // Keep a new/one-off project chat-first until the orchestrator deliberately
+  // builds a workflow. Inline run_agent calls never materialise on the canvas.
+  const hasCanvas = !!detail && (detail.nodes.length > 0 || !!viewingRun);
+  const hasRunHistory = !!activeId && !!hasRunHistoryByWorkflow[activeId];
+  const hasWorkspace = hasCanvas || hasRunHistory;
+  const selectedInlineRecord = selectedInlineAgent?.streamIndex !== null &&
+    selectedInlineAgent?.streamIndex !== undefined
+    ? inlineAgentStreams[selectedInlineAgent.workflowId]?.[selectedInlineAgent.streamIndex]
+    : undefined;
+  const selectedInlineResult = (
+    selectedInlineRecord?.result ?? selectedInlineAgent?.inspection.result
+  ) as RunAgentResult | undefined;
+  const effectiveInlineInspection: RunAgentInspection | null = selectedInlineAgent
+    ? {
+        ...selectedInlineAgent.inspection,
+        status: selectedInlineRecord
+          ? selectedInlineRecord.finished
+            ? selectedInlineResult?.error ? 'err' : 'ok'
+            : 'pending'
+          : selectedInlineAgent.inspection.status,
+        result: selectedInlineResult,
+        runEvents: selectedInlineRecord?.events ?? selectedInlineAgent.inspection.runEvents,
+      }
+    : null;
+
   // Per-node state dots for snapshot view. When the viewed run is the
   // currently-attached one (rerun-from-snapshot, mid-execution), use live
   // states from the WS so the dots animate on the snapshot canvas.
@@ -1214,6 +1591,7 @@ export default function App() {
           setActiveId(id);
           setView('workflow');
           setSelectedNodeId(null);
+          setRightPanelMode('chat');
           setMobilePanelMode('chat');
         }}
         onNew={handleNew}
@@ -1226,8 +1604,9 @@ export default function App() {
           setRightPanelMode('workspace');
           setMobilePanelMode('workspace');
           setSelectedNodeId(null);
+          exitSnapshotView();
         }}
-        runDisabled={!detail}
+        runDisabled={!detail || !hasWorkspace}
         status={topBarStatus}
       />
 
@@ -1235,7 +1614,7 @@ export default function App() {
         {view === 'settings' && <SettingsPanel onClose={() => setView('workflow')} />}
 
         {view === 'workflow' &&
-          (!detail || (detail.nodes.length === 0 && messages.length === 0)) && (
+          (!detail || (detail.nodes.length === 0 && messages.length === 0 && !hasRunHistory)) && (
             <Hero
               hasApiKey={hasApiKey}
               disabled={isOrchestrating}
@@ -1255,7 +1634,9 @@ export default function App() {
             />
           )}
 
-        {view === 'workflow' && detail && !(detail.nodes.length === 0 && messages.length === 0) && (
+        {view === 'workflow' && detail && !(
+          detail.nodes.length === 0 && messages.length === 0 && !hasRunHistory
+        ) && (
           <>
             <div
               className="workflow-layout"
@@ -1267,15 +1648,17 @@ export default function App() {
                 setMode={(next) => {
                   setMobilePanelMode(next);
                   if (next === 'chat') setRightPanelMode('chat');
-                  if (next === 'workspace') {
+                  if (next === 'workspace' && hasWorkspace) {
                     setRightPanelMode('workspace');
                     setSelectedNodeId(null);
                     exitSnapshotView();
                   }
                 }}
+                workspaceDisabled={!hasWorkspace}
                 showChatActivityDot={isOrchestrating && mobilePanelMode !== 'chat'}
               />
-              {/* left 2/5 — canvas */}
+              {/* left 2/5 — a stable project stage that materialises into the
+                  canvas without moving or resizing the chat pane. */}
               <div
                 className="workflow-canvas-pane"
                 style={{
@@ -1290,8 +1673,39 @@ export default function App() {
                  * `position: relative` to host React Flow's absolute layout.
                  * Action bar / banner stack above and below via flex; this
                  * wrapper takes the rest. */}
-                <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
-                {viewingRun ? (
+                <div className={`workflow-canvas-stage${hasCanvas ? ' workflow-canvas-stage--live' : ''}`}>
+                {effectiveInlineInspection ? (
+                  <RunAgentInspector
+                    key={selectedInlineAgent?.inspectionKey}
+                    inspection={effectiveInlineInspection}
+                    onClose={() => setSelectedInlineAgent(null)}
+                    onContinue={openContinuation}
+                    onViewLive={openInlineLiveCall}
+                  />
+                ) : !hasCanvas ? (
+                  <div className="workflow-forming dotgrid">
+                    <div className="workflow-forming__content">
+                      <div className="smallcaps workflow-forming__eyebrow">
+                        project workspace
+                      </div>
+                      <div className="workflow-forming__mark" aria-hidden="true">✽</div>
+                      <h2 className="serif">{activeWorkflow?.name ?? 'untitled project'}</h2>
+                      <p className="serif">
+                        This project is currently chat-only. Keep chatting for
+                        one-off work, or create a workflow when you want editable
+                        steps that can run again with new inputs.
+                      </p>
+                      <div className="workflow-forming__status">
+                        <span className={`node-state-dot${isOrchestrating ? ' running' : ''}`} />
+                        <span>
+                          {isOrchestrating
+                            ? 'ensemble is working in chat'
+                            : 'chat mode · no workflow created yet'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ) : viewingRun ? (
                   // Viewing a run's frozen snapshot. Selection is enabled so
                   // the user can drill into a node's code + run trace, but
                   // editing is disabled (NodePanel renders read-only).
@@ -1362,32 +1776,9 @@ export default function App() {
                       </button>
                     }
                   />
-                ) : (
-                  <div
-                    style={{
-                      position: 'absolute',
-                      inset: 0,
-                      display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: 10,
-                      color: 'var(--ink-4)',
-                      padding: 24,
-                    }}
-                    className="dotgrid"
-                  >
-                    <div className="serif" style={{ fontStyle: 'italic', fontSize: 22, color: 'var(--ink-3)' }}>
-                      an empty canvas.
-                    </div>
-                    <div style={{ fontSize: 13, maxWidth: 320, textAlign: 'center', lineHeight: 1.6 }}>
-                      open the chat to describe a problem, or click{' '}
-                      <span className="italic-em">new project</span> to start fresh.
-                    </div>
-                  </div>
-                )}
+                ) : null}
                 </div>
-                {viewingRun && (
+                {viewingRun && !effectiveInlineInspection && (
                   <SnapshotBanner run={viewingRun} />
                 )}
               </div>
@@ -1404,8 +1795,9 @@ export default function App() {
                 }}
               >
                 <RightPanelTabs
-                  mode={rightPanelMode}
+                  mode={hasWorkspace ? rightPanelMode : 'chat'}
                   setMode={setRightPanelMode}
+                  workspaceDisabled={!hasWorkspace}
                   onWorkspaceTab={() => {
                     // The workspace tab always lands on the run list, no
                     // matter what surface was left behind — a node config
@@ -1416,33 +1808,26 @@ export default function App() {
                     setSelectedNodeId(null);
                     exitSnapshotView();
                   }}
-                  showChatActivityDot={isOrchestrating && rightPanelMode !== 'chat'}
-                  rightContent={rightPanelMode === 'chat' ? (
+                  showChatActivityDot={isOrchestrating && hasWorkspace && rightPanelMode !== 'chat'}
+                  rightContent={!hasWorkspace || rightPanelMode === 'chat' ? (
                     <ChatHeaderControls
                       compact
                       messages={chatMessages}
                       disabled={chatDisabled}
                       modelLabel={chatModelLabel}
-                      onClearContext={cont || activeLiveCall ? undefined : clearChatContext}
+                      onClearContext={cont || hasReadOnlyLiveCall ? undefined : clearChatContext}
                       modelSelection={chatSelection}
                       modelVariants={variantsFor(chatSelection)}
                       catalog={catalog}
                       // Live calls are read-only; orchestrator and finished
                       // continuations share the same selector surface.
-                      onPickModel={activeLiveCall ? undefined : onChatPickModel}
+                      onPickModel={hasReadOnlyLiveCall ? undefined : onChatPickModel}
                     />
                   ) : null}
                 />
                 <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
-                  {rightPanelMode === 'chat' ? (
-                    <div
-                      style={{
-                        position: 'absolute',
-                        inset: 0,
-                        display: 'flex',
-                        flexDirection: 'column',
-                      }}
-                    >
+                  {!hasWorkspace || rightPanelMode === 'chat' ? (
+                    <div className="workflow-chat-surface">
                       <ChatPanel
                         // Remount when the conversation identity changes (live
                         // call / continuation / orchestrator) so transient
@@ -1451,6 +1836,8 @@ export default function App() {
                         key={
                           activeLiveCall
                             ? `live:${activeLiveCall.runId}:${activeLiveCall.nodeId}:${activeLiveCall.callId}`
+                            : activeInlineCall
+                              ? `inline-live:${activeInlineCall.workflowId}:${activeInlineCall.streamIndex}:${activeInlineCall.callId}`
                             : cont
                               ? `cont:${contKey(cont)}`
                               : `orch:${activeId ?? 'none'}`
@@ -1473,10 +1860,14 @@ export default function App() {
                         modelVariants={variantsFor(chatSelection)}
                         catalog={catalog}
                         // A live call's model is fixed — no picker while streaming.
-                        onPickModel={activeLiveCall ? undefined : onChatPickModel}
-                        onCycleVariant={activeLiveCall ? undefined : onChatCycleVariant}
+                        onPickModel={hasReadOnlyLiveCall ? undefined : onChatPickModel}
+                        onCycleVariant={hasReadOnlyLiveCall ? undefined : onChatCycleVariant}
                         orchestratorRunIds={orchestratorRunIds}
-                        onForgetRun={forgetRunEverywhere}
+                        onForgetRun={(runId) => {
+                          forgetRunEverywhere(runId);
+                          if (activeId) void refreshRunHistoryAvailability(activeId);
+                        }}
+                        onInspectAgent={inspectInlineAgent}
                         hideHeader
                         onViewRun={(runId) => {
                           // Snapshot view renders inside the workspace tab —
@@ -1529,6 +1920,7 @@ export default function App() {
                                 viewingRun.id,
                                 inputs,
                               );
+                              markRunHistoryAvailable(newRun.workflow_id);
                               // The rerun executes against the snapshot's graph
                               // (which may diverge from live), so the live canvas
                               // can't show its progress reliably. Stay in
@@ -1566,7 +1958,10 @@ export default function App() {
                           currentRun={currentRun}
                           onStart={startRun}
                           onViewRunOnCanvas={enterSnapshotView}
-                          onRunDeleted={forgetRunEverywhere}
+                          onRunDeleted={(runId) => {
+                            forgetRunEverywhere(runId);
+                            void refreshRunHistoryAvailability(detail.id);
+                          }}
                           onCancelRun={cancelRunByUser}
                           orchestrating={isOrchestrating}
                         />
@@ -1633,7 +2028,7 @@ export default function App() {
       {dialog.kind === 'confirm-clear-context' && (
         <ConfirmDialog
           title="clear chat context"
-          message="clear this chat context? the project graph and run history will stay."
+          message="clear this chat context? its one-off agent traces and continuations will also be deleted. the project graph and normal run history will stay."
           confirmLabel="clear"
           variant="danger"
           onConfirm={doClearChatContext}
@@ -1694,15 +2089,17 @@ export default function App() {
 function MobilePanelTabs({
   mode,
   setMode,
+  workspaceDisabled,
   showChatActivityDot,
 }: {
   mode: MobilePanelMode;
   setMode: (mode: MobilePanelMode) => void;
+  workspaceDisabled: boolean;
   showChatActivityDot: boolean;
 }) {
-  const tabs: { mode: MobilePanelMode; label: string }[] = [
+  const tabs: { mode: MobilePanelMode; label: string; disabled?: boolean }[] = [
     { mode: 'canvas', label: 'canvas' },
-    { mode: 'workspace', label: 'workspace' },
+    { mode: 'workspace', label: 'workspace', disabled: workspaceDisabled },
     { mode: 'chat', label: 'chat' },
   ];
 
@@ -1714,6 +2111,7 @@ function MobilePanelTabs({
           type="button"
           className="mobile-panel-tab"
           aria-current={mode === tab.mode ? 'page' : undefined}
+          disabled={tab.disabled}
           onClick={() => setMode(tab.mode)}
         >
           {tab.label}
@@ -1730,6 +2128,7 @@ function RightPanelTabs({
   mode,
   setMode,
   onWorkspaceTab,
+  workspaceDisabled,
   showChatActivityDot,
   rightContent,
 }: {
@@ -1739,6 +2138,7 @@ function RightPanelTabs({
    * (the run list) rather than just toggling visibility, so the handler
    * differs from a plain setMode('workspace'). */
   onWorkspaceTab: () => void;
+  workspaceDisabled: boolean;
   /** When true, paint a small accent dot on the chat tab to signal that
    * the orchestrator is doing work the user can't currently see. */
   showChatActivityDot: boolean;
@@ -1760,6 +2160,7 @@ function RightPanelTabs({
       <PanelTabButton
         active={mode === 'workspace'}
         onClick={onWorkspaceTab}
+        disabled={workspaceDisabled}
       >
         workspace
       </PanelTabButton>
@@ -1807,24 +2208,27 @@ function RightPanelTabs({
 function PanelTabButton({
   active,
   onClick,
+  disabled = false,
   children,
 }: {
   active: boolean;
   onClick: () => void;
+  disabled?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
       className="smallcaps"
       aria-pressed={active}
       style={{
         background: 'transparent',
         border: 0,
         padding: '10px 14px',
-        cursor: 'pointer',
-        color: active ? 'var(--ink)' : 'var(--ink-4)',
+        cursor: disabled ? 'default' : 'pointer',
+        color: disabled ? 'var(--ink-5)' : active ? 'var(--ink)' : 'var(--ink-4)',
         fontSize: 10.5,
         letterSpacing: '0.14em',
         textTransform: 'uppercase',

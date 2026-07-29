@@ -521,6 +521,9 @@ export function liveCallToChat(call: LiveLLMCall): ChatMessage[] {
       });
     }
   }
+  if (call.errorMsg) {
+    blocks.push({ t: 'p', text: `**call failed:** ${call.errorMsg}` });
+  }
   return [{ role: 'assistant', content: blocks, streaming: call.status === 'streaming' }];
 }
 

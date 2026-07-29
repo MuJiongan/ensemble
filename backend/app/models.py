@@ -60,8 +60,10 @@ class Run(Base):
     # (the run button, the REST API). "orchestrator" — kicked off by the
     # chat orchestrator's `run_workflow` tool on the user's behalf. Both
     # execute identically; the tag just records provenance so the run list
-    # can distinguish them.
-    kind = Column(String, default="user")  # "user" | "orchestrator"
+    # can distinguish them. "inline_agent" is a private completed record used
+    # only to own a chat tool card's trace and continuation transcripts; all
+    # user-facing run-list queries exclude it.
+    kind = Column(String, default="user")  # user | orchestrator | inline_agent
     status = Column(String, default="pending")  # pending|running|success|error|cancelled
     inputs = Column(JSON, default=dict)
     outputs = Column(JSON, default=dict)

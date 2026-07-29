@@ -219,11 +219,24 @@ def _row_to_message(r: models.Message) -> dict | None:
     """Convert one persisted row to OpenAI-compatible chat shape (or ``None``
     for rows that never go to the model, e.g. compaction markers)."""
     if r.role == "tool":
+        content = r.content or ""
+        # Tool results may carry rich UI-only state (for example the complete
+        # ephemeral node trace returned by run_agent). Keep that data in the
+        # persisted Message for chat rehydration, but do not replay it into
+        # subsequent LLM rounds; the compact top-level outputs/error are the
+        # actual tool result the orchestrator needs.
+        try:
+            parsed = json.loads(content) if content else None
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict) and "_display" in parsed:
+            parsed = {k: v for k, v in parsed.items() if k != "_display"}
+            content = json.dumps(parsed, default=str)
         return {
             "role": "tool",
             "tool_call_id": r.tool_call_id or "",
             "name": r.name or "",
-            "content": r.content or "",
+            "content": content,
         }
     if r.role == "assistant":
         msg: dict = {"role": "assistant", "content": r.content or ""}

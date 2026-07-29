@@ -11,7 +11,9 @@ from sqlalchemy.orm import sessionmaker
 from app.db import Base
 from app.llm import openai_chat
 from app import models
+from app.api import call_chats as call_chats_api
 from app.api import orchestrator as orchestrator_api
+from app.api import runs as runs_api
 from app.api import workflows as workflow_api
 from app.orchestrator import tools as orch_tools
 from app.orchestrator import agent as orch_agent
@@ -382,11 +384,151 @@ def test_llm_tool_specs_covers_full_surface():
         "set_input_node",
         "set_output_node",
         "clean_canvas",
+        "run_agent",
         "run_workflow",
         "cancel_run",
         "list_runs",
         "view_run",
     }
+
+
+def test_run_agent_executes_inline_with_hidden_continuable_trace(
+    db, workflow, monkeypatch
+):
+    monkeypatch.setenv("DEFAULT_NODE_MODEL", "worker/model")
+    executed: dict = {}
+    forwarded_events: list[dict] = []
+
+    def fake_run_sync(
+        workflow_data,
+        inputs,
+        default_model,
+        cancel_event=None,
+        on_event=None,
+    ):
+        executed.update({
+            "workflow": workflow_data,
+            "inputs": inputs,
+            "model": default_model,
+            "cancel_event": cancel_event,
+        })
+        if on_event:
+            on_event({"type": "node_started", "node_id": "inline_agent", "inputs": {}})
+            on_event({
+                "type": "llm_call_started",
+                "node_id": "inline_agent",
+                "call_id": "call_research",
+                "model": "worker/model",
+                "tools": ["web_search"],
+                "label": "researcher",
+            })
+        return {
+            "status": "success",
+            "outputs": {"brief": "Acme is growing."},
+            "error": None,
+            "total_cost": 0.012,
+            "node_runs": [{
+                "node_id": "inline_agent",
+                "status": "success",
+                "inputs": {},
+                "outputs": {"brief": "Acme is growing."},
+                "duration_ms": 250,
+                "logs": ["researched Acme"],
+                "llm_calls": [{
+                    "call_id": "call_research",
+                    "label": "researcher",
+                    "model": "worker/model",
+                    "tools": ["web_search"],
+                    "content": "Acme is growing.",
+                    "messages": [
+                        {"role": "user", "content": "Research Acme."},
+                        {"role": "assistant", "content": "Acme is growing."},
+                    ],
+                }],
+            }],
+        }
+
+    monkeypatch.setattr("app.runner.runner.run_workflow_sync", fake_run_sync)
+
+    result = orch_tools.execute(
+        db,
+        workflow.id,
+        "run_agent",
+        {
+            "name": "research_brief",
+            "description": "researches and writes a concise brief",
+            "code": (
+                "def run(inputs, ctx):\n"
+                "    response = ctx.agent(\n"
+                "        prompt='Research Acme and return a five-bullet brief.',\n"
+                "        tools=['web_search', 'web_fetch'],\n"
+                "        label='researcher',\n"
+                "    )\n"
+                "    return {'brief': response['content']}\n"
+            ),
+        },
+        event_callback=forwarded_events.append,
+    )
+
+    display = result.pop("_display")
+    assert result == {
+        "status": "success",
+        "outputs": {"brief": "Acme is growing."},
+        "error": None,
+        "duration_ms": 250,
+        "total_cost": 0.012,
+    }
+    displayed_node_run = display["node_run"]
+    assert displayed_node_run["node_id"] == "inline_agent"
+    assert displayed_node_run["status"] == "success"
+    assert displayed_node_run["inputs"] == {}
+    assert displayed_node_run["outputs"] == {"brief": "Acme is growing."}
+    assert displayed_node_run["logs"] == ["researched Acme"]
+    assert displayed_node_run["tool_calls"] == []
+    assert displayed_node_run["error"] is None
+    assert displayed_node_run["duration_ms"] == 250
+    assert displayed_node_run["cost"] == 0.012
+    assert displayed_node_run["llm_calls"] == [{
+        "call_id": "call_research",
+        "label": "researcher",
+        "model": "worker/model",
+        "tools": ["web_search"],
+        "content": "Acme is growing.",
+        "has_chat": True,
+    }]
+    assert forwarded_events[0]["type"] == "node_started"
+    assert forwarded_events[1]["type"] == "llm_call_started"
+    assert executed["inputs"] == {}
+    assert executed["model"] == "worker/model"
+    inline = executed["workflow"]
+    assert inline["input_node_id"] == "inline_agent"
+    assert inline["output_node_id"] == "inline_agent"
+    assert inline["edges"] == []
+    assert inline["nodes"][0]["name"] == "research_brief"
+    assert inline["nodes"][0]["inputs"] == []
+    assert inline["nodes"][0]["outputs"] == []
+    assert "def run(inputs, ctx):" in inline["nodes"][0]["code"]
+    assert db.query(models.Node).filter_by(workflow_id=workflow.id).count() == 0
+
+    # Continuation uses a private Run/NodeRun/CallTranscript owner, but neither
+    # the REST run tab nor the orchestrator's list_runs tool can discover it.
+    hidden_run = db.get(models.Run, display["run_id"])
+    assert hidden_run is not None
+    assert hidden_run.kind == "inline_agent"
+    assert hidden_run.status == "success"
+    assert displayed_node_run["id"] == hidden_run.node_runs[0].id
+    assert runs_api.list_runs(workflow.id, db=db) == []
+    assert orch_tools.list_runs(db, workflow.id)["runs"] == []
+
+    continuation = call_chats_api.view_call_chat(
+        hidden_run.id,
+        displayed_node_run["id"],
+        "call_research",
+        db=db,
+    )
+    assert continuation.run_id == hidden_run.id
+    assert continuation.node_run_id == displayed_node_run["id"]
+    assert continuation.messages[-1]["content"] == "Acme is growing."
 
 
 def test_clean_canvas_wipes_nodes_edges_and_pointers(db, workflow):
@@ -1404,6 +1546,156 @@ def test_render_history_surfaces_tool_result(db, workflow):
     assert tool_block["result"]["total_cost"] == 0.04
 
 
+def test_inline_agent_display_trace_is_ui_only_during_model_replay(db, workflow):
+    """The chat can rehydrate the rich inline node trace without feeding that
+    potentially large payload back into every subsequent orchestrator round."""
+    sess = models.Session(workflow_id=workflow.id)
+    db.add(sess); db.commit(); db.refresh(sess)
+    db.add(
+        models.Message(
+            session_id=sess.id,
+            role="assistant",
+            content="",
+            tool_calls=[{
+                "id": "tc_agent",
+                "type": "function",
+                "function": {
+                    "name": "run_agent",
+                    "arguments": json.dumps({
+                        "name": "researcher",
+                        "description": "researches",
+                        "code": "def run(inputs, ctx):\n    return {'answer': 'ok'}\n",
+                    }),
+                },
+            }],
+        )
+    )
+    stored = {
+        "status": "success",
+        "outputs": {"answer": "ok"},
+        "error": None,
+        "_display": {"node_run": {"llm_calls": [{"content": "large trace"}]}},
+    }
+    db.add(
+        models.Message(
+            session_id=sess.id,
+            role="tool",
+            tool_call_id="tc_agent",
+            name="run_agent",
+            content=json.dumps(stored),
+        )
+    )
+    db.commit()
+
+    replay_tool = next(m for m in orch_agent._history_messages(db, sess.id) if m["role"] == "tool")
+    assert json.loads(replay_tool["content"]) == {
+        "status": "success",
+        "outputs": {"answer": "ok"},
+        "error": None,
+    }
+
+    bubble = orch_agent.render_history(db, sess.id)[0]
+    block = next(b for b in bubble["content"] if b["t"] == "tool")
+    assert block["result"]["_display"] == stored["_display"]
+
+
+def test_clear_context_deletes_only_that_chats_inline_agent_records(db, workflow):
+    session = models.Session(workflow_id=workflow.id)
+    other_session = models.Session(workflow_id=workflow.id)
+    db.add_all([session, other_session])
+    db.flush()
+
+    owned_run = models.Run(
+        workflow_id=workflow.id,
+        kind="inline_agent",
+        status="success",
+        inputs={},
+        outputs={"answer": "owned"},
+    )
+    other_run = models.Run(
+        workflow_id=workflow.id,
+        kind="inline_agent",
+        status="success",
+        inputs={},
+        outputs={"answer": "other"},
+    )
+    normal_run = models.Run(
+        workflow_id=workflow.id,
+        kind="user",
+        status="success",
+        inputs={},
+        outputs={},
+    )
+    db.add_all([owned_run, other_run, normal_run])
+    db.flush()
+
+    owned_node_run = models.NodeRun(
+        run_id=owned_run.id,
+        node_id="inline_agent",
+        status="success",
+        llm_calls=[{"call_id": "owned_call", "has_chat": True}],
+    )
+    other_node_run = models.NodeRun(
+        run_id=other_run.id,
+        node_id="inline_agent",
+        status="success",
+        llm_calls=[{"call_id": "other_call", "has_chat": True}],
+    )
+    db.add_all([owned_node_run, other_node_run])
+    db.flush()
+    owned_transcript = models.CallTranscript(
+        node_run_id=owned_node_run.id,
+        call_id="owned_call",
+        messages=[{"role": "assistant", "content": "owned"}],
+    )
+    owned_chat = models.CallChat(
+        workflow_id=workflow.id,
+        node_run_id=owned_node_run.id,
+        call_id="owned_call",
+        messages=[{"role": "assistant", "content": "continued"}],
+    )
+    db.add_all([owned_transcript, owned_chat])
+    db.add_all([
+        models.Message(
+            session_id=session.id,
+            role="tool",
+            name="run_agent",
+            tool_call_id="owned_tool",
+            content=json.dumps({"_display": {"run_id": owned_run.id}}),
+        ),
+        models.Message(
+            session_id=other_session.id,
+            role="tool",
+            name="run_agent",
+            tool_call_id="other_tool",
+            content=json.dumps({"_display": {"run_id": other_run.id}}),
+        ),
+    ])
+    db.commit()
+    owned_run_id = owned_run.id
+    owned_node_run_id = owned_node_run.id
+    owned_transcript_id = owned_transcript.id
+    owned_chat_id = owned_chat.id
+    other_run_id = other_run.id
+    normal_run_id = normal_run.id
+
+    result = orchestrator_api.clear_messages(
+        workflow.id,
+        session.id,
+        db=db,
+    )
+
+    assert result == {"ok": True, "deleted_inline_agents": 1}
+    assert db.get(models.Run, owned_run_id) is None
+    assert db.get(models.NodeRun, owned_node_run_id) is None
+    assert db.get(models.CallTranscript, owned_transcript_id) is None
+    assert db.get(models.CallChat, owned_chat_id) is None
+    assert db.get(models.Run, other_run_id) is not None
+    assert db.get(models.Run, normal_run_id) is not None
+    assert db.query(models.Message).filter_by(session_id=session.id).count() == 0
+    assert db.query(models.Message).filter_by(session_id=other_session.id).count() == 1
+
+
 def test_non_graph_mutating_tools_set_matches_registry():
     # Belt-and-braces: the named-set has to match what's exempt from the
     # dispatcher's "no mutation during a run" guard. Inspection tools and
@@ -1416,6 +1708,7 @@ def test_non_graph_mutating_tools_set_matches_registry():
         "get_mcp_tool_schema",
         "list_runs",
         "view_run",
+        "run_agent",
         "run_workflow",
         "cancel_run",
         "rename_project",
@@ -1695,8 +1988,194 @@ def test_run_turn_retries_429_and_surfaces_backoff_notices(db, workflow, monkeyp
         for event in events
     )
     assert events[-1] == {"kind": "done"}
+def test_run_turn_run_agent_streams_trace_but_blocks_until_result(
+    db, workflow, monkeypatch
+):
+    monkeypatch.setenv("DEFAULT_ORCHESTRATOR_MODEL", "test/model")
+    sess = models.Session(workflow_id=workflow.id)
+    db.add(sess); db.commit(); db.refresh(sess)
+
+    args = {
+        "name": "researcher",
+        "description": "researches one topic",
+        "code": "def run(inputs, ctx):\n    return {'answer': 'done'}\n",
+    }
+    rounds = iter([
+        [(
+            "done",
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_agent",
+                        "type": "function",
+                        "function": {
+                            "name": "run_agent",
+                            "arguments": json.dumps(args),
+                        },
+                    }],
+                },
+                "usage": {},
+            },
+        )],
+        [(
+            "done",
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "finished with the inline result.",
+                    "tool_calls": [],
+                },
+                "usage": {},
+            },
+        )],
+    ])
+    execution_finished = threading.Event()
+    llm_round = 0
+
+    def fake_stream(model, messages, tool_specs, cancel_event=None):
+        nonlocal llm_round
+        llm_round += 1
+        if llm_round == 2:
+            # The orchestrator model cannot begin its answer round until the
+            # blocking tool has returned its final output.
+            assert execution_finished.is_set()
+            tool_message = next(m for m in reversed(messages) if m["role"] == "tool")
+            assert json.loads(tool_message["content"])["outputs"] == {"answer": "done"}
+        return iter(next(rounds))
+
+    def fake_execute(
+        db_arg,
+        wid_arg,
+        name,
+        call_args,
+        *,
+        cancel_event=None,
+        event_callback=None,
+    ):
+        assert name == "run_agent"
+        assert call_args == args
+        assert cancel_event is not None
+        assert event_callback is not None
+        event_callback({
+            "type": "node_started",
+            "node_id": "inline_agent",
+            "inputs": {},
+        })
+        event_callback({
+            "type": "llm_call_started",
+            "node_id": "inline_agent",
+            "call_id": "inner_call",
+            "model": "worker/model",
+            "tools": ["web_search"],
+        })
+        event_callback({
+            "type": "llm_call_chunk",
+            "node_id": "inline_agent",
+            "call_id": "inner_call",
+            "round": 0,
+            "kind": "content",
+            "delta": "working",
+        })
+        execution_finished.set()
+        return {
+            "status": "success",
+            "outputs": {"answer": "done"},
+            "error": None,
+        }
+
+    monkeypatch.setattr(orch_agent, "_call_llm_stream", fake_stream)
+    monkeypatch.setattr(orch_tools, "execute", fake_execute)
+
+    events = list(orch_agent.run_turn(db, sess.id, "research this"))
+    kinds = [event["kind"] for event in events]
+    start_index = kinds.index("tool_call_start")
+    end_index = kinds.index("tool_call_end")
+    inline_indexes = [i for i, kind in enumerate(kinds) if kind == "run_agent_event"]
+
+    assert len(inline_indexes) == 3
+    assert all(start_index < i < end_index for i in inline_indexes)
+    assert "run_started" not in kinds
+    assert kinds[-1] == "done"
+    assert events[end_index]["result"]["outputs"] == {"answer": "done"}
+    assert llm_round == 2
 
 
+def test_stop_orchestrator_cancels_inflight_run_agent(db, workflow, monkeypatch):
+    monkeypatch.setenv("DEFAULT_ORCHESTRATOR_MODEL", "test/model")
+    sess = models.Session(workflow_id=workflow.id)
+    db.add(sess); db.commit(); db.refresh(sess)
+
+    args = {
+        "name": "slow_agent",
+        "description": "waits until stopped",
+        "code": "def run(inputs, ctx):\n    return {'answer': 'never'}\n",
+    }
+
+    def fake_stream(model, messages, tool_specs, cancel_event=None):
+        yield (
+            "done",
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_slow_agent",
+                        "type": "function",
+                        "function": {
+                            "name": "run_agent",
+                            "arguments": json.dumps(args),
+                        },
+                    }],
+                },
+                "usage": {},
+            },
+        )
+
+    def fake_execute(
+        db_arg,
+        wid_arg,
+        name,
+        call_args,
+        *,
+        cancel_event=None,
+        event_callback=None,
+    ):
+        assert name == "run_agent"
+        assert cancel_event is not None
+        assert event_callback is not None
+        event_callback({
+            "type": "node_started",
+            "node_id": "inline_agent",
+            "inputs": {},
+        })
+        assert cancel_event.wait(timeout=2.0)
+        return {
+            "status": "cancelled",
+            "outputs": {},
+            "error": "cancelled by user",
+        }
+
+    monkeypatch.setattr(orch_agent, "_call_llm_stream", fake_stream)
+    monkeypatch.setattr(orch_tools, "execute", fake_execute)
+
+    stream = orch_agent.run_turn(db, sess.id, "start slow work")
+    events: list[dict] = []
+    while not events or events[-1]["kind"] != "tool_call_start":
+        events.append(next(stream))
+
+    # Advancing once starts run_agent and returns its first live child event.
+    events.append(next(stream))
+    assert events[-1]["kind"] == "run_agent_event"
+    assert orch_agent._signal_cancel(sess.id) is True
+    events.extend(stream)
+
+    tool_end = next(event for event in events if event["kind"] == "tool_call_end")
+    assert tool_end["status"] == "err"
+    assert tool_end["result"]["status"] == "cancelled"
+    assert tool_end["result"]["error"] == "cancelled by user"
+    assert events[-1]["kind"] == "done"
 def test_run_turn_does_not_wait_for_run_workflow(db, workflow, monkeypatch):
     """`run_workflow` should resolve to the LLM with the start result, not
     block the orchestrator turn until the background run finishes."""
@@ -1746,7 +2225,15 @@ def test_run_turn_does_not_wait_for_run_workflow(db, workflow, monkeypatch):
     def fake_stream(model, messages, tool_specs, cancel_event=None):
         return iter(next(rounds_iter))
 
-    def fake_execute(db_arg, wid_arg, name, args):
+    def fake_execute(
+        db_arg,
+        wid_arg,
+        name,
+        args,
+        *,
+        cancel_event=None,
+        event_callback=None,
+    ):
         assert name == "run_workflow"
         return {"run_id": "run_123", "status": "running"}
 
