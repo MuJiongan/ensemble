@@ -31,6 +31,7 @@ export type McpLoginStatus = 'signed_in' | 'signed_out' | 'pending' | 'error';
 export interface McpLoginStatusResponse {
   status: McpLoginStatus;
   error?: string | null;
+  callback_mode?: 'loopback' | 'public' | null;
 }
 
 const STATUS_POLL_INTERVAL_MS = 1500;
@@ -121,7 +122,11 @@ export async function startMcpLogin(
   name: string,
   url: string,
   oauth?: Record<string, unknown> | null,
-): Promise<{ authorizeUrl: string; status: string }> {
+): Promise<{
+  authorizeUrl: string;
+  status: string;
+  callbackMode: 'loopback' | 'public';
+}> {
   const res = await fetch(`/api/mcp/${encodeURIComponent(name)}/login/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -138,7 +143,11 @@ export async function startMcpLogin(
     throw new Error(detail || `start failed (${res.status})`);
   }
   const body = await res.json();
-  return { authorizeUrl: body.authorize_url, status: body.status };
+  return {
+    authorizeUrl: body.authorize_url,
+    status: body.status,
+    callbackMode: body.callback_mode === 'public' ? 'public' : 'loopback',
+  };
 }
 
 export async function mcpLoginStatus(name: string): Promise<McpLoginStatusResponse> {

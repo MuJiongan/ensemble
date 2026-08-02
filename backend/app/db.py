@@ -27,6 +27,7 @@ _PENDING_COLUMNS: list[tuple[str, str, str]] = [
     ("messages", "cost", "FLOAT DEFAULT 0.0"),
     ("runs", "workflow_snapshot", "JSON DEFAULT NULL"),
     ("mcp_credentials", "token_endpoint_auth_method", "VARCHAR DEFAULT NULL"),
+    ("mcp_credentials", "redirect_uri", "VARCHAR DEFAULT NULL"),
     # provider_id/variant were added to call_chats partway through the
     # continue-chat work, so a dev DB created from an earlier checkout of this
     # branch has the table but not these columns (create_all only adds whole

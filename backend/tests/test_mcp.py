@@ -150,6 +150,18 @@ def test_resolve_expired_unrefreshable_token_not_injected(db_factory):
     assert out == raw  # expired + no refresh token => left alone
 
 
+def test_resolve_never_reuses_same_name_credential_for_another_server_url(db_factory):
+    raw = json.dumps({"s": {"type": "remote", "url": "https://new.example/mcp"}})
+    _store_cred(
+        db_factory,
+        "s",
+        "https://old.example/mcp",
+        "wrong-audience",
+        datetime.utcnow() + timedelta(hours=1),
+    )
+    assert mcp_mod.resolve_oauth_config(raw, db_factory) == raw
+
+
 # --- _has_usable_credential (drives probe needs-auth detection) ------------
 
 

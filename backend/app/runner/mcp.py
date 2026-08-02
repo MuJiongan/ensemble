@@ -56,10 +56,10 @@ class OAuthConfig:
     """OAuth client config for a remote server. All fields optional: with no
     client id we fall back to dynamic client registration (RFC 7591).
 
-    ``redirect_uri`` / ``callback_port`` let a user override the loopback
-    callback per server — required when a provider (e.g. some Slack app modes)
-    rejects ``http://127.0.0.1`` and only accepts an HTTPS tunnel, or when
-    multiple emdash instances need different ports."""
+    ``redirect_uri`` / ``callback_port`` let a user preserve an exact
+    pre-registered callback. Interactive defaults are resolved in
+    :mod:`app.auth.mcp_oauth`: an ephemeral loopback port locally, or the
+    trusted backend HTTPS callback when ``PUBLIC_BASE_URL`` is configured."""
     client_id: str = ""
     client_secret: str = ""
     scope: str = ""
@@ -196,10 +196,10 @@ def _parse_oauth(raw: Any) -> OAuthConfig | None:
 # OAuth (remote servers) — API process only (needs DB + loopback callback)
 # ---------------------------------------------------------------------------
 
-# Pinned loopback callback for the MCP OAuth redirect. Pinned (not random) so it
-# can be pre-registered as a redirect URI and so a second emdash instance fails
-# loudly on bind rather than silently hijacking the callback. Mirrors the
-# fixed-port approach in app/auth/codex.py.
+# Legacy deterministic URI used when constructing a non-interactive provider
+# outside an active login. Interactive MCP login replaces it after binding an
+# ephemeral port (or selecting the trusted public callback), while explicit
+# redirectUri/callbackPort settings continue to take precedence.
 MCP_OAUTH_PORT = int(os.getenv("MCP_OAUTH_PORT", "19876"))
 MCP_OAUTH_CALLBACK_PATH = "/mcp/oauth/callback"
 MCP_OAUTH_REDIRECT_URI = f"http://127.0.0.1:{MCP_OAUTH_PORT}{MCP_OAUTH_CALLBACK_PATH}"
@@ -240,6 +240,9 @@ def _make_db_token_storage(
     server_url: str,
     db_factory: Callable,
     oauth_cfg: "OAuthConfig | None" = None,
+    *,
+    force_authorization: bool = False,
+    write_guard: Callable[[Callable[[], None]], bool] | None = None,
 ):
     """Build a TokenStorage backed by the ``McpCredential`` table.
 
@@ -257,11 +260,24 @@ def _make_db_token_storage(
     from app import models
 
     class DbTokenStorage(TokenStorage):
+        @staticmethod
+        def _write(action: Callable[[], None]) -> None:
+            if write_guard is not None:
+                if not write_guard(action):
+                    raise RuntimeError("MCP sign-in was cancelled")
+                return
+            action()
+
         async def get_tokens(self) -> Optional["OAuthToken"]:  # type: ignore[name-defined]
+            # An explicit interactive login always performs a fresh grant. A
+            # still-unexpired but revoked token must not make /start silently
+            # initialize without ever producing an authorization URL.
+            if force_authorization:
+                return None
             db = db_factory()
             try:
                 row = db.query(models.McpCredential).filter_by(server_name=server_name).first()
-                if not row or not row.access_token:
+                if not row or row.server_url != server_url or not row.access_token:
                     return None
                 expires_in = None
                 if row.expires_at:
@@ -279,24 +295,28 @@ def _make_db_token_storage(
                 db.close()
 
         async def set_tokens(self, tokens: "OAuthToken") -> None:  # type: ignore[name-defined]
-            db = db_factory()
-            try:
-                row = db.query(models.McpCredential).filter_by(server_name=server_name).first()
-                if row is None:
-                    row = models.McpCredential(server_name=server_name, server_url=server_url)
-                    db.add(row)
-                row.access_token = tokens.access_token
-                row.token_type = tokens.token_type or "Bearer"
-                row.refresh_token = tokens.refresh_token
-                row.scope = tokens.scope
-                row.expires_at = (
-                    datetime.utcnow() + timedelta(seconds=int(tokens.expires_in))
-                    if tokens.expires_in is not None
-                    else None
-                )
-                db.commit()
-            finally:
-                db.close()
+            def persist() -> None:
+                db = db_factory()
+                try:
+                    row = db.query(models.McpCredential).filter_by(server_name=server_name).first()
+                    if row is None:
+                        row = models.McpCredential(server_name=server_name, server_url=server_url)
+                        db.add(row)
+                    row.server_url = server_url
+                    row.access_token = tokens.access_token
+                    row.token_type = tokens.token_type or "Bearer"
+                    row.refresh_token = tokens.refresh_token
+                    row.scope = tokens.scope
+                    row.expires_at = (
+                        datetime.utcnow() + timedelta(seconds=int(tokens.expires_in))
+                        if tokens.expires_in is not None
+                        else None
+                    )
+                    db.commit()
+                finally:
+                    db.close()
+
+            self._write(persist)
 
         async def get_client_info(self) -> Optional["OAuthClientInformationFull"]:  # type: ignore[name-defined]
             # Config-supplied client wins over the DB. The SDK's DCR gate
@@ -317,7 +337,17 @@ def _make_db_token_storage(
             db = db_factory()
             try:
                 row = db.query(models.McpCredential).filter_by(server_name=server_name).first()
-                if not row or not row.client_id:
+                if not row or row.server_url != server_url or not row.client_id:
+                    return None
+                # A DCR client is tied to its registered redirect URI. A fresh
+                # interactive grant can reuse it only when the exact callback
+                # still matches; mode changes and new ephemeral ports trigger
+                # a compatible registration. Silent refresh can keep using a
+                # legacy row because redirect_uri is not part of that grant.
+                if (
+                    force_authorization
+                    and row.redirect_uri != effective_redirect_uri(oauth_cfg)
+                ):
                     return None
                 # Coerce on read too, so even a row written before this fix
                 # gets a usable auth method on the next connect.
@@ -344,20 +374,26 @@ def _make_db_token_storage(
             # subsequent reads from the DB.
             if client_info.client_secret and not client_info.token_endpoint_auth_method:
                 client_info.token_endpoint_auth_method = "client_secret_post"
-            db = db_factory()
-            try:
-                row = db.query(models.McpCredential).filter_by(server_name=server_name).first()
-                if row is None:
-                    row = models.McpCredential(server_name=server_name, server_url=server_url)
-                    db.add(row)
-                row.client_id = client_info.client_id
-                row.client_secret = client_info.client_secret
-                row.client_id_issued_at = client_info.client_id_issued_at
-                row.client_secret_expires_at = client_info.client_secret_expires_at
-                row.token_endpoint_auth_method = client_info.token_endpoint_auth_method
-                db.commit()
-            finally:
-                db.close()
+
+            def persist() -> None:
+                db = db_factory()
+                try:
+                    row = db.query(models.McpCredential).filter_by(server_name=server_name).first()
+                    if row is None:
+                        row = models.McpCredential(server_name=server_name, server_url=server_url)
+                        db.add(row)
+                    row.server_url = server_url
+                    row.client_id = client_info.client_id
+                    row.client_secret = client_info.client_secret
+                    row.client_id_issued_at = client_info.client_id_issued_at
+                    row.client_secret_expires_at = client_info.client_secret_expires_at
+                    row.token_endpoint_auth_method = client_info.token_endpoint_auth_method
+                    row.redirect_uri = effective_redirect_uri(oauth_cfg)
+                    db.commit()
+                finally:
+                    db.close()
+
+            self._write(persist)
 
     return DbTokenStorage()
 
@@ -367,6 +403,9 @@ def build_oauth_provider(
     db_factory: Callable,
     redirect_handler=None,
     callback_handler=None,
+    *,
+    force_authorization: bool = False,
+    write_guard: Callable[[Callable[[], None]], bool] | None = None,
 ):
     """Construct an ``OAuthClientProvider`` for a remote server.
 
@@ -376,7 +415,14 @@ def build_oauth_provider(
     fresh authorization.
     """
     (OAuthClientProvider, _, _, OAuthClientMetadata, _) = _oauth_imports()
-    storage = _make_db_token_storage(cfg.name, cfg.url, db_factory, cfg.oauth)
+    storage = _make_db_token_storage(
+        cfg.name,
+        cfg.url,
+        db_factory,
+        cfg.oauth,
+        force_authorization=force_authorization,
+        write_guard=write_guard,
+    )
     redirect_uri = effective_redirect_uri(cfg.oauth)
     metadata = OAuthClientMetadata(
         redirect_uris=[redirect_uri],
@@ -1031,7 +1077,7 @@ def _has_usable_credential(cfg: ServerConfig, db_factory: Callable) -> bool:
     db = db_factory()
     try:
         row = db.query(models.McpCredential).filter_by(server_name=cfg.name).first()
-        if not row or not row.access_token:
+        if not row or row.server_url != cfg.url or not row.access_token:
             return False
         if row.refresh_token:
             return True
@@ -1048,7 +1094,7 @@ def _ensure_fresh_token(cfg: ServerConfig, db_factory: Callable) -> str:
     db = db_factory()
     try:
         row = db.query(models.McpCredential).filter_by(server_name=cfg.name).first()
-        if not row or not row.access_token:
+        if not row or row.server_url != cfg.url or not row.access_token:
             return ""
         fresh = row.expires_at is None or row.expires_at > datetime.utcnow() + timedelta(seconds=30)
         if fresh:

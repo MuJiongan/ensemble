@@ -54,6 +54,19 @@ Then expose that loopback server only to your tailnet:
 tailscale serve --bg --https=8443 http://127.0.0.1:8000
 ```
 
+For seamless remote MCP OAuth, start the backend with the exact trusted
+external origin in `PUBLIC_BASE_URL` (include the non-default port):
+
+```bash
+PUBLIC_BASE_URL=https://<mac-mini-magicdns-name>:8443 make serve
+```
+
+Register or allowlist
+`https://<mac-mini-magicdns-name>:8443/api/mcp/oauth/callback` with MCP
+authorization servers that use a pre-registered client. The backend derives
+the callback only from `PUBLIC_BASE_URL`; request `Host` and forwarded headers
+never influence OAuth redirects. Non-loopback public bases must use HTTPS.
+
 On another device signed in to the same tailnet, open
 `https://<mac-mini-magicdns-name>:8443`. Tailscale terminates HTTPS and proxies
 API, streaming, and WebSocket traffic to the same application process. The
@@ -69,13 +82,14 @@ repository remains the editable source.
 The app is still single-user and has no application-level login. Tailnet access
 is the security boundary, so only grant tailnet access to people you trust.
 Provider settings and API keys are stored in each browser separately; configure
-them once on each phone, tablet, or other remote device. For Codex, xAI, and
-remote MCP OAuth, the mobile browser's final redirect points to that device's
-`localhost` and will not load. Copy the callback address from the browser and
-paste it into the waiting field in Ensemble—with or without the `http://`
-prefix; the Mac mini will securely finish the token exchange. Local MCP
-commands configured from a remote device execute on the Mac mini, so their
-commands and filesystem paths must exist on the Mac.
+them once on each phone, tablet, or other remote device. With `PUBLIC_BASE_URL`,
+remote MCP authorization returns directly to the backend and Settings completes
+automatically. Codex and xAI still use their pinned loopback redirects; copy a
+failed callback address from the remote browser and paste it into the waiting
+field in Ensemble—with or without the `http://` prefix. The same manual fallback
+remains available for MCP servers explicitly configured with a loopback
+redirect. Local MCP commands configured from a remote device execute on the
+Mac mini, so their commands and filesystem paths must exist on the Mac.
 
 ## Architecture
 
@@ -157,7 +171,7 @@ At the start of every run the child subprocess connects to each enabled server, 
 
 The orchestrator never executes MCP tools itself. Instead, each orchestrator turn receives a system message listing every discovered tool with a one-line summary and the exact names to call it by; `get_mcp_tool_schema(server, tool)` fetches a tool's untruncated input schema on demand. Per-server `disabled_tools` opt-outs are applied before both the orchestrator listing and the runtime registry, so a disabled tool is invisible everywhere.
 
-**OAuth.** Remote servers are OAuth-capable by default. The MCP SDK handles metadata discovery, dynamic client registration (RFC 7591), PKCE, and token refresh; tokens are persisted in the `mcp_credentials` table and never returned to the browser. For servers that don't implement RFC 7591 (e.g. Slack), supply `oauth: {clientId, clientSecret}` on the server entry to skip registration and use your pre-registered client. The loopback callback defaults to `http://127.0.0.1:19876/mcp/oauth/callback`; override it per-server with `oauth.redirectUri` (any loopback URL) or `oauth.callbackPort`. The API process owns the refresh loop and injects a fresh bearer into the child's config at spawn time — the child subprocess has no database access.
+**OAuth.** Remote servers are OAuth-capable by default. The MCP SDK handles metadata discovery, dynamic client registration (RFC 7591), PKCE, state validation, resource-bound authorization, and token refresh; tokens are persisted in the `mcp_credentials` table and never returned to the browser. For servers that don't implement RFC 7591 (e.g. Slack), supply `oauth: {clientId, clientSecret}` on the server entry to skip registration and use your pre-registered client. Local flows use a fresh OS-assigned loopback port per attempt, so multiple servers can authorize concurrently; set `oauth.redirectUri` to an HTTP loopback URL or set `oauth.callbackPort` only when a provider requires a pre-registered fixed endpoint. When `PUBLIC_BASE_URL` is configured, flows without a loopback override instead use the shared HTTPS callback at `/api/mcp/oauth/callback`. Cancellation closes the owned callback immediately and makes its state/code unusable. The API process owns the refresh loop and injects a fresh bearer into the child's config at spawn time — the child subprocess has no database access.
 
 ## Runs, snapshots & the UI
 
@@ -218,7 +232,7 @@ The `settings` table exists only as a backward-compat hydration path at startup;
 - **Node code runs arbitrary Python** in a subprocess. The subprocess boundary is the isolation seam that keeps a crashing or misbehaving agent from taking down the server — it is not a security sandbox. Run only code you trust on a machine you control.
 - **Keys live in the browser** and ride as request headers; the backend never persists provider API keys. OAuth tokens (subscription providers and remote MCP servers) are stored server-side and never returned to the browser.
 - **By design, not yet:** no cyclic edges (branch via null-propagation; fan out inside a node), no per-call MCP approval prompts (per-server `disabled_tools` are global), and no mid-run MCP token refresh (bearers are resolved at run start).
-- **Pinned OAuth details.** Subscription login reuses upstream's published client IDs and pins loopback callback ports (`1455` for Codex, `56121` for xAI, `19876` for MCP). A second instance, or an upstream change to a client/redirect contract, surfaces as a clear error rather than failing silently.
+- **OAuth callback details.** Subscription login reuses upstream's published client IDs and pins loopback callback ports (`1455` for Codex and `56121` for xAI). MCP uses isolated ephemeral loopback ports by default, a configured fixed endpoint when a provider requires one, or the trusted HTTPS callback derived from `PUBLIC_BASE_URL` for remote hosting. Fixed-endpoint collisions surface as actionable errors.
 
 ## Repo layout
 

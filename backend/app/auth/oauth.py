@@ -15,6 +15,7 @@ need a fixed host:port, so we let the caller specify both.
 from __future__ import annotations
 import base64
 import hashlib
+import html
 import secrets
 import socket
 import threading
@@ -37,6 +38,10 @@ class _ReusableHTTPServer(HTTPServer):
     def server_bind(self):  # noqa: D401 (stdlib override)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         super().server_bind()
+
+
+class _ReusableHTTPServerV6(_ReusableHTTPServer):
+    address_family = socket.AF_INET6
 
 
 def _b64url(buf: bytes) -> str:
@@ -72,7 +77,8 @@ _SUCCESS_HTML = (
     ".box{text-align:center;padding:2rem}h1{font-weight:400}p{color:#6b6b6b}</style>"
     "</head><body><div class=\"box\">"
     "<h1>signed in.</h1><p>you can close this window and return to emdash.</p>"
-    "<script>setTimeout(function(){window.close()},1500)</script>"
+    "<script>history.replaceState({},document.title,location.pathname);"
+    "setTimeout(function(){window.close()},1500)</script>"
     "</div></body></html>"
 ).encode("utf-8")
 
@@ -87,6 +93,7 @@ _ERROR_HTML_TEMPLATE = (
     "</head><body><div class=\"box\">"
     "<h1>sign-in failed.</h1><p>you can close this window and try again.</p>"
     "<div class=\"err\">{detail}</div>"
+    "<script>history.replaceState({{}},document.title,location.pathname)</script>"
     "</div></body></html>"
 )
 
@@ -96,6 +103,56 @@ class CallbackResult:
     code: Optional[str]
     state: Optional[str]
     error: Optional[str]
+
+
+def callback_html(error: Optional[str] = None) -> bytes:
+    """Return the self-contained page shown after an OAuth callback.
+
+    The page has no external resources (so a callback URL cannot leak through
+    a Referer header) and immediately removes the one-time query string from
+    browser history. Provider-supplied errors are escaped before rendering.
+    """
+    if error:
+        return _ERROR_HTML_TEMPLATE.format(detail=html.escape(error)).encode("utf-8")
+    return _SUCCESS_HTML
+
+
+class CallbackWaiter:
+    """Thread-safe, one-shot callback delivery channel.
+
+    Loopback callbacks and backend-owned HTTPS callbacks share the same wait /
+    cancel semantics. The latter do not need to bind a socket; the FastAPI
+    route delivers directly into this object.
+    """
+
+    def __init__(self) -> None:
+        self._result: Optional[CallbackResult] = None
+        self._event = threading.Event()
+        self._lock = threading.Lock()
+
+    def deliver(self, result: CallbackResult) -> bool:
+        with self._lock:
+            if self._result is None:
+                self._result = result
+                self._event.set()
+                return True
+            return False
+
+    def wait(self, timeout: float) -> Optional[CallbackResult]:
+        if self._event.wait(timeout):
+            return self._result
+        return None
+
+    def stop(self) -> None:
+        # Unblock a callback handler immediately. With no result, ``wait``
+        # returns None and the owning OAuth worker exits without exchanging a
+        # code or writing credentials.
+        self._event.set()
+
+
+def _single_query_value(query: dict[str, list[str]], name: str) -> Optional[str]:
+    values = query.get(name) or []
+    return values[0] if len(values) == 1 else None
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -112,11 +169,13 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         qs = parse_qs(parsed.query)
-        code = (qs.get("code") or [None])[0]
-        state = (qs.get("state") or [None])[0]
-        error = (qs.get("error_description") or qs.get("error") or [None])[0]
+        code = _single_query_value(qs, "code")
+        state = _single_query_value(qs, "state")
+        error = _single_query_value(qs, "error_description") or _single_query_value(
+            qs, "error"
+        )
         if error:
-            body = _ERROR_HTML_TEMPLATE.format(detail=error).encode("utf-8")
+            body = callback_html(error)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -128,10 +187,10 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(_SUCCESS_HTML)))
             self.end_headers()
             self.wfile.write(_SUCCESS_HTML)
-        server._deliver(CallbackResult(code=code, state=state, error=error))
+        server.deliver(CallbackResult(code=code, state=state, error=error))
 
 
-class LoopbackCallbackServer:
+class LoopbackCallbackServer(CallbackWaiter):
     """One-shot loopback HTTP server that catches a single OAuth redirect.
 
     Usage::
@@ -146,30 +205,25 @@ class LoopbackCallbackServer:
     only once per server instance.
     """
 
-    def __init__(self, host: str, port: int, path: str):
+    def __init__(
+        self, host: str, port: int, path: str, *, redirect_uri: Optional[str] = None
+    ):
+        super().__init__()
         self.host = host
         self.port = port
         self.expected_path = path
+        self._redirect_uri = redirect_uri
         self._server: Optional[HTTPServer] = None
         self._thread: Optional[threading.Thread] = None
-        self._result: Optional[CallbackResult] = None
-        self._event = threading.Event()
-        self._lock = threading.Lock()
 
     @property
     def redirect_uri(self) -> str:
         # localhost vs 127.0.0.1 matters: OAuth client redirect_uris must
         # match exactly. Let the caller decide via the constructor's host.
-        host = self.host
+        if self._redirect_uri:
+            return self._redirect_uri
+        host = f"[{self.host}]" if ":" in self.host else self.host
         return f"http://{host}:{self.port}{self.expected_path}"
-
-    def _deliver(self, result: CallbackResult) -> bool:
-        with self._lock:
-            if self._result is None:
-                self._result = result
-                self._event.set()
-                return True
-            return False
 
     def deliver_callback_url(self, callback_url: str) -> bool:
         """Deliver a callback copied from a browser on another device.
@@ -191,7 +245,7 @@ class LoopbackCallbackServer:
         expected_host = self.host.lower().strip("[]")
         actual_host = (parsed.hostname or "").lower().strip("[]")
         try:
-            actual_port = parsed.port
+            actual_port = parsed.port or 80
         except ValueError as exc:
             raise ValueError("callback URL has an invalid port") from exc
         if (
@@ -203,17 +257,24 @@ class LoopbackCallbackServer:
             raise ValueError(f"expected a callback URL beginning with {self.redirect_uri}")
 
         qs = parse_qs(parsed.query)
-        code = (qs.get("code") or [None])[0]
-        state = (qs.get("state") or [None])[0]
-        error = (qs.get("error_description") or qs.get("error") or [None])[0]
+        code = _single_query_value(qs, "code")
+        state = _single_query_value(qs, "state")
+        error = _single_query_value(qs, "error_description") or _single_query_value(
+            qs, "error"
+        )
         if not code and not error:
             raise ValueError("callback URL does not contain an authorization code or error")
-        return self._deliver(CallbackResult(code=code, state=state, error=error))
+        return self.deliver(CallbackResult(code=code, state=state, error=error))
 
     def start(self) -> None:
         if self._server is not None:
             return
-        self._server = _ReusableHTTPServer((self.host, self.port), _Handler)
+        server_cls = _ReusableHTTPServerV6 if ":" in self.host else _ReusableHTTPServer
+        self._server = server_cls((self.host, self.port), _Handler)
+        # Port 0 asks the OS for an isolated ephemeral listener. Capture the
+        # selected port before constructing OAuth metadata or returning an
+        # authorization URL so every stage uses the exact same redirect URI.
+        self.port = int(self._server.server_address[1])
         # Attach so the handler can reach back into us.
         self._server.callback_server = self  # type: ignore[attr-defined]
         self._thread = threading.Thread(
@@ -223,11 +284,6 @@ class LoopbackCallbackServer:
         )
         self._thread.start()
 
-    def wait(self, timeout: float) -> Optional[CallbackResult]:
-        if self._event.wait(timeout):
-            return self._result
-        return None
-
     def stop(self) -> None:
         if self._server is not None:
             self._server.shutdown()
@@ -235,5 +291,5 @@ class LoopbackCallbackServer:
             self._server = None
         # Unblock any worker still in ``wait()`` — they'll observe ``None``
         # and exit promptly instead of stalling for the full timeout.
-        self._event.set()
+        super().stop()
         self._thread = None
