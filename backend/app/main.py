@@ -3,6 +3,7 @@ import base64
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import parse_qs
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -59,6 +60,7 @@ _MCP_SERVERS_HEADER = "x-mcp-servers"
 _MCP_SERVERS_ENV = "MCP_SERVERS"
 _CUSTOM_INSTRUCTIONS_HEADER = "x-custom-instructions"
 _CUSTOM_INSTRUCTIONS_ENV = "ORCHESTRATOR_CUSTOM_INSTRUCTIONS"
+_MCP_OAUTH_CALLBACK_PATH = "/api/mcp/oauth/callback"
 # Frontend sends this when custom instructions are explicitly cleared — a
 # non-empty sentinel so the header is always present (empty header values are
 # sometimes omitted by clients, which would leave stale process env).
@@ -101,6 +103,17 @@ async def apply_settings_headers(request: Request, call_next):
     """Copy localStorage-sourced settings headers into process env for the
     duration of this request. Single-user local app — no concurrent-user
     cross-contamination concerns."""
+    # OAuth authorization codes are necessarily present in the one-time
+    # browser callback URL. Preserve parsed values in the ASGI scope for the
+    # route, then remove the raw query before Uvicorn writes its access log.
+    # The callback page also removes the query from browser history.
+    if request.scope.get("path") == _MCP_OAUTH_CALLBACK_PATH:
+        raw_query = request.scope.get("query_string", b"")
+        request.scope["mcp_oauth_callback_params"] = parse_qs(
+            raw_query.decode("utf-8", errors="replace"), keep_blank_values=True
+        )
+        request.scope["query_string"] = b""
+
     # Per-request LLM credentials: present → set/clear; absent → leave alone
     # (so concurrent auth-status polls don't clobber a streaming turn's env).
     for header, env in _LLM_HEADER_TO_ENV.items():

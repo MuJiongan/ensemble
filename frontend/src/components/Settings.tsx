@@ -480,7 +480,9 @@ interface McpRow {
   // Pre-registered OAuth client. Empty strings = use Dynamic Client
   // Registration (RFC 7591). Set these for servers that don't support DCR
   // (Slack et al.). `oauthRedirectUri` overrides the loopback callback when a
-  // provider rejects the default `http://127.0.0.1:19876/mcp/oauth/callback`.
+  // provider requires a pre-registered exact callback. Without an override,
+  // local flows use an ephemeral loopback port and remote deployments use the
+  // backend callback derived from PUBLIC_BASE_URL.
   oauthClientId: string;
   oauthClientSecret: string;
   oauthScope: string;
@@ -1314,7 +1316,7 @@ function McpOAuthClientFields({
             <input
               className="field field--mono field--compact"
               value={row.oauthRedirectUri}
-              placeholder="http://127.0.0.1:19876/mcp/oauth/callback (default)"
+              placeholder="exact pre-registered callback (optional)"
               onChange={(e) => onPatch({ oauthRedirectUri: e.target.value })}
               autoComplete="off"
               spellCheck={false}
@@ -1342,6 +1344,7 @@ function McpOAuthControl({
   const [authorizeUrl, setAuthorizeUrl] = useState('');
   const [callbackUrl, setCallbackUrl] = useState('');
   const [callbackBusy, setCallbackBusy] = useState(false);
+  const [callbackMode, setCallbackMode] = useState<'loopback' | 'public'>('loopback');
   const popupRef = useRef<Window | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const name = row.name.trim();
@@ -1355,6 +1358,7 @@ function McpOAuthControl({
         if (!cancelled) {
           setStatus(s.status);
           setError(s.error ?? null);
+          if (s.callback_mode) setCallbackMode(s.callback_mode);
         }
       } catch {
         /* leave default */
@@ -1387,8 +1391,13 @@ function McpOAuthControl({
     setBusy(true);
     setAuthorizeUrl('');
     try {
-      const { authorizeUrl: url } = await startMcpLogin(name, row.url.trim(), oauthArgs());
+      const { authorizeUrl: url, callbackMode: mode } = await startMcpLogin(
+        name,
+        row.url.trim(),
+        oauthArgs(),
+      );
       setAuthorizeUrl(url);
+      setCallbackMode(mode);
       if (url) popupRef.current = window.open(url, '_blank', 'noopener,noreferrer');
       setStatus('pending');
       abortRef.current = new AbortController();
@@ -1499,11 +1508,17 @@ function McpOAuthControl({
       </div>
       {status === 'pending' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <span className="serif" style={{ fontSize: 12, color: 'var(--ink-4)' }}>
-            On a phone, tablet, or other remote device, copy the full address from the final
-            localhost page that fails to load, then paste it here—with or without
-            <span className="mono"> http://</span>.
-          </span>
+          {callbackMode === 'public' ? (
+            <span className="serif" style={{ fontSize: 12, color: 'var(--ink-4)' }}>
+              Authorization will return to this Ensemble server automatically.
+            </span>
+          ) : (
+            <span className="serif" style={{ fontSize: 12, color: 'var(--ink-4)' }}>
+              On a phone, tablet, or other remote device, copy the full address from the final
+              localhost page that fails to load, then paste it here—with or without
+              <span className="mono"> http://</span>.
+            </span>
+          )}
           {authorizeUrl && (
             <a
               className="text-btn text-btn--accent"
@@ -1515,21 +1530,23 @@ function McpOAuthControl({
               open authorization page →
             </a>
           )}
-          <div style={{ display: 'flex', gap: 8 }}>
-            <input
-              className="field field--mono field--compact"
-              value={callbackUrl}
-              onChange={(e) => setCallbackUrl(e.target.value)}
-              placeholder="http://127.0.0.1:…?code=…&state=…"
-              autoComplete="off"
-              spellCheck={false}
-              style={{ flex: 1 }}
-              aria-label="mcp oauth callback url"
-            />
-            <button className="text-btn text-btn--accent" type="button" onClick={onSubmitCallback} disabled={callbackBusy}>
-              send
-            </button>
-          </div>
+          {callbackMode === 'loopback' && (
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                className="field field--mono field--compact"
+                value={callbackUrl}
+                onChange={(e) => setCallbackUrl(e.target.value)}
+                placeholder="http://127.0.0.1:…?code=…&state=…"
+                autoComplete="off"
+                spellCheck={false}
+                style={{ flex: 1 }}
+                aria-label="mcp oauth callback url"
+              />
+              <button className="text-btn text-btn--accent" type="button" onClick={onSubmitCallback} disabled={callbackBusy}>
+                send
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

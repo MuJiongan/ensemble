@@ -179,6 +179,10 @@ class McpCredential(Base):
     client_secret = Column(String, nullable=True)
     client_id_issued_at = Column(Integer, nullable=True)
     client_secret_expires_at = Column(Integer, nullable=True)
+    # Exact callback URI used when this DCR client was registered. Interactive
+    # re-auth may reuse the client only while this still matches the selected
+    # ephemeral/public/fixed redirect.
+    redirect_uri = Column(String, nullable=True)
     # How the SDK should authenticate at the token endpoint. RFC 7591's default
     # is "client_secret_basic", but many auth servers (Notion) only return a
     # client_secret without setting this field on the DCR response — and the

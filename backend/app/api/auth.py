@@ -126,10 +126,7 @@ def logout(provider: str, db: Session = Depends(get_db)) -> StatusResponse:
 
 @router.post("/{provider}/cancel", response_model=StatusResponse)
 def cancel(provider: str) -> StatusResponse:
-    """Mark an in-flight login as cancelled. The loopback server keeps
-    waiting for its timeout in the background, but the UI no longer polls."""
+    """Make an in-flight login terminal and release its callback listener."""
     _provider_or_404(provider)
-    s = login_state.get(provider)
-    if s and s.status == "pending":
-        login_state.update(provider, status="error", error="cancelled")
+    login_state.cancel(provider)
     return StatusResponse(status="signed_out")
